@@ -1,0 +1,72 @@
+# Document taxonomy plus the rule layer that runs before the model.
+#
+# marker kinds:
+#   regex    - pattern, case insensitive unless case_sensitive: true
+#   keywords - any: [...] and/or all: [...], matched on word boundaries
+# scope: first_page | header | anywhere
+# specificity: how much this marker alone proves the class. >= rule_short_circuit
+#              in pipeline.yaml short circuits and skips the model.
+version: 1
+
+classes:
+  - name: invoice
+    description: Seller issued request for payment.
+    markers:
+      - {kind: regex, pattern: '\btax\s+invoice\b', scope: first_page, specificity: 0.95}
+      - {kind: regex, pattern: '\bproforma\s+invoice\b', scope: first_page, specificity: 0.93}
+      - {kind: regex, pattern: '\binvoice\s*(?:no|number|#)\b', scope: anywhere, specificity: 0.88}
+      - {kind: keywords, all: [invoice, total], any: [gstin, hsn, sac, "place of supply"], scope: anywhere, specificity: 0.85}
+      - {kind: keywords, any: [invoice], scope: header, specificity: 0.6}
+
+  - name: receipt
+    description: Proof that payment was made.
+    markers:
+      - {kind: regex, pattern: '\b(?:payment|cash|money)\s+receipt\b', scope: first_page, specificity: 0.94}
+      - {kind: regex, pattern: '\breceipt\s*(?:no|number|#)\b', scope: anywhere, specificity: 0.85}
+      - {kind: keywords, all: [receipt], any: ["amount paid", "received from", "received with thanks"], scope: anywhere, specificity: 0.87}
+      - {kind: keywords, any: [receipt, "thank you for your payment"], scope: header, specificity: 0.55}
+
+  - name: bank_statement
+    description: Periodic account transaction listing.
+    markers:
+      - {kind: regex, pattern: '\b(?:account|bank)\s+statement\b', scope: first_page, specificity: 0.95}
+      - {kind: regex, pattern: '\bstatement\s+of\s+account\b', scope: first_page, specificity: 0.94}
+      - {kind: keywords, all: [balance], any: [debit, credit, withdrawal, deposit], scope: anywhere, specificity: 0.7}
+      - {kind: keywords, any: ["closing balance", "opening balance", "available balance"], scope: anywhere, specificity: 0.82}
+
+  - name: salary_slip
+    description: Monthly employee pay statement.
+    markers:
+      - {kind: regex, pattern: '\b(?:salary|pay)\s*(?:slip|sheet)\b', scope: first_page, specificity: 0.96}
+      - {kind: regex, pattern: '\bpayslip\b', scope: first_page, specificity: 0.95}
+      - {kind: keywords, all: ["net pay"], any: [gross, deductions, "basic pay", hra], scope: anywhere, specificity: 0.88}
+      - {kind: keywords, any: ["employee id", "employee code", "pf number", uan], scope: anywhere, specificity: 0.6}
+
+  - name: purchase_order
+    description: Buyer issued order to a supplier.
+    markers:
+      - {kind: regex, pattern: '\bpurchase\s+order\b', scope: first_page, specificity: 0.95}
+      - {kind: regex, pattern: '\bp\.?o\.?\s*(?:no|number|#)\b', scope: anywhere, specificity: 0.8}
+      - {kind: keywords, all: ["purchase order"], any: ["ship to", "delivery date", "vendor"], scope: anywhere, specificity: 0.9}
+
+  - name: id_document
+    description: Government issued identity card.
+    markers:
+      - {kind: regex, pattern: '\bunique\s+identification\s+authority\b', scope: anywhere, specificity: 0.97}
+      - {kind: regex, pattern: '\bincome\s+tax\s+department\b', scope: anywhere, specificity: 0.9}
+      - {kind: regex, pattern: '\bpermanent\s+account\s+number\b', scope: anywhere, specificity: 0.93}
+      - {kind: keywords, any: [aadhaar, "government of india", "date of birth"], scope: anywhere, specificity: 0.6}
+
+  - name: contract
+    description: Agreement between parties.
+    markers:
+      - {kind: regex, pattern: '\bthis\s+agreement\s+is\s+made\b', scope: first_page, specificity: 0.94}
+      - {kind: regex, pattern: '\b(?:in\s+witness\s+whereof|hereinafter\s+referred\s+to\s+as)\b', scope: anywhere, specificity: 0.92}
+      - {kind: keywords, all: [agreement], any: [whereas, "the parties", "terms and conditions", indemnity], scope: anywhere, specificity: 0.78}
+
+  - name: tax_form
+    description: Statutory tax return or certificate.
+    markers:
+      - {kind: regex, pattern: '\bform\s+(?:16|26as|gstr-?\d)\b', scope: anywhere, specificity: 0.95}
+      - {kind: regex, pattern: '\btds\s+certificate\b', scope: anywhere, specificity: 0.93}
+      - {kind: keywords, any: ["assessment year", "previous year", "tax deducted at source"], scope: anywhere, specificity: 0.75}

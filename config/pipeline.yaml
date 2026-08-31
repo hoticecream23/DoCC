@@ -1,0 +1,58 @@
+# Engine and threshold settings. No domain vocabulary here.
+version: 1
+
+extraction:
+  # A page with fewer than this many chars of native text is treated as scanned.
+  native_char_threshold: 100
+  # Ignore pages that are mostly whitespace when judging the above.
+  strip_before_count: true
+  ocr:
+    engine: tesseract        # key into the engine registry
+    # Absolute path to the binary. Null means look on PATH. Windows
+    # installers do not add it to PATH, hence this.
+    binary: "C:/Program Files/Tesseract-OCR/tesseract.exe"
+    lang: eng
+    dpi: 300
+    psm: 3
+    timeout_s: 120
+  # Native text is trusted. OCR confidence comes from the engine.
+  native_confidence: 0.98
+  # Docs with no extractable text at all.
+  empty_confidence: 0.0
+  capture_bboxes: true
+
+classification:
+  # A rule this specific wins outright and skips the model.
+  rule_short_circuit: 0.9
+  # Below this the model output is discarded and the label is unknown.
+  model_min_confidence: 0.45
+  # Weak rule bar, only consulted after the model declines or is absent.
+  rule_min_confidence: 0.7
+  # Header region for scope: header, in chars from the start of page 0.
+  header_chars: 600
+  model_dir: models/classifier
+  unknown_label: unknown
+
+metadata:
+  # Chars either side of an anchor label to hunt for a value.
+  default_anchor_window: 120
+  # Drop a field whose offsets do not slice back to its value.
+  drop_on_offset_mismatch: true
+  # Raise instead of dropping. Tests use this.
+  strict_offsets: false
+  max_candidates_per_field: 25
+  # Class scoped fields still run when the class came back unknown.
+  run_scoped_fields_when_unknown: true
+
+tagging:
+  model_dir: models/tagger
+  # Used when a tag has no tuned threshold of its own.
+  default_threshold: 0.5
+
+runtime:
+  workers: 1
+  # Timings vary run to run, so they are the one non reproducible field.
+  # Flip this to zero them and get byte identical output. Everything else
+  # is already byte stable either way.
+  deterministic_timings: false
+  log_level: INFO

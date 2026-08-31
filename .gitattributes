@@ -1,0 +1,7 @@
+# Pin line endings. This project guarantees byte reproducible output, so
+# source and config must not drift between machines.
+* text=auto eol=lf
+*.png binary
+*.pdf binary
+*.docx binary
+*.gz binary

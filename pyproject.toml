@@ -1,0 +1,25 @@
+[project]
+name = "baseline-docpipe"
+version = "0.1.0"
+description = "Deterministic baseline document processing pipeline"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "scikit-learn>=1.3",
+    "PyYAML>=6.0",
+    "PyMuPDF>=1.23",
+    "python-docx>=1.1",
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0",
+    "joblib>=1.3",
+]
+
+[project.scripts]
+baseline = "baseline.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

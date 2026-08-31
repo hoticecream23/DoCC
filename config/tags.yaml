@@ -1,0 +1,121 @@
+# Multi label tag vocabulary. A document has one class but many tags.
+#
+# Each tag may carry:
+#   patterns  - keyword/regex rules, same machinery as the class rule layer
+#   threshold - model probability needed to emit. Tuned by `baseline tune-thresholds`.
+# Derived rules read the metadata output and beat any keyword when they fire.
+version: 1
+
+tags:
+  - name: gst_applicable
+    description: Document involves Indian GST.
+    threshold: 0.5
+    patterns:
+      - {kind: regex, pattern: '\b(?:c?gst|sgst|igst|gstin)\b', specificity: 0.9}
+      - {kind: keywords, any: ["place of supply", "hsn", "sac code", "reverse charge"], specificity: 0.8}
+
+  - name: contains_pii
+    description: Carries personally identifying numbers.
+    threshold: 0.5
+    patterns:
+      - {kind: keywords, any: [aadhaar, "pan number", passport, "date of birth"], specificity: 0.7}
+
+  - name: payment_made
+    description: States that money has already changed hands.
+    threshold: 0.5
+    patterns:
+      - {kind: regex, pattern: '\bpaid\s+in\s+full\b', specificity: 0.95}
+      - {kind: keywords, any: ["amount paid", "payment received", "received with thanks", "transaction successful"], specificity: 0.85}
+
+  - name: payment_pending
+    description: Money is still owed.
+    threshold: 0.5
+    patterns:
+      - {kind: keywords, any: ["amount due", "balance due", "outstanding", "payable by", "overdue"], specificity: 0.85}
+
+  - name: has_line_items
+    description: Contains an itemised table.
+    threshold: 0.5
+    patterns:
+      - {kind: keywords, all: [qty], any: [rate, amount, description], specificity: 0.8}
+      - {kind: keywords, any: ["unit price", "line total", "item description"], specificity: 0.75}
+
+  - name: foreign_currency
+    description: Amounts in something other than INR.
+    threshold: 0.4
+    patterns:
+      - {kind: regex, pattern: '\b(?:USD|EUR|GBP|AED|SGD|JPY)\b', specificity: 0.9}
+      - {kind: regex, pattern: '[$€£]\s*[0-9]', specificity: 0.7}
+
+  - name: bank_details_present
+    description: Contains payable-to bank coordinates.
+    threshold: 0.5
+    patterns:
+      - {kind: keywords, any: [ifsc, "beneficiary name", swift, "branch name"], specificity: 0.85}
+      # bare "account number" also appears on PAN cards, so require bank context
+      - {kind: keywords, all: ["account"], any: [ifsc, bank, branch, neft, beneficiary], specificity: 0.8}
+
+  - name: signed
+    description: Bears a signature block.
+    threshold: 0.4
+    patterns:
+      - {kind: keywords, any: ["authorised signatory", "authorized signatory", "digitally signed", "for and on behalf of"], specificity: 0.85}
+
+  - name: card_data_present
+    description: Contains a payment card number.
+    threshold: 0.5
+    patterns:
+      - {kind: keywords, any: ["card number", "card no", "cvv"], specificity: 0.7}
+
+  - name: multi_page
+    description: More than one page.
+    threshold: 0.5
+    patterns: []
+
+  - name: low_ocr_quality
+    description: Text layer looks unreliable.
+    threshold: 0.5
+    patterns: []
+
+# Derived tags. Conditions read the metadata output or document level facts.
+# Metadata condition keys: field, present, validated, min_confidence, value_matches
+# Document condition keys:  doc (page_count | extraction_confidence | is_scanned
+#                                | char_count | method), gt, lt, gte, lte, eq
+derived:
+  - tag: gst_applicable
+    confidence: 0.98
+    all_of:
+      - {field: gstin, validated: true}
+
+  - tag: contains_pii
+    confidence: 0.99
+    any_of:
+      - {field: aadhaar, validated: true}
+      - {field: pan, validated: true}
+
+  - tag: bank_details_present
+    confidence: 0.97
+    any_of:
+      - {field: ifsc, validated: true}
+      - {field: account_number, present: true, min_confidence: 0.7}
+
+  - tag: payment_pending
+    confidence: 0.8
+    all_of:
+      - {field: due_date, present: true}
+
+  - tag: card_data_present
+    confidence: 0.99
+    all_of:
+      - {field: card_number, validated: true}
+
+  - tag: multi_page
+    confidence: 1.0
+    all_of:
+      - {doc: page_count, gt: 1}
+
+  - tag: low_ocr_quality
+    confidence: 0.9
+    all_of:
+      - {doc: extraction_confidence, lt: 0.6}
+      - {doc: char_count, gt: 0}
