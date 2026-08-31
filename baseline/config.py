@@ -37,6 +37,7 @@ class Config:
     classes: dict[str, Any] = field(default_factory=dict)
     fields: dict[str, Any] = field(default_factory=dict)
     tags: dict[str, Any] = field(default_factory=dict)
+    graph: dict[str, Any] = field(default_factory=dict)
 
     # -- convenience accessors, all pure lookups --
 
@@ -82,7 +83,13 @@ class Config:
             "classes": self.classes,
             "fields": self.fields,
             "tags": self.tags,
+            "graph": self.graph,
         }
+
+
+def _load_optional(path: Path) -> dict[str, Any]:
+    """Config that a deployment may simply not have yet."""
+    return _load(path) if path.exists() else {}
 
 
 def load_config(config_dir: str | Path | None = None) -> Config:
@@ -94,6 +101,7 @@ def load_config(config_dir: str | Path | None = None) -> Config:
         classes=_load(d / "classes.yaml"),
         fields=_load(d / "fields.yaml"),
         tags=_load(d / "tags.yaml"),
+        graph=_load_optional(d / "graph.yaml"),
     )
 
 

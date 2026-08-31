@@ -49,6 +49,12 @@ Compare two runs and see what got better or worse:
 python -m baseline compare --gold gold.jsonl --a baseline.jsonl --b new.jsonl
 ```
 
+Build a knowledge graph across the documents:
+
+```bash
+python -m baseline graph --input results.jsonl --report graph.md --dot graph.dot
+```
+
 ## What comes out
 
 One JSON object per document, one per line. Trimmed for readability:
@@ -126,6 +132,7 @@ touch any Python.
 | A field to extract | `config/fields.yaml` |
 | A tag | `config/tags.yaml` |
 | A setting or threshold | `config/pipeline.yaml` |
+| A graph entity or edge rule | `config/graph.yaml` |
 
 There is a test that proves this. It defines a brand new document type in a
 temporary config file and checks it works with no code changes.
@@ -205,6 +212,36 @@ Anything less means a validator is lying.
 `--fail-on-regression` to make it exit non zero, which makes it usable as a
 CI gate.
 
+## Knowledge graph
+
+`graph` is a separate pass over the results file. It never touches the
+document schema, so the record contract stays frozen.
+
+The rule for v0 is that **only fields whose format proves them may create or
+merge an entity**. Names are recorded but never used to join, because fuzzy
+name matching is how a graph quietly fills with wrong edges.
+
+That constraint buys a real join for free. Characters 3 to 12 of a GSTIN are
+the holder PAN, so a document carrying only a GSTIN and one carrying only a
+PAN resolve to the same organisation with no guessing.
+
+It answers:
+
+- which organisations appear, and in how many documents
+- which documents reference which, so invoice to receipt chains fall out
+- duplicate candidates, same reference and same total within a class
+- orphan references, a document citing something no document owns
+
+Where the evidence is ambiguous it declines. If two party names compete for
+one verified identifier and neither is clearly closer, no role edge is drawn.
+The organisation is still recorded as mentioned.
+
+`--dot` writes graphviz source:
+
+```bash
+dot -Tpng graph.dot -o graph.png
+```
+
 ## Other things worth knowing
 
 Runs are resumable. If the output file already has a document, it is
@@ -225,7 +262,7 @@ Logs are JSON on stderr, not print statements.
 python -m pytest tests -q
 ```
 
-187 tests. Every checksum is tested against known good and known bad values.
+210 tests. Every checksum is tested against known good and known bad values.
 Verhoeff and Luhn are also checked to catch every single digit error and
 every swapped pair of digits, which is what those algorithms promise. Offsets
 are tested across multi page documents and across documents where half the
@@ -247,6 +284,8 @@ baseline/
   tagging.py     tags and threshold tuning
   pipeline.py    ties it together, batch runs
   profile.py     corpus measurement
+  evaluate.py    scoring, imports nothing from the pipeline
+  graph.py       knowledge graph over a results file
   cli.py         commands
 config/          all the vocabulary and settings
 tests/

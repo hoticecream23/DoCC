@@ -11,5 +11,8 @@ profile.md
 report.md
 comparison.md
 scores.json
+graph.json
+graph.dot
+graph.md
 before.jsonl
 gold.jsonl

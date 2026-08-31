@@ -1,6 +1,6 @@
 # Project state
 
-Last updated: 2026-09-01 (eval harness added)
+Last updated: 2026-09-01 (eval harness, knowledge graph v0)
 
 ## What this is
 
@@ -12,7 +12,7 @@ interchangeably.
 ## Status
 
 All four components are built, wired, and tested. Evaluation harness
-is in. 187 tests pass.
+is in, plus a knowledge graph v0 spike. 210 tests pass.
 
 | Component | State | Notes |
 | --- | --- | --- |
@@ -22,6 +22,7 @@ is in. 187 tests pass.
 | Tagging | Done | Keyword, model, and derived rules all firing. Threshold tuning verified. |
 | CLI | Done | run, train, tune-thresholds, profile, eval, compare all exercised. |
 | Eval harness | Done | Schema driven, does not import the pipeline. |
+| Knowledge graph | v0 spike | Verified identifiers only. Deliberately narrow. |
 
 ## Verified behaviour
 
@@ -132,6 +133,66 @@ templates I wrote. It measures that the plumbing works, not that the system
 is accurate. One known miss is left unfixed on purpose: `buyer_name` on the
 purchase order returns "Globex Corporation Warehouse" where gold says
 "Globex Corporation". Chasing it would be tuning to a single fake document.
+
+## Knowledge graph v0
+
+`baseline graph`, in `graph.py`, config in `config/graph.yaml`. A separate
+pass over the results file. It never touches the document schema, so the
+record contract stays frozen and the graph can be rebuilt at any time.
+
+The single rule that defines v0: **only fields whose format proves them may
+create or merge an entity.** Names are recorded as attributes but never used
+to join. Fuzzy name matching is where a graph fills with plausible looking
+wrong edges, and once they are in nobody can tell which ones to trust.
+
+That constraint pays for itself. Characters 3 to 12 of a GSTIN are the holder
+PAN, so a document carrying only a GSTIN and one carrying only a PAN resolve
+to the same organisation with zero guessing. Both are verified, so the join
+is exact.
+
+Nodes: Document, Organization (keyed on PAN), Account (keyed on IFSC plus
+number, because the same number at two banks is two accounts).
+Edges: mentions_org, issued_by, billed_to, pays_to, held_by, references,
+duplicate_of.
+
+Queries it answers: organisation exposure, document reference chains,
+duplicate candidates, orphan references.
+
+### Three wrong edge classes the spike caught
+
+All three were the graph confidently asserting something false, which is
+exactly the failure mode that makes graphs untrustworthy.
+
+1. **One identity collected every role.** A document naming a vendor and a
+   buyer but carrying one verified GSTIN attached both names to that one
+   organisation, so the seller node held the buyer name. Fixed with a greedy
+   matching where an identity holds at most one role per document.
+2. **A GSTIN and a PAN for the same company counted as two identities**, which
+   let one party claim two roles anyway. Identities are now collapsed to their
+   canonical PAN before matching.
+3. **A receipt quoting an invoice number was called a duplicate of it.**
+   Duplicates are now scoped within a class, which correctly splits the two
+   invoice variants and the two receipt variants into separate groups.
+
+### Where it abstains
+
+Character proximity is weak evidence for who owns an identifier. On the
+purchase order, "Ship To" sits 11 characters nearer the seller GSTIN than
+"Vendor Name" does, purely by layout. So a winner must beat the runner up by
+`role_min_margin` characters, currently 60. The purchase order draws no role
+edge at all. The organisation is still recorded as mentioned, we simply do
+not claim to know its role.
+
+That is the right trade for v0. A missing edge is recoverable, a wrong one
+poisons every query built on it.
+
+### What it is not
+
+Precision oriented and therefore thin. Organisations without a verified tax
+ID do not exist in this graph at all: Globex appears in five documents and
+has no node, because nothing in the corpus proves its identity. Fixing that
+needs either better extraction or name resolution, and name resolution is
+explicitly out of scope for v0.
 
 ## Schema decisions
 
@@ -271,6 +332,10 @@ Ordering is stable because input paths are sorted and the worker pool uses
    accuracy is what a layout model would be judged on.
 9. **No table or line item extraction at all.** Completely absent, and the
    largest functional gap in the system.
+10. **The graph only sees organisations that carry a verified tax ID.**
+    Everyone else is invisible to it. That is deliberate for v0, but it means
+    graph coverage is capped by metadata quality, which is capped by having
+    no real data.
 
 ## Config reference
 

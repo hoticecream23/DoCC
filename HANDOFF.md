@@ -3,9 +3,9 @@
 Read `PROJECT_STATE.md` for what exists and why. This file is only what to do
 next.
 
-Baseline is built, OCR is verified, and the evaluation harness is in. The
-blocker now is that there is no real data, so every score is from 10
-synthetic documents.
+Baseline is built, OCR is verified, the evaluation harness is in, and the
+knowledge graph v0 spike is done. The blocker now is that there is no real
+data, so every score is from 10 synthetic documents.
 
 ## Do these in order
 
@@ -56,21 +56,28 @@ Gate every change with:
 python -m baseline compare --gold gold.jsonl --a baseline.jsonl --b new.jsonl --fail-on-regression
 ```
 
-## Knowledge graph
+## Knowledge graph, where v0 leaves off
 
-Build it as a separate pass over the JSONL, not inside the record schema.
-The document contract stays frozen.
+v0 is built and works. `baseline graph`. See PROJECT_STATE for the design and
+the three wrong edge classes it caught.
 
-- Nodes: Document, Organization, Account, TaxID
-- Edges: issued_by, billed_to, references, settles
-- Entity resolution on validated IDs first, fuzzy name match second
-- Payoff is cross document: invoice to PO to receipt chains, duplicate
-  invoice detection, vendor exposure, orphan payments
+The ceiling is coverage, not correctness. Only organisations carrying a
+verified tax ID exist in the graph. Globex appears in five documents and has
+no node because nothing proves its identity.
 
-Graph quality is downstream of extraction quality, so a graph built on
-today's anchor fields would be a graph of noise. But a v0 over only the
-validated checksummed IDs would be high precision right now and cheap. Worth
-doing early to prove the value.
+v1, once there is real data and better extraction:
+
+- Name based entity resolution, but only as a **second pass that can never
+  merge two nodes already distinguished by verified IDs**. Blocking on
+  normalised name, then a similarity threshold tuned on real pairs.
+- Confidence on every edge, so a query can ask for only the safe subgraph.
+- Line items as nodes, once table extraction exists. That is what makes
+  spend analysis and duplicate detection actually good.
+- Temporal edges. An invoice dated after the receipt that settles it is a
+  finding, not a fact.
+
+Do not soften the v0 rule to raise coverage. Add a confidence field and keep
+the proven edges distinguishable from the inferred ones.
 
 ## Do not break these
 

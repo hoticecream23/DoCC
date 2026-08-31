@@ -1,0 +1,45 @@
+# Knowledge graph v0. Built as a separate pass over the JSONL, never inside
+# the document record. The document schema stays frozen.
+#
+# The rule for v0: only fields whose format proves them may create or merge
+# an entity. Names are recorded as attributes but never used to join, because
+# fuzzy name matching is where graphs quietly fill up with wrong edges.
+version: 1
+
+identity:
+  organization:
+    # Both are structurally verified, so a match is a real match.
+    keys: [gstin, pan]
+    # Characters 3 to 12 of a GSTIN are the holder PAN. That means a document
+    # carrying only a GSTIN and one carrying only a PAN resolve to the same
+    # organisation with no guessing involved.
+    gstin_embeds_pan: true
+    canonical_key: pan
+  account:
+    keys: [account_number]
+    qualifier: ifsc          # same number at a different bank is a different account
+
+# Role attribution. A document may name several parties, so the role is
+# assigned to the nearest verified identity by character distance.
+roles:
+  issued_by: vendor_name
+  billed_to: buyer_name
+# Give up past this many characters rather than guess.
+role_max_distance: 400
+# The winning party must be this many characters closer than the runner up.
+# On a purchase order "Ship To" can sit nearer the seller GSTIN than
+# "Vendor Name" does, so a narrow win is not evidence of anything.
+role_min_margin: 60
+
+# Document to document links.
+references:
+  field: invoice_number
+  # Classes that own a number rather than merely quoting one.
+  owner_classes: [invoice, purchase_order]
+  edge: references
+
+# Two documents claiming the same number and the same total are suspect.
+duplicates:
+  match_on: [invoice_number, total_amount]
+  # A receipt quoting an invoice number is a reference, not a copy of it.
+  same_class: true

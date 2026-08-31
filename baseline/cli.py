@@ -6,6 +6,7 @@
   baseline profile         --input DIR --output profile.md
   baseline eval            --gold FILE --pred FILE [--output report.md]
   baseline compare         --gold FILE --a FILE --b FILE [--output cmp.md]
+  baseline graph           --input results.jsonl --output graph.json
 """
 
 from __future__ import annotations
@@ -18,9 +19,10 @@ from pathlib import Path
 from . import classify as classify_mod
 from . import tagging as tagging_mod
 from .config import load_config_cached, save_yaml
-from .extract import extract
-from .logging_setup import get_logger, setup_logging
 from .evaluate import compare, evaluate, render_comparison, render_report
+from .extract import extract
+from .graph import build as build_graph
+from .logging_setup import get_logger, setup_logging
 from .pipeline import run_batch
 from .profile import run_profile
 from .schema import build_canonical_text
@@ -244,6 +246,27 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 2 if (cmp["regressions"] and args.fail_on_regression) else 0
 
 
+def cmd_graph(args: argparse.Namespace) -> int:
+    cfg = load_config_cached(args.config)
+    if not cfg.graph:
+        log.error("no graph.yaml in the config directory")
+        return 1
+    res = build_graph(
+        args.input, args.output, cfg.graph,
+        dot_path=args.dot, report_path=args.report,
+    )
+    st = res["stats"]
+    log.info(
+        "graph summary",
+        extra={"documents": st["documents"], "organizations": st["organizations"],
+               "accounts": st["accounts"], "edges": st["edges"],
+               "chains": len(res["chains"]),
+               "duplicate_groups": len(st["duplicate_groups"]),
+               "orphans": len(res["orphans"])},
+    )
+    return 0
+
+
 def cmd_profile(args: argparse.Namespace) -> int:
     stats = run_profile(args.input, args.output, args.config)
     log.info("profile complete", extra={"documents": stats["n_documents"]})
@@ -301,6 +324,13 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--fail-on-regression", action="store_true",
                     help="exit 2 if anything got worse, for CI")
     cp.set_defaults(func=cmd_compare)
+
+    gr = sub.add_parser("graph", help="build a knowledge graph over a results file")
+    gr.add_argument("--input", required=True, help="results JSONL")
+    gr.add_argument("--output", default="graph.json")
+    gr.add_argument("--dot", default=None, help="also write graphviz source")
+    gr.add_argument("--report", default=None, help="also write a markdown summary")
+    gr.set_defaults(func=cmd_graph)
 
     return p
 
