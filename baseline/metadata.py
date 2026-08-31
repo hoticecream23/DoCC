@@ -178,6 +178,10 @@ def invoice_number_check(value: str, args: dict | None = None) -> bool:
     return 3 <= len(v) <= 30 and any(c.isdigit() for c in v)
 
 
+# Validators whose format alone proves the value. Everything else is a
+# sanity check: it can pass and still be wrong, so it reports regex_format.
+CHECKSUM_VALIDATORS = frozenset({"pan", "aadhaar", "gstin", "ifsc", "luhn"})
+
 VALIDATORS: dict[str, Callable[..., bool]] = {
     "pan": pan_check,
     "aadhaar": aadhaar_check,
@@ -387,6 +391,7 @@ def _pattern_candidates(full: str, fdef: dict, limit: int) -> list[Candidate]:
         return []
     validator = spec.get("validator")
     args = spec.get("validator_args") or {}
+    hard = validator in CHECKSUM_VALIDATORS
     c_ok = float(spec.get("confidence_validated", 1.0))
     c_no = float(spec.get("confidence_unvalidated", 0.5))
     # IDs are uppercase by convention, so patterns are case sensitive by default.
@@ -403,7 +408,11 @@ def _pattern_candidates(full: str, fdef: dict, limit: int) -> list[Candidate]:
                 end=e,
                 confidence=c_ok if ok else c_no,
                 # Checksum backed and format only are different things.
-                method=MetadataMethod.REGEX_CHECKSUM if ok else MetadataMethod.REGEX_FORMAT,
+                method=(
+                    MetadataMethod.REGEX_CHECKSUM
+                    if ok and hard
+                    else MetadataMethod.REGEX_FORMAT
+                ),
                 validated=ok,
             )
         )

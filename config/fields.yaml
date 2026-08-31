@@ -96,10 +96,14 @@ fields:
         - {text: "invoice no", specificity: 1.0}
         - {text: "invoice number", specificity: 1.0}
         - {text: "invoice #", specificity: 0.95}
+        - {text: "po no", specificity: 0.95}
+        - {text: "po number", specificity: 0.95}
         - {text: "bill no", specificity: 0.85}
         - {text: "inv no", specificity: 0.8}
     pattern:
-      regex: '\b(?:INV|BILL)[/-]?([A-Z0-9/-]{3,20})\b'
+      # Capture the whole reference including its prefix. Grouping only the
+      # tail turned INV-2024-0042 into 2024-0042.
+      regex: '\b((?:INV|BILL|PO)[/-]?[A-Z0-9/-]{3,20})\b'
       validator: invoice_number
       confidence_validated: 0.7
       confidence_unvalidated: 0.4
@@ -154,6 +158,8 @@ fields:
         - {text: "amount payable", specificity: 0.95}
         - {text: "net payable", specificity: 0.95}
         - {text: "total amount", specificity: 0.9}
+        - {text: "amount paid", specificity: 0.9}    # receipts state it this way
+        - {text: "net pay", specificity: 0.9}        # salary slips do
         - {text: "net amount", specificity: 0.85}
         - {text: "total", specificity: 0.6}
 

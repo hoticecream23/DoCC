@@ -1,6 +1,6 @@
 # Project state
 
-Last updated: 2026-08-31 (OCR verified)
+Last updated: 2026-09-01 (eval harness added)
 
 ## What this is
 
@@ -11,7 +11,8 @@ interchangeably.
 
 ## Status
 
-All four components are built, wired, and tested. 161 tests pass.
+All four components are built, wired, and tested. Evaluation harness
+is in. 187 tests pass.
 
 | Component | State | Notes |
 | --- | --- | --- |
@@ -19,7 +20,8 @@ All four components are built, wired, and tested. 161 tests pass.
 | Classification | Done | Rule layer plus calibrated TF-IDF SVM, both verified. |
 | Metadata | Done | All three strategies implemented. Positional has no templates registered yet. |
 | Tagging | Done | Keyword, model, and derived rules all firing. Threshold tuning verified. |
-| CLI | Done | run, train, tune-thresholds, profile all exercised. |
+| CLI | Done | run, train, tune-thresholds, profile, eval, compare all exercised. |
+| Eval harness | Done | Schema driven, does not import the pipeline. |
 
 ## Verified behaviour
 
@@ -78,6 +80,58 @@ path in the extractor.
 The profile command now computes the OCR quality proxy properly: mean page
 confidence per route, and for documents carrying both routes a like for like
 confidence drop. Currently 0.083 on the synthetic corpus.
+
+## Evaluation harness
+
+`baseline eval` and `baseline compare`, in `evaluate.py`. It imports nothing
+from the pipeline. It reads JSONL and the schema, so the baseline and any
+replacement are scored by identical code. That was the whole point of fixing
+the schema first.
+
+What it measures:
+
+- Extraction: CER and WER against reference text, whitespace normalised
+  because layout is not a recognition error
+- Classification: macro F1, plus coverage at 1, 5 and 10 percent error, which
+  is the metric that matters for a system allowed to abstain
+- Metadata: per field precision and recall, scored separately by value (was
+  the answer right) and by span (did it point at the right place)
+- Tagging: per tag precision and recall, micro and macro
+
+`validated_precision` is the alarm. Any field marked validated claims its
+format proved it, so that number must be exactly 1.0. It currently is.
+
+`compare` diffs two runs against the same gold and lists regressions.
+`--fail-on-regression` exits non zero so it can gate CI.
+
+Gold for the synthetic corpus lives in `tests/make_gold.py`, hand written
+from the templates. It records what a careful annotator would mark, not what
+the baseline produces. Gold carries values but no offsets, so span scoring
+stays dark until there is real annotation.
+
+### Bugs the harness found immediately
+
+Worth recording, because these are exactly what an unmeasured pipeline hides.
+
+1. **Soft validators were claiming `regex_checksum`.** A passing length check
+   reported the same method as a verified GSTIN, so nothing downstream could
+   tell a proof from a guess. Now only `pan`, `aadhaar`, `gstin`, `ifsc` and
+   `luhn` report `regex_checksum`. Everything else reports `regex_format`
+   even when it passes. This moved `validated_precision` from 0.895 to 1.0.
+2. **The invoice number regex dropped its own prefix.** It grouped only the
+   tail, so `INV-2024-0042` came out as `2024-0042`. Field F1 was 0.444.
+3. **`total_amount` had no label for "amount paid" or "net pay"**, so it
+   missed on every receipt and salary slip. Recall was 0.5.
+4. **`invoice_number` had no "PO No" label**, so purchase orders returned
+   nothing.
+
+Metadata micro F1 went 0.884 to 0.970 after fixing these.
+
+**Read that number with suspicion.** It is 10 synthetic documents whose
+templates I wrote. It measures that the plumbing works, not that the system
+is accurate. One known miss is left unfixed on purpose: `buyer_name` on the
+purchase order returns "Globex Corporation Warehouse" where gold says
+"Globex Corporation". Chasing it would be tuning to a single fake document.
 
 ## Schema decisions
 
@@ -195,21 +249,28 @@ Ordering is stable because input paths are sorted and the worker pool uses
 
 ## Known gaps
 
-1. **Models are trained on synthetic data only.** 42 generated samples across
+1. **There is still no real data.** Every number in this file is from 10
+   synthetic documents. The harness is validated, the accuracy is not.
+2. **Models are trained on synthetic data only.** 42 generated samples across
    7 classes. Calibrated probabilities are conservative as a result, which is
    why a real bank statement scored 0.28 and fell to `unknown`.
    `model_min_confidence` needs retuning on real data. This is now the
    biggest open risk.
-2. **No positional templates registered.** `templates: []`. The strategy is
+3. **No positional templates registered.** `templates: []`. The strategy is
    implemented and reads from bboxes, it just has nothing to match yet.
-3. **DOCX has no page boundaries.** Treated as one canonical page, since
+4. **DOCX has no page boundaries.** Treated as one canonical page, since
    pagination needs a renderer.
-4. **Anchor confidences cluster around 0.95.** Fine for ranking, not yet
+5. **Anchor confidences cluster around 0.95.** Fine for ranking, not yet
    calibrated against real accuracy.
-5. **OCR is only verified on clean synthetic scans.** Real scans bring skew,
+6. **OCR is only verified on clean synthetic scans.** Real scans bring skew,
    noise, and multi column layouts. Expect the 0.99 similarity to fall.
-6. **Only the `eng` language pack is installed.** Add more via the Tesseract
+7. **Only the `eng` language pack is installed.** Add more via the Tesseract
    installer if the corpus needs them, then set `extraction.ocr.lang`.
+8. **Span level scoring has never run.** Gold has no character offsets
+   because synthetic gold cannot honestly provide them. This matters: span
+   accuracy is what a layout model would be judged on.
+9. **No table or line item extraction at all.** Completely absent, and the
+   largest functional gap in the system.
 
 ## Config reference
 

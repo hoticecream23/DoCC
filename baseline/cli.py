@@ -4,6 +4,8 @@
   baseline train           --annotations FILE --output-model DIR
   baseline tune-thresholds --annotations FILE --predictions FILE
   baseline profile         --input DIR --output profile.md
+  baseline eval            --gold FILE --pred FILE [--output report.md]
+  baseline compare         --gold FILE --a FILE --b FILE [--output cmp.md]
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from . import tagging as tagging_mod
 from .config import load_config_cached, save_yaml
 from .extract import extract
 from .logging_setup import get_logger, setup_logging
+from .evaluate import compare, evaluate, render_comparison, render_report
 from .pipeline import run_batch
 from .profile import run_profile
 from .schema import build_canonical_text
@@ -188,6 +191,59 @@ def cmd_tune_thresholds(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval(args: argparse.Namespace) -> int:
+    cfg = load_config_cached(args.config)
+    unknown = str(cfg.classify_opts().get("unknown_label", "unknown"))
+    res = evaluate(args.gold, args.pred, unknown)
+    if not res["matched"]:
+        log.error("nothing matched, check that doc_id or path keys line up")
+        return 1
+
+    report = render_report(res, str(args.gold), str(args.pred))
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(report, encoding="utf-8")
+        log.info("report written", extra={"output": str(out)})
+    if args.json:
+        Path(args.json).write_text(
+            json.dumps(res, indent=2, sort_keys=True), encoding="utf-8"
+        )
+
+    log.info(
+        "scores",
+        extra={
+            "matched": res["matched"],
+            "classification_macro_f1": res["classification"]["macro_f1"],
+            "classification_coverage": res["classification"]["coverage"],
+            "metadata_micro_f1": res["metadata"]["value"]["micro"]["f1"],
+            "tagging_micro_f1": res["tagging"]["micro"]["f1"],
+            "validated_precision": res["metadata"]["validated_precision"],
+        },
+    )
+    return 0
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    cfg = load_config_cached(args.config)
+    unknown = str(cfg.classify_opts().get("unknown_label", "unknown"))
+    cmp = compare(args.gold, args.a, args.b, unknown)
+    report = render_comparison(cmp, str(args.a), str(args.b))
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(report, encoding="utf-8")
+        log.info("comparison written", extra={"output": str(out)})
+    for k, v in cmp["headline"].items():
+        log.info("delta", extra={"metric": k, "a": v["a"], "b": v["b"], "delta": v["delta"]})
+    if cmp["regressions"]:
+        log.warning("regressions found", extra={"count": len(cmp["regressions"])})
+        for r in cmp["regressions"]:
+            log.warning("regression", extra={"detail": r})
+    # Non zero exit on regression so this can gate CI.
+    return 2 if (cmp["regressions"] and args.fail_on_regression) else 0
+
+
 def cmd_profile(args: argparse.Namespace) -> int:
     stats = run_profile(args.input, args.output, args.config)
     log.info("profile complete", extra={"documents": stats["n_documents"]})
@@ -229,6 +285,22 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--input", required=True)
     pr.add_argument("--output", default="profile.md")
     pr.set_defaults(func=cmd_profile)
+
+    ev = sub.add_parser("eval", help="score predictions against gold")
+    ev.add_argument("--gold", required=True)
+    ev.add_argument("--pred", required=True)
+    ev.add_argument("--output", default="report.md")
+    ev.add_argument("--json", default=None, help="also dump raw scores as JSON")
+    ev.set_defaults(func=cmd_eval)
+
+    cp = sub.add_parser("compare", help="score two prediction files and diff them")
+    cp.add_argument("--gold", required=True)
+    cp.add_argument("--a", required=True, help="baseline run")
+    cp.add_argument("--b", required=True, help="the challenger")
+    cp.add_argument("--output", default="comparison.md")
+    cp.add_argument("--fail-on-regression", action="store_true",
+                    help="exit 2 if anything got worse, for CI")
+    cp.set_defaults(func=cmd_compare)
 
     return p
 

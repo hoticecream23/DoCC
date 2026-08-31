@@ -37,6 +37,18 @@ Process everything into JSONL:
 python -m baseline run --input corpus --output results.jsonl --workers 4
 ```
 
+Score a run against ground truth:
+
+```bash
+python -m baseline eval --gold gold.jsonl --pred results.jsonl --output report.md
+```
+
+Compare two runs and see what got better or worse:
+
+```bash
+python -m baseline compare --gold gold.jsonl --a baseline.jsonl --b new.jsonl
+```
+
 ## What comes out
 
 One JSON object per document, one per line. Trimmed for readability:
@@ -161,6 +173,38 @@ python -m baseline tune-thresholds --annotations annotations.jsonl --predictions
 
 Add `--dry-run` to see what it would change first.
 
+## Scoring
+
+`eval` reads any JSONL that matches the schema. It does not import the
+pipeline and does not care how a record was made, so the baseline and
+anything you build later are scored by identical code.
+
+Gold files are JSONL with a path or doc_id, a label, tags, and the fields
+that should have been found:
+
+```json
+{"path": "docs/inv1.pdf", "label": "invoice",
+ "tags": ["gst_applicable"],
+ "metadata": [{"field": "gstin", "normalized_value": "27AAPFU0939F1ZV"}]}
+```
+
+Metadata is scored two ways. Value scoring asks whether the answer was
+right. Span scoring asks whether it pointed at the right place in the text.
+Span scoring needs character offsets in the gold file and is skipped when
+they are absent.
+
+Classification reports coverage at a fixed error rate, not just accuracy.
+A system allowed to say `unknown` should be judged on how much it can answer
+while staying under an error budget.
+
+There is also a `validated` precision figure. Any field the pipeline marked
+validated claims its format proved it, so that number should be exactly 1.0.
+Anything less means a validator is lying.
+
+`compare` scores two files against the same gold and lists regressions. Pass
+`--fail-on-regression` to make it exit non zero, which makes it usable as a
+CI gate.
+
 ## Other things worth knowing
 
 Runs are resumable. If the output file already has a document, it is
@@ -181,7 +225,7 @@ Logs are JSON on stderr, not print statements.
 python -m pytest tests -q
 ```
 
-161 tests. Every checksum is tested against known good and known bad values.
+187 tests. Every checksum is tested against known good and known bad values.
 Verhoeff and Luhn are also checked to catch every single digit error and
 every swapped pair of digits, which is what those algorithms promise. Offsets
 are tested across multi page documents and across documents where half the

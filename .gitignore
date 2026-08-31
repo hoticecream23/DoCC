@@ -8,3 +8,8 @@ results.jsonl
 results.jsonl.bboxes/
 annotations.jsonl
 profile.md
+report.md
+comparison.md
+scores.json
+before.jsonl
+gold.jsonl
