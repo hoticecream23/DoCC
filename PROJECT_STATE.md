@@ -20,7 +20,7 @@ is in, plus a knowledge graph v0 spike. 210 tests pass.
 | Classification | Done | Rule layer plus calibrated TF-IDF SVM, both verified. |
 | Metadata | Done | All three strategies implemented. Positional has no templates registered yet. |
 | Tagging | Done | Keyword, model, and derived rules all firing. Threshold tuning verified. |
-| CLI | Done | run, train, tune-thresholds, profile, eval, compare all exercised. |
+| CLI | Done | run, train, tune-thresholds, profile, eval, compare, graph all exercised. |
 | Eval harness | Done | Schema driven, does not import the pipeline. |
 | Knowledge graph | v0 spike | Verified identifiers only. Deliberately narrow. |
 
@@ -34,6 +34,10 @@ is in, plus a knowledge graph v0 spike. 210 tests pass.
 - Missing Tesseract degrades to a recorded error, not a crash
 - A brand new document class defined only in YAML classifies with no code change
 - OCR output is reproducible, so byte determinism holds with OCR in the loop
+- Baseline scored against gold: metadata micro F1 0.970, classification macro
+  F1 1.0 at 0.9 coverage, tagging micro F1 1.0, validated precision 1.0
+- Graph builds 2 organisations and 2 accounts from verified identifiers only,
+  and finds the receipt to invoice chains and both duplicate pairs
 
 ## The canonical text contract
 
@@ -340,6 +344,27 @@ Ordering is stable because input paths are sorted and the worker pool uses
 ## Config reference
 
 `pipeline.yaml` holds engine settings only, no domain vocabulary.
-`classes.yaml`, `fields.yaml` and `tags.yaml` hold all the vocabulary. No
-class, field, tag or pattern is hardcoded in any module, and
-`test_a_new_document_class_needs_only_a_yaml_edit` enforces that.
+`classes.yaml`, `fields.yaml`, `tags.yaml` and `graph.yaml` hold all the
+vocabulary and rules. No class, field, tag or pattern is hardcoded in any
+module, and `test_a_new_document_class_needs_only_a_yaml_edit` enforces that.
+
+| File | Holds |
+| --- | --- |
+| `pipeline.yaml` | thresholds, OCR engine and binary, worker settings |
+| `classes.yaml` | document taxonomy and classification rule patterns |
+| `fields.yaml` | field definitions, patterns, anchors, validators, normalisers |
+| `tags.yaml` | tag vocabulary, patterns, thresholds, derived rules |
+| `graph.yaml` | which fields may key an entity, role and duplicate rules |
+
+## Repository state
+
+Four commits on `main`. Working tree clean. Generated artefacts are gitignored
+and rebuilt by:
+
+```
+python tests/make_corpus.py corpus
+cd tests && python make_annotations.py ../annotations.jsonl && python make_gold.py ../gold.jsonl && cd ..
+python -m baseline run --input corpus --output results.jsonl --workers 4
+python -m baseline eval --gold gold.jsonl --pred results.jsonl
+python -m baseline graph --input results.jsonl --report graph.md
+```
