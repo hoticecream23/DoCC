@@ -14,6 +14,7 @@ from typing import Any
 from .config import Config
 from .logging_setup import get_logger
 from .ocr import OCRPage, get_engine, ocr_confidence
+from .textquality import prefer, score_text
 from .schema import ExtractionMethod, WordBox, page_spans
 
 log = get_logger(__name__)
@@ -45,7 +46,9 @@ class ExtractionResult:
             return ExtractionMethod.NONE
         if kinds == {ExtractionMethod.NATIVE}:
             return ExtractionMethod.NATIVE
-        if kinds == {ExtractionMethod.OCR}:
+        # A rescued page is an OCR page whose provenance we kept. At document
+        # level it aggregates as OCR, and page_methods keeps the detail.
+        if kinds <= {ExtractionMethod.OCR, ExtractionMethod.OCR_RESCUED}:
             return ExtractionMethod.OCR
         return ExtractionMethod.HYBRID
 
@@ -120,6 +123,7 @@ def _extract_pdf(path: Path, cfg: Config, res: ExtractionResult) -> None:
     ocr_opts = dict(opts.get("ocr", {}))
     capture = bool(opts.get("capture_bboxes", True))
     native_conf = float(opts.get("native_confidence", 0.98))
+    gate = dict(opts.get("quality_gate", {}))
 
     with fitz.open(path) as doc:
         for pno in range(doc.page_count):
@@ -129,6 +133,18 @@ def _extract_pdf(path: Path, cfg: Config, res: ExtractionResult) -> None:
             probe = native.strip() if opts.get("strip_before_count", True) else native
 
             if len(probe) >= threshold:
+                # The text layer may itself be somebody else's bad OCR. When it
+                # scores as substituted, re-read the page properly and keep
+                # whichever reading is cleaner. See textquality.py.
+                rescued = _rescue_page(page, native, ocr_opts, gate, pno, capture)
+                if rescued is not None:
+                    text, words, conf = rescued
+                    res.pages.append(text)
+                    res.page_methods.append(ExtractionMethod.OCR_RESCUED)
+                    res.page_confidences.append(conf)
+                    res.words.extend(words)
+                    continue
+
                 res.pages.append(native)
                 res.page_methods.append(ExtractionMethod.NATIVE)
                 res.page_confidences.append(native_conf)
@@ -183,6 +199,67 @@ def _extract_pdf(path: Path, cfg: Config, res: ExtractionResult) -> None:
                     ExtractionMethod.NATIVE if native.strip() else ExtractionMethod.NONE
                 )
                 res.page_confidences.append(native_conf if native.strip() else 0.0)
+
+
+def _rescue_page(page, native, ocr_opts, gate, pno, capture):
+    """Re-read a page whose text layer looks substituted. None means keep native.
+
+    A PDF can carry a text layer that was itself produced by a scanner's OCR,
+    and PyMuPDF hands it over as native text, so nothing downstream learns it
+    is wrong. This scores it and, when it looks substituted, renders the page
+    and reads it properly.
+
+    Returning None is the normal outcome and covers three cases: the gate is
+    off, the text is fine, or OCR came out no cleaner. That last case is the
+    important one. The gate keeps whichever reading scores lower, so it cannot
+    make a page worse by its own metric.
+    """
+    if not gate.get("enabled", False):
+        return None
+    quality = score_text(native)
+    if quality.tokens < int(gate.get("min_tokens", 40)):
+        return None
+    if not quality.is_suspect(float(gate.get("threshold", 0.02))):
+        return None
+
+    try:
+        from PIL import Image
+
+        pix = page.get_pixmap(dpi=int(ocr_opts.get("dpi", 300)))
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+        ocr = _ocr_image(img, ocr_opts)
+    except Exception as exc:
+        # A failed rescue is not a failed page. Keep the native text and say so.
+        log.warning("quality gate could not re-read page",
+                    extra={"page": pno, "error": str(exc)})
+        return None
+
+    text = _sanitize_fixed_width(ocr.text)
+    chosen, used_ocr = prefer(native, text)
+    if not used_ocr:
+        return None
+
+    log.info("page rescued by the quality gate",
+             extra={"page": pno,
+                    "native_score": quality.score,
+                    "ocr_score": score_text(chosen).score})
+    words = []
+    if capture:
+        for w in ocr.words:
+            words.append(
+                WordBox(
+                    page=pno,
+                    text=w.text,
+                    x0=w.x0,
+                    y0=w.y0,
+                    x1=w.x1,
+                    y1=w.y1,
+                    conf=w.conf,
+                    char_start=w.char_start,
+                    char_end=w.char_end,
+                )
+            )
+    return chosen, words, ocr_confidence(ocr.words)
 
 
 def _extract_docx(path: Path, cfg: Config, res: ExtractionResult) -> None:

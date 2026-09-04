@@ -26,11 +26,11 @@ extraction:
   # are clean, score 0.000 to 0.013. 0.02 sits in the gap with no overlap on
   # either side. See baseline/textquality.py for what the score counts.
   #
-  # enabled: false until the record contract gains somewhere to report the
-  # rescue. Turning it on changes extraction output without changing the
-  # schema, which would make two runs incomparable and unexplainable.
+  # A rescued page is recorded as ExtractionMethod.ocr_rescued in page_methods,
+  # which is why this can be on: a run that rescues pages says so in every
+  # record it writes, and schema_version moved to 1.1.0 to make that explicit.
   quality_gate:
-    enabled: false
+    enabled: true
     threshold: 0.02
     min_tokens: 40
   native_confidence: 0.98

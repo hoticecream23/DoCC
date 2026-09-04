@@ -118,3 +118,34 @@ def test_the_module_holds_no_vocabulary():
     body = "".join(code[::2]).lower()
     for word in ("invoice", "receipt", "salary", "gstin", "aadhaar", "court"):
         assert word not in body, f"{word} must not appear in the code"
+
+
+# ------------------------------------------------- the gate inside extraction
+
+def test_a_clean_native_pdf_is_not_rescued(corpus, cfg):
+    """The gate must be invisible on documents whose text layer is fine."""
+    from baseline.extract import extract
+    from baseline.schema import ExtractionMethod
+
+    res = extract(corpus / "invoice_native.pdf", cfg)
+    assert ExtractionMethod.OCR_RESCUED not in res.page_methods
+    assert res.method == ExtractionMethod.NATIVE
+
+
+def test_a_rescued_page_is_recorded_as_such_not_as_plain_ocr(cfg):
+    """A reader must be able to tell 'never had text' from 'text discarded'."""
+    from baseline.schema import ExtractionMethod
+
+    assert ExtractionMethod.OCR_RESCUED.value == "ocr_rescued"
+    assert ExtractionMethod.OCR_RESCUED is not ExtractionMethod.OCR
+
+
+def test_the_gate_ignores_pages_with_too_little_text_to_judge(cfg):
+    """A rate over a handful of tokens is noise, not evidence."""
+    gate = cfg.extract_opts().get("quality_gate", {})
+    assert int(gate.get("min_tokens", 0)) >= 20
+
+
+def test_the_configured_threshold_is_the_measured_one(cfg):
+    gate = cfg.extract_opts().get("quality_gate", {})
+    assert float(gate["threshold"]) == 0.02

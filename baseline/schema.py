@@ -13,7 +13,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 # The one and only page joiner. Every char offset in the record is measured
 # against pages joined by this. Changing it invalidates every stored offset.
@@ -33,6 +33,11 @@ class ExtractionMethod(str, Enum):
     OCR = "ocr"
     HYBRID = "hybrid"
     NONE = "none"
+    # The page had a text layer, that layer failed the quality gate, and OCR
+    # of the rendered page scored cleaner. Distinct from OCR so a reader can
+    # tell a page that never had text from one whose text we chose to discard.
+    # Added in schema 1.1.0.
+    OCR_RESCUED = "ocr_rescued"
 
 
 class ClassifyMethod(str, Enum):
