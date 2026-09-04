@@ -14,6 +14,7 @@ from baseline.evaluate import (
     join,
     levenshtein,
     prf,
+    eval_tables,
 )
 
 
@@ -282,3 +283,74 @@ def test_harness_scores_the_real_baseline_output(tmp_path):
     assert res["matched"] == res["gold_count"]
     # Anything claiming a checksum passed must actually be right.
     assert res["metadata"]["validated_precision"] == 1.0
+
+
+# --------------------------------------------------------------------------
+# tables
+# --------------------------------------------------------------------------
+
+
+def _gold_table(cells, **kw):
+    row = {"doc_id": "a" * 16, "label": "invoice", "tags": [], "metadata": [],
+           "tables": [{"page": 0, "cells": cells}]}
+    row.update(kw)
+    return row
+
+
+def _pred_table(grid):
+    cells = [
+        {"row": r, "col": c, "text": v, "page": 0}
+        for r, row in enumerate(grid) for c, v in enumerate(row) if v
+    ]
+    return {"doc_id": "a" * 16, "source_path": "x.pdf", "filename": "x.pdf",
+            "tables": [{"table_id": "t", "page": 0, "n_rows": len(grid),
+                        "n_cols": max(len(r) for r in grid), "cells": cells}]}
+
+
+GRID = [["Qty", "Rate", "Amount"], ["2", "10.00", "20.00"]]
+
+
+def test_an_exact_table_scores_one():
+    res = eval_tables([(_gold_table(GRID), _pred_table(GRID))])
+    assert res["cells"]["f1"] == 1.0
+    assert res["adjacency"]["f1"] == 1.0
+    assert res["detection_recall"] == 1.0
+
+
+def test_a_value_in_the_wrong_column_keeps_cell_f1_but_loses_adjacency():
+    """The failure the content metric cannot see, which is why both exist."""
+    shifted = [["Qty", "Rate", "Amount"], ["2", "20.00", "10.00"]]
+    res = eval_tables([(_gold_table(GRID), _pred_table(shifted))])
+    assert res["cells"]["f1"] == 1.0, "the same values are all present"
+    assert res["adjacency"]["f1"] < 1.0, "but they sit beside the wrong neighbours"
+
+
+def test_a_table_invented_where_gold_has_none_costs_precision():
+    gold = {"doc_id": "a" * 16, "label": "contract", "tags": [], "metadata": [],
+            "tables": []}
+    res = eval_tables([(gold, _pred_table(GRID))])
+    assert res["cells"]["precision"] == 0.0
+    assert res["cells"]["recall"] == 0.0
+
+
+def test_a_missed_table_costs_recall_not_precision():
+    empty = {"doc_id": "a" * 16, "source_path": "x.pdf", "filename": "x.pdf", "tables": []}
+    res = eval_tables([(_gold_table(GRID), empty)])
+    assert res["cells"]["recall"] == 0.0
+    assert res["detection_recall"] == 0.0
+    assert res["cells"]["precision"] == 0.0
+    assert res["cells"]["fp"] == 0, "nothing was claimed, so nothing is a false positive"
+
+
+def test_gold_without_a_tables_key_is_not_scored():
+    """Silence, not zeros. A gold file that never mentions tables says nothing."""
+    gold = {"doc_id": "a" * 16, "label": "invoice", "tags": [], "metadata": []}
+    res = eval_tables([(gold, _pred_table(GRID))])
+    assert res["scored"] == 0
+
+
+def test_empty_cells_do_not_break_adjacency():
+    """A sparse row still asserts that its populated columns are neighbours."""
+    sparse = [["Date", "Debit", "Credit"], ["01/03", "", "50.00"]]
+    res = eval_tables([(_gold_table(sparse), _pred_table(sparse))])
+    assert res["adjacency"]["f1"] == 1.0

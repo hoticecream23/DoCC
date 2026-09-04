@@ -7,6 +7,7 @@
   baseline eval            --gold FILE --pred FILE [--output report.md]
   baseline compare         --gold FILE --a FILE --b FILE [--output cmp.md]
   baseline graph           --input results.jsonl --output graph.json
+  baseline tables          --input results.jsonl --output tables.jsonl
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from .logging_setup import get_logger, setup_logging
 from .pipeline import run_batch
 from .profile import run_profile
 from .schema import build_canonical_text
+from .tables import build as build_tables
 
 log = get_logger(__name__)
 
@@ -196,7 +198,7 @@ def cmd_tune_thresholds(args: argparse.Namespace) -> int:
 def cmd_eval(args: argparse.Namespace) -> int:
     cfg = load_config_cached(args.config)
     unknown = str(cfg.classify_opts().get("unknown_label", "unknown"))
-    res = evaluate(args.gold, args.pred, unknown)
+    res = evaluate(args.gold, args.pred, unknown, args.pred_tables)
     if not res["matched"]:
         log.error("nothing matched, check that doc_id or path keys line up")
         return 1
@@ -223,13 +225,23 @@ def cmd_eval(args: argparse.Namespace) -> int:
             "validated_precision": res["metadata"]["validated_precision"],
         },
     )
+    tb = res.get("tables") or {}
+    if tb.get("scored"):
+        log.info(
+            "table scores",
+            extra={"gold_tables": tb["gold_tables"], "pred_tables": tb["pred_tables"],
+                   "detection_recall": tb["detection_recall"],
+                   "cell_f1": tb["cells"]["f1"], "cell_precision": tb["cells"]["precision"],
+                   "adjacency_f1": tb["adjacency"]["f1"],
+                   "adjacency_precision": tb["adjacency"]["precision"]},
+        )
     return 0
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
     cfg = load_config_cached(args.config)
     unknown = str(cfg.classify_opts().get("unknown_label", "unknown"))
-    cmp = compare(args.gold, args.a, args.b, unknown)
+    cmp = compare(args.gold, args.a, args.b, unknown, args.a_tables, args.b_tables)
     report = render_comparison(cmp, str(args.a), str(args.b))
     if args.output:
         out = Path(args.output)
@@ -263,6 +275,31 @@ def cmd_graph(args: argparse.Namespace) -> int:
                "chains": len(res["chains"]),
                "duplicate_groups": len(st["duplicate_groups"]),
                "orphans": len(res["orphans"])},
+    )
+    return 0
+
+
+def cmd_tables(args: argparse.Namespace) -> int:
+    cfg = load_config_cached(args.config)
+    if not cfg.tables:
+        log.error("no tables.yaml in the config directory")
+        return 1
+    res = build_tables(
+        args.input, args.output, cfg.tables,
+        bbox_dir=args.bbox_dir, report_path=args.report,
+        deterministic_timings=bool(
+            cfg.pipeline.get("runtime", {}).get("deterministic_timings", False)
+        ),
+    )
+    st = res["stats"]
+    log.info(
+        "tables summary",
+        extra={"documents": st["documents"],
+               "documents_with_tables": st["documents_with_tables"],
+               "tables": st["tables"], "cells": st["cells"],
+               "placed_cells": st["placed_cells"],
+               "abstentions": st["abstentions"], "errors": st["errors"],
+               "by_method": st["by_method"]},
     )
     return 0
 
@@ -313,6 +350,8 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--gold", required=True)
     ev.add_argument("--pred", required=True)
     ev.add_argument("--output", default="report.md")
+    ev.add_argument("--pred-tables", default=None,
+                    help="tables JSONL, scored when gold carries tables")
     ev.add_argument("--json", default=None, help="also dump raw scores as JSON")
     ev.set_defaults(func=cmd_eval)
 
@@ -320,6 +359,8 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--gold", required=True)
     cp.add_argument("--a", required=True, help="baseline run")
     cp.add_argument("--b", required=True, help="the challenger")
+    cp.add_argument("--a-tables", default=None, help="tables JSONL for the baseline")
+    cp.add_argument("--b-tables", default=None, help="tables JSONL for the challenger")
     cp.add_argument("--output", default="comparison.md")
     cp.add_argument("--fail-on-regression", action="store_true",
                     help="exit 2 if anything got worse, for CI")
@@ -331,6 +372,13 @@ def build_parser() -> argparse.ArgumentParser:
     gr.add_argument("--dot", default=None, help="also write graphviz source")
     gr.add_argument("--report", default=None, help="also write a markdown summary")
     gr.set_defaults(func=cmd_graph)
+
+    tb = sub.add_parser("tables", help="extract tables over a results file")
+    tb.add_argument("--input", required=True, help="results JSONL")
+    tb.add_argument("--output", default="tables.jsonl")
+    tb.add_argument("--bbox-dir", default=None, help="defaults to <input>.bboxes")
+    tb.add_argument("--report", default=None, help="also write a markdown summary")
+    tb.set_defaults(func=cmd_tables)
 
     return p
 

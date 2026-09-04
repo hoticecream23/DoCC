@@ -16,3 +16,9 @@ graph.dot
 graph.md
 before.jsonl
 gold.jsonl
+tables.jsonl
+tables.md
+
+# Real client documents. Never commit these.
+Client_Documents/
+Classification_Doc/

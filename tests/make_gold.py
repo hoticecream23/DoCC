@@ -6,6 +6,11 @@ The gaps between the two are the point.
 
 Gold carries values, not character offsets. Span level gold needs real
 annotation, so span scoring stays dark until there is real data.
+
+Table gold is the grid a reader would copy off the page, empty string for an
+empty cell. Documents with no table carry an empty list rather than no key,
+because a table invented where none exists is a precision error and has to be
+counted as one.
 """
 
 from __future__ import annotations
@@ -46,24 +51,62 @@ RECEIPT_FIELDS = [
 ]
 RECEIPT_TAGS = ["payment_made", "bank_details_present", "signed"]
 
+# The line item grid, identical on both invoice variants and trimmed by one
+# row on the purchase order.
+LINE_ITEMS = [
+    ["Qty", "Description", "Rate", "Amount"],
+    ["2", "Widget assembly", "2500.00", "5000.00"],
+    ["1", "Freight and handling", "5000.00", "5000.00"],
+]
+INVOICE_TABLES = [{"page": 1, "cells": LINE_ITEMS}]
+
+STATEMENT_TABLE = [{
+    "page": 0,
+    "cells": [
+        ["Date", "Description", "Debit", "Credit", "Balance"],
+        ["01/03/2024", "Opening Balance", "", "", "125000.00"],
+        ["05/03/2024", "NEFT Globex", "", "11800.00", "136800.00"],
+        ["12/03/2024", "Vendor payment", "22000.00", "", "114800.00"],
+        ["31/03/2024", "Closing Balance", "", "", "114800.00"],
+    ],
+}]
+
+# No header row on this one. A reader would not call "Basic Pay" a label for
+# the column under it.
+SALARY_TABLE = [{
+    "page": 0,
+    "cells": [
+        ["Basic Pay", "45000.00"],
+        ["HRA", "18000.00"],
+        ["Gross", "63000.00"],
+        ["Deductions", "7200.00"],
+        ["Net Pay", "55800.00"],
+    ],
+}]
+
 GOLD = [
     {
         "path": "corpus/invoice_native.pdf",
         "label": "invoice",
         "tags": INVOICE_TAGS,
         "metadata": INVOICE_FIELDS,
+        "tables": INVOICE_TABLES,
     },
     {
         "path": "corpus/invoice_hybrid.pdf",
         "label": "invoice",
         "tags": INVOICE_TAGS,
         "metadata": INVOICE_FIELDS,
+        # The same grid as the native invoice. It is on the scanned page here,
+        # which is exactly why it is worth asking for.
+        "tables": INVOICE_TABLES,
     },
     {
         "path": "corpus/receipt.txt",
         "label": "receipt",
         "tags": RECEIPT_TAGS,
         "metadata": RECEIPT_FIELDS,
+        "tables": [],
     },
     {
         # Same content as receipt.txt but scanned, so it also gives us a CER.
@@ -71,6 +114,7 @@ GOLD = [
         "label": "receipt",
         "tags": RECEIPT_TAGS,
         "metadata": RECEIPT_FIELDS,
+        "tables": [],
         "text": RECEIPT,
     },
     {
@@ -81,6 +125,7 @@ GOLD = [
             {"field": "account_number", "normalized_value": "502010123456789"},
             {"field": "ifsc", "normalized_value": "HDFC0001234"},
         ],
+        "tables": STATEMENT_TABLE,
     },
     {
         "path": "corpus/purchase_order.pdf",
@@ -94,6 +139,7 @@ GOLD = [
             {"field": "invoice_date", "normalized_value": "2024-03-02"},
             {"field": "total_amount", "normalized_value": "5000.00"},
         ],
+        "tables": [{"page": 0, "cells": LINE_ITEMS[:2]}],
     },
     {
         "path": "corpus/salary_slip.docx",
@@ -105,18 +151,21 @@ GOLD = [
             {"field": "account_number", "normalized_value": "911010098765432"},
             {"field": "ifsc", "normalized_value": "UTIB0000123"},
         ],
+        "tables": SALARY_TABLE,
     },
     {
         "path": "corpus/contract.txt",
         "label": "contract",
         "tags": ["signed", "foreign_currency"],
         "metadata": [],
+        "tables": [],
     },
     {
         "path": "corpus/id_card.txt",
         "label": "id_document",
         "tags": ["contains_pii"],
         "metadata": [{"field": "pan", "normalized_value": "AAAPZ1234C"}],
+        "tables": [],
     },
     {
         # Unreadable. The correct behaviour is to abstain, so unknown is right.
@@ -124,6 +173,7 @@ GOLD = [
         "label": "unknown",
         "tags": [],
         "metadata": [],
+        "tables": [],
     },
 ]
 
@@ -141,4 +191,6 @@ if __name__ == "__main__":
     target = build(sys.argv[1] if len(sys.argv) > 1 else "gold.jsonl")
     fields = sum(len(r["metadata"]) for r in GOLD)
     tags = sum(len(r["tags"]) for r in GOLD)
-    print(f"wrote {len(GOLD)} gold documents, {fields} fields, {tags} tags to {target}")
+    tables = sum(len(r.get("tables") or []) for r in GOLD)
+    print(f"wrote {len(GOLD)} gold documents, {fields} fields, {tags} tags, "
+          f"{tables} tables to {target}")

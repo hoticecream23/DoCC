@@ -1,0 +1,70 @@
+# Table and line item extraction v0. Built as a separate pass over the results
+# JSONL plus the bbox sidecar, never inside the document record, so the record
+# contract stays frozen and tables can be rebuilt at any time.
+#
+# The rule for v0, borrowed from the knowledge graph: a table that is wrong is
+# worse than a table that is missing. Every structural check below is a reason
+# to abstain, and every abstention is recorded with its reason.
+version: 1
+
+# Strategies run in this order, first hit wins per document. Same pattern as
+# the metadata field strategies.
+#
+#   geometry   - columns from word bounding boxes. The right signal for real
+#                PDFs and scans, where x positions carry the layout.
+#   text_grid  - columns from runs of whitespace shared by every line of a
+#                band. The only signal available for .txt and .docx, which
+#                carry no geometry at all.
+strategies: [geometry, text_grid]
+
+# A band must clear all three to be emitted at all. min_cells is the real
+# gate: it lets a wide two row table through and keeps a 2x2 accident out.
+min_rows: 2
+min_cols: 2
+min_cells: 6
+
+geometry:
+  # Two words belong to the same line when their vertical extents overlap by
+  # this fraction of the shorter one.
+  row_overlap_ratio: 0.5
+  # A horizontal gap wider than this many space widths ends a cell. The space
+  # width is estimated per page, see space_width_percentile.
+  cell_gap_spaces: 1.6
+  # Percentile of the observed within-line gaps taken as one space. The
+  # distribution is bimodal, small gaps are spaces and large ones are column
+  # separators, so a low percentile lands in the space cluster.
+  space_width_percentile: 25
+  # Fallback when a page has too few gaps to estimate from.
+  min_space_width: 1.0
+  # Two cells may share a column when they overlap horizontally by this
+  # fraction of the narrower one. Complete linkage: a cell must clear this
+  # against every cell already in the column, not just one of them.
+  column_overlap_ratio: 0.4
+  # A row break wider than this many median line heights ends a band.
+  max_row_gap_heights: 2.0
+  # A column standing on fewer cells than this is not a column, it is a
+  # coincidence. Seeing one means the band is misaligned, so we abstain.
+  min_column_support: 2
+
+text_grid:
+  # A run of this many columns that is blank on every line of the band is a
+  # column separator. Two is enough when the alignment is real.
+  min_separator_width: 2
+  # A band ends at a blank line or at a line this much longer than the rest.
+  max_blank_lines: 0
+  # At least this fraction of lines must actually straddle a separator.
+  # Otherwise the alignment is a coincidence in a block of prose.
+  min_multi_cell_rows: 0.75
+  # A table is usually a run inside a band, not the whole band: PDF text
+  # layers routinely drop the blank lines that would have bounded it, so a
+  # whole page arrives fused together and the run has to be searched for.
+  # The search is quadratic in band length, so bands longer than this are
+  # judged as they stand. A wall of text that long is not a table anyway.
+  max_band_lines: 400
+
+header:
+  # The first row is a header when it is fully populated and its cells carry
+  # no digits, which is what separates a label row from a data row. When the
+  # test fails the table is emitted with no header rather than a wrong one.
+  require_full_row: true
+  max_digit_ratio: 0.1

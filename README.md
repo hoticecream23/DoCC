@@ -49,6 +49,12 @@ Compare two runs and see what got better or worse:
 python -m baseline compare --gold gold.jsonl --a baseline.jsonl --b new.jsonl
 ```
 
+Pull the tables out:
+
+```bash
+python -m baseline tables --input results.jsonl --output tables.jsonl --report tables.md
+```
+
 Build a knowledge graph across the documents:
 
 ```bash
@@ -133,6 +139,7 @@ touch any Python.
 | A tag | `config/tags.yaml` |
 | A setting or threshold | `config/pipeline.yaml` |
 | A graph entity or edge rule | `config/graph.yaml` |
+| A table detection threshold | `config/tables.yaml` |
 
 There is a test that proves this. It defines a brand new document type in a
 temporary config file and checks it works with no code changes.
@@ -208,9 +215,50 @@ There is also a `validated` precision figure. Any field the pipeline marked
 validated claims its format proved it, so that number should be exactly 1.0.
 Anything less means a validator is lying.
 
+Tables are scored too, when the gold row carries a `tables` key and you pass
+`--pred-tables`. Gold is just the grid a reader would copy off the page:
+
+```json
+{"path": "docs/inv1.pdf", "label": "invoice",
+ "tables": [{"page": 1, "cells": [["Qty", "Rate"], ["2", "10.00"]]}]}
+```
+
+Two numbers come back. Cell F1 asks whether the values came out at all.
+Adjacency F1 asks whether each value ended up beside the right neighbours,
+which is the question that matters: a figure that slides one column left is
+perfect content and a useless table. A document with no table should carry
+`"tables": []` rather than no key, so that a table invented out of nothing is
+counted against precision.
+
 `compare` scores two files against the same gold and lists regressions. Pass
 `--fail-on-regression` to make it exit non zero, which makes it usable as a
-CI gate.
+CI gate. Table metrics join the gate only when both runs were given a tables
+file, so a run without one is not read as a collapse to zero.
+
+## Tables
+
+`tables` is a separate pass over the results file, like the graph. It never
+touches the document record, so tables can be rebuilt from an old run without
+re-extracting anything.
+
+Two strategies run in the order set in `config/tables.yaml`, first hit wins:
+
+- **geometry** reads the word boxes in the bbox sidecar. Columns come out of
+  where the words actually sit on the page. This is the right signal for real
+  PDFs and scans.
+- **text_grid** reads runs of whitespace that are blank on every line of a
+  band. It is the only signal available for `.txt` and `.docx`, which carry no
+  geometry at all, and it rescues text whose alignment survived into the text
+  layer but not into the coordinates.
+
+Every cell carries character offsets into the same canonical text as the
+metadata, verified at write time by the same rule: the offsets must slice the
+text back to the cell exactly, or they are null rather than approximate.
+
+The v0 rule is the graph's rule: **a wrong table is worse than a missing one.**
+A band whose columns do not line up is refused, and the refusal is recorded
+with its reason in `diagnostics.abstained` and in the report. If a table you
+expected is not there, the report says why.
 
 ## Knowledge graph
 
@@ -262,7 +310,7 @@ Logs are JSON on stderr, not print statements.
 python -m pytest tests -q
 ```
 
-210 tests. Every checksum is tested against known good and known bad values.
+241 tests. Every checksum is tested against known good and known bad values.
 Verhoeff and Luhn are also checked to catch every single digit error and
 every swapped pair of digits, which is what those algorithms promise. Offsets
 are tested across multi page documents and across documents where half the
@@ -286,6 +334,7 @@ baseline/
   profile.py     corpus measurement
   evaluate.py    scoring, imports nothing from the pipeline
   graph.py       knowledge graph over a results file
+  tables.py      table extraction over a results file
   cli.py         commands
 config/          all the vocabulary and settings
 tests/

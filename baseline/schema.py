@@ -216,3 +216,112 @@ def page_for_offset(spans: list[tuple[int, int]], offset: int) -> int:
         if s <= offset <= e:
             return i
     return max(0, len(spans) - 1)
+
+
+# --------------------------------------------------------------------------
+# tables
+#
+# Tables live in their own sidecar, built by a separate pass, exactly like the
+# knowledge graph. DocumentRecord is not touched, so the record contract above
+# stays frozen and tables can be rebuilt from any results file at any time.
+# --------------------------------------------------------------------------
+
+TABLES_SCHEMA_VERSION = "1.0.0"
+
+
+class TableMethod(str, Enum):
+    # Column structure recovered from word bounding boxes.
+    GEOMETRY = "geometry"
+    # Column structure recovered from whitespace columns in the canonical text.
+    TEXT_GRID = "text_grid"
+
+
+class TableCell(Strict):
+    row: int = Field(ge=0)
+    col: int = Field(ge=0)
+    # v0 never merges cells, so both are always 1. They are here so that a
+    # reader can tell a genuine 1x1 cell from one whose span was simply not
+    # represented, and so that adding span detection later is not a change to
+    # the shape of every record already written.
+    row_span: int = Field(default=1, ge=1)
+    col_span: int = Field(default=1, ge=1)
+    text: str
+    page: int = Field(ge=0)
+    # Offsets into the canonical text, same space as metadata. Null when the
+    # extractor could not place the words, never guessed.
+    char_start: int | None = None
+    char_end: int | None = None
+    # Page geometry, when the cell was built from boxes or could be matched
+    # back onto them. Null for documents that carry no boxes at all.
+    x0: float | None = None
+    y0: float | None = None
+    x1: float | None = None
+    y1: float | None = None
+    is_header: bool = False
+
+
+class Table(Strict):
+    table_id: str
+    page: int = Field(ge=0)
+    n_rows: int = Field(ge=0)
+    n_cols: int = Field(ge=0)
+    method: TableMethod
+    # An ordering signal only. Not calibrated against accuracy.
+    confidence: Confidence
+    # Empty when no header row was identified. Never invented.
+    header: list[str] = Field(default_factory=list)
+    cells: list[TableCell] = Field(default_factory=list)
+    # Span of the whole table in the canonical text, when every cell placed.
+    char_start: int | None = None
+    char_end: int | None = None
+
+    @property
+    def fill(self) -> float:
+        n = self.n_rows * self.n_cols
+        return round(len(self.cells) / n, 4) if n else 0.0
+
+
+class TableDiagnostics(Strict):
+    # Bands that looked like a table but failed a structural check. Each entry
+    # says why, because an abstention is a finding, not a silence.
+    abstained: list[str] = Field(default_factory=list)
+    strategies_tried: list[str] = Field(default_factory=list)
+    timings_ms: dict[str, float] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+
+
+class TableRecord(Strict):
+    """One line of the tables sidecar. Joins to DocumentRecord on doc_id."""
+
+    doc_id: str = Field(min_length=DOC_ID_LEN, max_length=DOC_ID_LEN)
+    # Carried over from the record so a gold file keyed on a path joins to
+    # this sidecar by exactly the same rules it joins to the record.
+    source_path: str
+    filename: str
+    schema_version: str = TABLES_SCHEMA_VERSION
+    tables: list[Table] = Field(default_factory=list)
+    diagnostics: TableDiagnostics
+
+    def verify_offsets(self, full: str) -> list[str]:
+        """Every placed cell must slice the canonical text back to its text.
+
+        Same contract as DocumentRecord.verify_offsets. A cell that cannot
+        honour it is a bug, not a rounding error.
+        """
+        problems = []
+        for t in self.tables:
+            for c in t.cells:
+                if c.char_start is None or c.char_end is None:
+                    continue
+                if c.char_end > len(full):
+                    problems.append(
+                        f"{t.table_id} r{c.row}c{c.col}: offset {c.char_end} past end {len(full)}"
+                    )
+                    continue
+                got = full[c.char_start : c.char_end]
+                if got != c.text:
+                    problems.append(
+                        f"{t.table_id} r{c.row}c{c.col}: "
+                        f"text[{c.char_start}:{c.char_end}]={got!r} != {c.text!r}"
+                    )
+        return problems
