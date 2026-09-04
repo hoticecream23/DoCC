@@ -12,18 +12,37 @@ classes:
   - name: invoice
     description: Seller issued request for payment.
     markers:
+      # Self identification. A document carrying its own invoice number and its
+      # own invoice date is an invoice, and that outranks a "Purchase Order"
+      # column label sitting in the same header row, which is what beat this
+      # class on 1-2-2026mmo.pdf once the page was re-OCR'd. 0/46 court PDFs,
+      # 0/1 real purchase orders.
+      - {kind: keywords, all: ["invoice number", "invoice date"], scope: anywhere, specificity: 0.96}
       - {kind: regex, pattern: '\btax\s+invoice\b', scope: first_page, specificity: 0.95}
       - {kind: regex, pattern: '\bproforma\s+invoice\b', scope: first_page, specificity: 0.93}
-      - {kind: regex, pattern: '\binvoice\s*(?:no|number|#)\b', scope: anywhere, specificity: 0.88}
+      # `\b` after `#` can never match when a space follows, so "Invoice # 135551"
+      # was silently unmatchable. Anchoring each alternative separately fixes it.
+      - {kind: regex, pattern: '\binvoice\s*(?:\bno\b\.?|\bnumber\b|#)', scope: anywhere, specificity: 0.88}
       - {kind: keywords, all: [invoice, total], any: [gstin, hsn, sac, "place of supply"], scope: anywhere, specificity: 0.85}
       - {kind: keywords, any: [invoice], scope: header, specificity: 0.6}
+      # US commercial invoice vocabulary. The original set was written for
+      # Indian GST invoices (tax invoice, GSTIN, HSN, place of supply) and the
+      # client corpus is US vendor billing. Each of these was measured on the
+      # 25 client invoices after the quality gate, and each fires on zero of
+      # the 46 court PDFs and zero of the synthetic non-invoice templates.
+      - {kind: keywords, all: ["bill to"], any: ["amount due", "total due", "balance due", "new balance", "please pay"], scope: anywhere, specificity: 0.9}
+      - {kind: keywords, all: ["invoice"], any: ["net 30", "net 10", "due upon receipt", "payment terms", "payment term"], scope: anywhere, specificity: 0.87}
+      - {kind: regex, pattern: '\b(?:make\s+check(?:s)?\s+payable|remit\s+payment|remit\s+to)\b', scope: anywhere, specificity: 0.85}
 
   - name: receipt
     description: Proof that payment was made.
     markers:
       - {kind: regex, pattern: '\b(?:payment|cash|money)\s+receipt\b', scope: first_page, specificity: 0.94}
       - {kind: regex, pattern: '\breceipt\s*(?:no|number|#)\b', scope: anywhere, specificity: 0.85}
-      - {kind: keywords, all: [receipt], any: ["amount paid", "received from", "received with thanks"], scope: anywhere, specificity: 0.87}
+      # "Due upon receipt" is a payment term printed on invoices. Matching the
+      # bare word made 1-28-2026m3.pdf, an insurance invoice, score 0.87 as a
+      # receipt on "UPON RECEIPT" plus "AMOUNT PAID".
+      - {kind: regex, pattern: '(?<!upon\s)(?<!upon\sthe\s)\breceipt\b[\s\S]{0,3000}?\b(?:amount\s+paid|received\s+from|received\s+with\s+thanks)\b', scope: anywhere, specificity: 0.87}
       - {kind: keywords, any: [receipt, "thank you for your payment"], scope: header, specificity: 0.55}
 
   - name: bank_statement
@@ -31,7 +50,13 @@ classes:
     markers:
       - {kind: regex, pattern: '\b(?:account|bank)\s+statement\b', scope: first_page, specificity: 0.95}
       - {kind: regex, pattern: '\bstatement\s+of\s+account\b', scope: first_page, specificity: 0.94}
-      - {kind: keywords, all: [balance], any: [debit, credit, withdrawal, deposit], scope: anywhere, specificity: 0.7}
+      # A ledger carries debit and credit as columns. Matching "balance" plus
+      # either word alone fired on 7 of the 25 client invoices, because they
+      # say "Balance Due" and are addressed to "1199 SEIU FEDERAL CREDIT
+      # UNION". Requiring all three is what a transaction listing actually
+      # looks like, and it costs nothing: opening/closing balance below and
+      # "statement of account" above both still catch a real statement.
+      - {kind: keywords, all: [balance, debit, credit], scope: anywhere, specificity: 0.7}
       - {kind: keywords, any: ["closing balance", "opening balance", "available balance"], scope: anywhere, specificity: 0.82}
 
   - name: salary_slip
@@ -45,9 +70,19 @@ classes:
   - name: purchase_order
     description: Buyer issued order to a supplier.
     markers:
-      - {kind: regex, pattern: '\bpurchase\s+order\b', scope: first_page, specificity: 0.95}
-      - {kind: regex, pattern: '\bp\.?o\.?\s*(?:no|number|#)\b', scope: anywhere, specificity: 0.8}
-      - {kind: keywords, all: ["purchase order"], any: ["ship to", "delivery date", "vendor"], scope: anywhere, specificity: 0.9}
+      # "Purchase Order" as a title, not as a reference. Every real invoice in
+      # the client set carries a "PO Number" field and one says "Purchase Order
+      # No. >>", all of them pointing at a purchase order they are not. The
+      # negative lookahead is the whole fix: a document titled PURCHASE ORDER
+      # is one, a document citing "Purchase Order No." is quoting one.
+      - {kind: regex, pattern: '\bpurchase\s+order\b(?!\s*(?:no\b|number\b|#|\.))', scope: first_page, specificity: 0.95}
+      - {kind: regex, pattern: '\bpurchase\s+order\b(?!\s*(?:no\b|number\b|#|\.))[\s\S]{0,4000}?\b(?:ship\s+to|delivery\s+date|vendor)\b', scope: anywhere, specificity: 0.9}
+      # A bare "PO No" label is compatible with an invoice and a purchase order
+      # alike: it fired on 6 of the 25 client invoices and on none of the real
+      # purchase orders. It was claiming 0.8. It proves almost nothing on its
+      # own, so it now sits below rule_min_confidence and can only ever support
+      # a decision another marker has already made.
+      - {kind: regex, pattern: '\bp\.?o\.?\s*(?:no|number|#)\b', scope: anywhere, specificity: 0.5}
 
   - name: id_document
     description: Government issued identity card.
