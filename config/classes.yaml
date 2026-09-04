@@ -70,3 +70,30 @@ classes:
       - {kind: regex, pattern: '\bform\s+(?:16|26as|gstr-?\d)\b', scope: anywhere, specificity: 0.95}
       - {kind: regex, pattern: '\btds\s+certificate\b', scope: anywhere, specificity: 0.93}
       - {kind: keywords, any: ["assessment year", "previous year", "tax deducted at source"], scope: anywhere, specificity: 0.75}
+
+  - name: court_document
+    description: >
+      Judgment, order or tribunal decision, and anything filed in or issued by a
+      court. The client files these under seven different folder names, but those
+      names describe what the firm uses a document for, not what the document is.
+      See taxonomy.yaml. Markers below were measured against the 46 court PDFs in
+      Classification_Doc: 46/46 fire, 44/46 at or above rule_short_circuit, and
+      0/26 of the business PDFs fire any of them.
+    markers:
+      - {kind: regex, pattern: '\bequivalent\s+citations?\s*:', scope: header, specificity: 0.96}
+      - {kind: regex, pattern: '\bin\s+the\s+(?:hon.{0,4}ble\s+)?(?:supreme\s+court|high\s+court|district\s+court|court\s+of\s+\w+)', scope: first_page, specificity: 0.95}
+      - {kind: regex, pattern: '\bdate\s+of\s+(?:judgment|judgement|decision|order)\b', scope: first_page, specificity: 0.92}
+      - {kind: regex, pattern: '\b(?:reserved\s+on|pronounced\s+on|date\s+of\s+pronouncement)\b', scope: first_page, specificity: 0.9}
+      - {kind: regex, pattern: '\b(?:coram|bench|author)\s*:', scope: header, specificity: 0.9}
+      - {kind: regex, pattern: '\b(?:writ\s+petition|w\.?p\.?\s*\(\w+\)|crl\.?\s*a\.?|r\.?f\.?a\.?|c\.?r\.?p\.?)\s*(?:no\.?)?\s*\d+', scope: anywhere, specificity: 0.88}
+      - {kind: regex, pattern: '\barticle\s+(?:32|136|226|227)\s+of\s+the\s+constitution', scope: anywhere, specificity: 0.88}
+      # A caption naming both sides. Intrinsic, and it has to sit above the
+      # contract layer's 0.92 'hereinafter referred to as', which judgments
+      # quote constantly. 41/46 court PDFs, 0/26 business PDFs.
+      - {kind: keywords, all: [petitioner, respondent], scope: anywhere, specificity: 0.93}
+      - {kind: keywords, all: [appellant, respondent], scope: anywhere, specificity: 0.93}
+      - {kind: keywords, all: [learned], any: [counsel, advocate, "senior counsel"], scope: anywhere, specificity: 0.85}
+      # Provenance marker, not an intrinsic one: this is the indiankanoon.org
+      # download banner. Kept low so it cannot short circuit on its own.
+      - {kind: regex, pattern: '\bvs\.?\b.{0,120}\bon\s+\d{1,2}\s+\w+,\s*\d{4}', scope: header, specificity: 0.8}
+      - {kind: regex, pattern: '\b(?:petitioner|appellant)s?\b', scope: first_page, specificity: 0.7}

@@ -38,12 +38,24 @@ class Config:
     fields: dict[str, Any] = field(default_factory=dict)
     tags: dict[str, Any] = field(default_factory=dict)
     graph: dict[str, Any] = field(default_factory=dict)
+    tables: dict[str, Any] = field(default_factory=dict)
+    taxonomy: dict[str, Any] = field(default_factory=dict)
 
     # -- convenience accessors, all pure lookups --
 
     @property
     def class_names(self) -> list[str]:
         return [c["name"] for c in self.classes.get("classes", [])]
+
+    @property
+    def client_label_map(self) -> dict[str, str | None]:
+        """Client folder label to our class name. Null where we refuse to map."""
+        return {m["label"]: m.get("class") for m in self.taxonomy.get("mappings", [])}
+
+    @property
+    def lossy_client_labels(self) -> list[str]:
+        """Labels our class list cannot reproduce. Score these collapsed, not raw."""
+        return [m["label"] for m in self.taxonomy.get("mappings", []) if m.get("lossy")]
 
     @property
     def field_defs(self) -> list[dict[str, Any]]:
@@ -77,6 +89,9 @@ class Config:
     def metadata_opts(self) -> dict[str, Any]:
         return self.pipeline.get("metadata", {})
 
+    def table_opts(self) -> dict[str, Any]:
+        return self.tables
+
     def dump(self) -> dict[str, Any]:
         return {
             "pipeline": self.pipeline,
@@ -84,6 +99,8 @@ class Config:
             "fields": self.fields,
             "tags": self.tags,
             "graph": self.graph,
+            "tables": self.tables,
+            "taxonomy": self.taxonomy,
         }
 
 
@@ -102,6 +119,8 @@ def load_config(config_dir: str | Path | None = None) -> Config:
         fields=_load(d / "fields.yaml"),
         tags=_load(d / "tags.yaml"),
         graph=_load_optional(d / "graph.yaml"),
+        tables=_load_optional(d / "tables.yaml"),
+        taxonomy=_load_optional(d / "taxonomy.yaml"),
     )
 
 

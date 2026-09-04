@@ -1,0 +1,72 @@
+# Client folder labels to our document classes.
+#
+# The client filing scheme and our class list are not the same kind of thing.
+# Their labels answer "what is this document for on this matter"; ours answer
+# "what kind of document is this". They agree on the business documents and
+# they do not agree at all on the legal ones. This file is the single written
+# record of how one becomes the other, and both the classification gold builder
+# and the index workbook's Taxonomy tab must read it rather than restate it.
+#
+# label   - exactly as it appears in Classification.csv Document_Type and as
+#           the folder name in Classification_Doc/ (verified identical for all
+#           14 labels except the 4 rows noted under conflicts below)
+# class   - a name declared in classes.yaml, or null where we deliberately
+#           refuse to invent one
+# lossy   - true when this label carries information our class does not, so a
+#           prediction can never recover the label. Scoring must collapse to
+#           the class, and the report must say so.
+version: 1
+
+mappings:
+  # -- direct, one to one -------------------------------------------------
+  - {label: "Invoice",           class: invoice,        lossy: false, n: 25}
+  - {label: "Receipt",           class: receipt,        lossy: false, n: 7}
+  - {label: "Purchase Order",    class: purchase_order, lossy: false, n: 6}
+  - {label: "Salary_Slip",       class: salary_slip,    lossy: false, n: 15}
+  - {label: "Identity document", class: id_document,    lossy: false, n: 4}
+  - {label: "Agreement",         class: contract,       lossy: false, n: 4}
+
+  # tax document holds tax invoices, a tax statement and study notes on direct
+  # tax, so it is a subject area rather than a form type. tax_form is the
+  # closest class we have. Expect invoice to win on at least two of the five,
+  # and expect that to be right about the document and wrong about the label.
+  - {label: "tax document",      class: tax_form,       lossy: true,  n: 5}
+
+  # -- the seven legal labels, all one class ------------------------------
+  # Every file under these seven is a court judgment or order downloaded from
+  # indiankanoon.org, named <party>_vs_<party>_on_<date>.PDF. They are not
+  # seven document types. Nothing in the text distinguishes a "Legal Opinion"
+  # from a "Litigation Strategy Note", and the corpus proves it: four files
+  # sit under two labels at once (see conflicts). Splitting court_document
+  # into seven would mean inventing markers that cannot exist.
+  #
+  # These 46 files are 41% of the labelled set, so this is not a rounding
+  # error. Classification can be scored honestly at the class level only.
+  - {label: "Client Representations",        class: court_document, lossy: true, n: 5}
+  - {label: "Draft Agreements",              class: court_document, lossy: true, n: 5}
+  - {label: "Legal Opinions",                class: court_document, lossy: true, n: 5}
+  - {label: "Litigation Strategy Notes",     class: court_document, lossy: true, n: 5}
+  - {label: "Research Notes and Case Notes", class: court_document, lossy: true, n: 5}
+  - {label: "Writ Petitions & Appeals",      class: court_document, lossy: true, n: 16}
+  - {label: "Written Submissions",           class: court_document, lossy: true, n: 5}
+
+# Classes we carry that the client's labelled set never uses. Not an error:
+# Client_Documents/ is a different and larger set, and a bank statement in it
+# still has to classify. They simply cannot be scored against Classification.csv.
+unscored_classes: [bank_statement, court_document]
+
+# Rows in Classification.csv whose file name appears twice under two labels.
+# Three of the four are different files with the same name and different
+# bytes; only Stroyproekt is a genuine byte identical duplicate. So the file
+# name is not a key over this set and doc_id must stay content addressed.
+# All four collapse to court_document, so none of them affects a class level
+# score. They must not be silently deduplicated by name.
+conflicts:
+  - {file: "Daryao_And_Others_vs_The_State_Of_U_P_And_Others_And_on_27_March_1961.PDF",
+     labels: ["Legal Opinions", "Writ Petitions & Appeals"], same_bytes: false}
+  - {file: "K_Balu_vs_Bharat_Heavy_Electricals_Limited_on_31_March_2022.PDF",
+     labels: ["Legal Opinions", "Litigation Strategy Notes"], same_bytes: false}
+  - {file: "Rohit_A_Kapadia_And_Anr_vs_Perviz_J_Modi_on_9_June_2015.PDF",
+     labels: ["Litigation Strategy Notes", "Written Submissions"], same_bytes: false}
+  - {file: "Stroyproekt_Oia_Jv_vs_National_Highway_And_Infrastructure_on_3_June_2026.PDF",
+     labels: ["Litigation Strategy Notes", "Written Submissions"], same_bytes: true}
