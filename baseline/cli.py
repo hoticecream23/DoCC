@@ -4,6 +4,7 @@
   baseline train           --annotations FILE --output-model DIR
   baseline tune-thresholds --annotations FILE --predictions FILE
   baseline profile         --input DIR --output profile.md
+  baseline import-labels   --csv FILE --root DIR --output gold.jsonl
   baseline eval            --gold FILE --pred FILE [--output report.md]
   baseline compare         --gold FILE --a FILE --b FILE [--output cmp.md]
   baseline graph           --input results.jsonl --output graph.json
@@ -23,6 +24,7 @@ from .config import load_config_cached, save_yaml
 from .evaluate import compare, evaluate, render_comparison, render_report
 from .extract import extract
 from .graph import build as build_graph
+from .labels import import_labels, render_summary
 from .logging_setup import get_logger, setup_logging
 from .pipeline import run_batch
 from .profile import run_profile
@@ -195,6 +197,30 @@ def cmd_tune_thresholds(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import_labels(args: argparse.Namespace) -> int:
+    cfg = load_config_cached(args.config)
+    res = import_labels(args.csv, args.root, cfg, args.name_column, args.label_column)
+    if res.unmapped_labels:
+        return 1
+    if not res.rows:
+        log.error("no rows resolved, check --root points at the labelled set")
+        return 1
+
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8", newline="\n") as fh:
+        for row in res.rows:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    log.info("gold written", extra={"output": str(out), "rows": len(res.rows)})
+
+    summary = render_summary(res, str(args.csv), str(args.root))
+    if args.report:
+        Path(args.report).write_text(summary, encoding="utf-8")
+    else:
+        print(summary)
+    return 0
+
+
 def cmd_eval(args: argparse.Namespace) -> int:
     cfg = load_config_cached(args.config)
     unknown = str(cfg.classify_opts().get("unknown_label", "unknown"))
@@ -345,6 +371,15 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--input", required=True)
     pr.add_argument("--output", default="profile.md")
     pr.set_defaults(func=cmd_profile)
+
+    il = sub.add_parser("import-labels", help="convert a client label CSV into a gold file")
+    il.add_argument("--csv", required=True, help="CSV with a file name and a label column")
+    il.add_argument("--root", required=True, help="directory the CSV's files live under")
+    il.add_argument("--output", required=True, help="gold JSONL to write")
+    il.add_argument("--report", help="write the import summary here instead of stdout")
+    il.add_argument("--name-column", default="File_Name")
+    il.add_argument("--label-column", default="Document_Type")
+    il.set_defaults(func=cmd_import_labels)
 
     ev = sub.add_parser("eval", help="score predictions against gold")
     ev.add_argument("--gold", required=True)

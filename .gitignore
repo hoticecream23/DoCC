@@ -22,3 +22,12 @@ tables.md
 # Real client documents. Never commit these.
 Client_Documents/
 Classification_Doc/
+
+# Anything derived from them. A gold file built from Classification.csv carries
+# client file names and paths in every row, so it is client material too.
+gold_classification.jsonl
+results_classification.jsonl
+results_classification.jsonl.bboxes/
+scores_classification.json
+report_classification.md
+labels.md
