@@ -140,3 +140,51 @@ def test_court_document_needs_only_a_yaml_edit(tmp_path, cfg):
     custom = load_config(cfgdir)
     result = classify(COURT_TEXT, [COURT_TEXT], custom, model=None)
     assert result.label == "tribunal_ruling"
+
+
+# ------------------------------------------- the cascade must reach the rules
+
+def test_a_quiet_model_does_not_veto_a_confident_rule(cfg, tmp_path):
+    """A model below its threshold has declined, not disagreed.
+
+    This cost 11 client invoices. The rule layer scored them 0.88 against a
+    rule_min of 0.7, and a model trained on 42 synthetic samples returned
+    something under model_min_confidence, which was being read as a verdict
+    and returned as unknown before the weak rule layer was ever consulted.
+    """
+    from baseline.classify import classify
+
+    class QuietModel:
+        def predict_scores(self, text):
+            return {"contract": 0.01, "receipt": 0.02}
+
+    text = "Invoice No: 1043\nInvoice Date: 12-30-2025\nDue Date: 01-29-2026\n"
+    result = classify(text, [text], cfg, model=QuietModel())
+    assert result.label == "invoice"
+    assert result.method.value == "rule"
+
+
+def test_a_confident_model_still_wins_over_a_weak_rule(cfg):
+    from baseline.classify import classify
+
+    class LoudModel:
+        def predict_scores(self, text):
+            return {"salary_slip": 0.99}
+
+    text = "Invoice No: 1043\n"
+    result = classify(text, [text], cfg, model=LoudModel())
+    assert result.label == "salary_slip"
+    assert result.method.value == "tfidf_svm"
+
+
+def test_an_abstention_still_carries_a_distribution_to_diagnose_it(cfg):
+    from baseline.classify import classify
+
+    class QuietModel:
+        def predict_scores(self, text):
+            return {"contract": 0.03, "receipt": 0.04}
+
+    junk = "qq ww ee rr tt yy uu ii oo pp"
+    result = classify(junk, [junk], cfg, model=QuietModel())
+    assert result.label == "unknown"
+    assert result.all_scores, "an abstention with no scores cannot be diagnosed"

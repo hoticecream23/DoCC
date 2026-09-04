@@ -156,6 +156,8 @@ def classify(
     model_min = float(opts.get("model_min_confidence", 0.45))
 
     rules = rule_scores(full, pages, cfg)
+    model_scores: dict[str, float] | None = None
+    model_prob = 0.0
     best_rule_label, best_rule_score = "", 0.0
     if rules:
         # ties break on name so the output is stable
@@ -180,13 +182,15 @@ def classify(
                     all_scores=dict(sorted(scores.items())),
                     method=ClassifyMethod.TFIDF_SVM,
                 )
-            # Model spoke but not loudly enough. Keep its distribution.
-            return Classification(
-                label=unknown,
-                confidence=round(prob, 4),
-                all_scores=dict(sorted(scores.items())),
-                method=ClassifyMethod.FALLBACK,
-            )
+            # Model spoke but not loudly enough, which is the model declining,
+            # not the model disagreeing. Fall through to the weak rule layer
+            # below. Returning unknown here threw away correct rule answers:
+            # on the client set it cost 11 invoices that the rule layer had
+            # already scored at 0.88 against a rule_min of 0.7, because a model
+            # trained on 42 synthetic samples cannot speak loudly about
+            # anything and its silence was being read as a verdict.
+            model_scores = dict(sorted(scores.items()))
+            model_prob = prob
         except Exception as exc:
             log.error("classifier predict failed", extra={"error": str(exc)})
 
@@ -198,6 +202,15 @@ def classify(
             method=ClassifyMethod.RULE,
         )
 
+    # Nothing was confident enough. Keep whichever distribution we have, so an
+    # abstention can still be diagnosed: the model's if it ran, else the rules'.
+    if model_scores is not None:
+        return Classification(
+            label=unknown,
+            confidence=round(model_prob, 4),
+            all_scores=model_scores,
+            method=ClassifyMethod.FALLBACK,
+        )
     return Classification(
         label=unknown,
         confidence=round(best_rule_score, 4),
