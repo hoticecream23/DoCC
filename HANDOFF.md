@@ -67,8 +67,10 @@ running anything:
    the labelled PDFs. Every remaining miss is an invoice, which is step 4's
    problem, not the taxonomy's.
 
-2. **Wire in the text quality gate and turn it on.** This is now the highest
-   value item in the repo and it did not exist when this file was written.
+2. ~~**Wire in the text quality gate and turn it on.**~~ **Done.** Schema
+   1.1.0, `ExtractionMethod.ocr_rescued`, gate enabled. It rescued 44 pages
+   across 28 documents on the labelled set. Original note kept below because
+   the reasoning still applies to the next person who wants to change it.
 
    A native PDF text layer can be somebody else's bad OCR. All 25 client
    invoice PDFs carry one (`lnvoice`, `lnvoico No. 1OO11`, `Itrvoice NuDb€r`),
@@ -92,36 +94,54 @@ running anything:
    Do not enable it without one of these. A silent accuracy jump that no stored
    record can explain is exactly the failure `schema_version` exists to prevent.
 
-3. **Decide what happens to the 21 unsupported files** before the first real
+3. **Improve OCR on real scanned images. This is now the top item.** Measured,
+   not predicted: 0.450 on the 40 image files in the labelled set against
+   0.972 on the 71 PDFs, with 18 of the 40 abstaining. The PDF half of the
+   corpus is close to done and the image half is barely started, and images
+   are 70% of `Client_Documents/`. Look at preprocessing before models:
+   deskew, denoise, binarise, and check `psm` per document, since a single
+   column invoice and a two column statement do not want the same page
+   segmentation mode.
+
+4. **Decide what happens to the 21 unsupported files** before the first real
    run, so the document count in the report means what it appears to mean.
    Note these are 19 `.xlsx`, one `.zip` and one macOS resource fork: they have
    no text layer, so they are unrelated to the corruption problem above.
 
-4. **Profile the corpus.**
+5. **Profile the corpus.**
    `python -m baseline profile --input Client_Documents --output profile.md`.
    The native versus scanned split, the per field pattern hit rates, and the
    rule layer coverage decide where the effort goes. Expect this to say that
    OCR quality is the dominant variable.
 
-5. **Score classification immediately**, using `Classification.csv` converted
-   into a gold file through `config/taxonomy.yaml`. Report the lossy labels
-   collapsed, and say in the report that they were collapsed. It costs almost
-   nothing and gives the first real number this project has ever had. `model_min_confidence` at 0.45 was fitted on
-   synthetic data and will be wrong; the harness reports the threshold that
-   holds a 1, 5 and 10 percent error rate, so take it from there.
+6. ~~**Score classification.**~~ **Done, and it is reproducible.**
 
-6. **Build gold for the rest.** Do not annotate cold. Run the baseline, then
+   ```bash
+   python -m baseline import-labels --csv Classification_Doc/Classification.csv --root Classification_Doc --output gold_classification.jsonl
+   python -m baseline run --input Classification_Doc --output results_classification.jsonl --workers 4
+   python -m baseline eval --gold gold_classification.jsonl --pred results_classification.jsonl
+   ```
+
+   Accuracy 0.786, macro F1 0.625, coverage 0.821, 0.956 when it answers.
+   PDFs 69/71, images 18/40.
+
+   **`model_min_confidence` has still not been retuned and the model has still
+   never been retrained.** It has no `court_document` class, so it cannot
+   predict 41% of the labelled set. Retrain first, then take the threshold
+   from the harness's coverage at 1, 5 and 10 percent error.
+
+7. **Build gold for the rest.** Do not annotate cold. Run the baseline, then
    correct its output, which is far faster. Format is in `tests/make_gold.py`.
    **Include character offsets this time.** Synthetic gold could not provide
    them honestly, so span scoring has never run, and span accuracy is exactly
    what a layout model gets judged on.
 
-7. **Score the baseline for real.**
+8. **Score the baseline for real.**
    `python -m baseline eval --gold gold.jsonl --pred results.jsonl --pred-tables tables.jsonl`.
    That number is the floor. Write it down. Everything from here is measured
    against it.
 
-8. **Retrain and retune.** `train`, then `tune-thresholds`, once there is
+9. **Retrain and retune.** `train`, then `tune-thresholds`, once there is
    enough corrected data to train on.
 
 ## Then the new approach

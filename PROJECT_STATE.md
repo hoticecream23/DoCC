@@ -1,7 +1,7 @@
 # Project state
 
-Last updated: 2026-09-04 (taxonomy reconciled; text quality gate; rule layer
-measured at 0.986 on the labelled PDFs)
+Last updated: 2026-09-04 (taxonomy reconciled; text quality gate live;
+first end to end score on the real corpus)
 
 ## What this is
 
@@ -14,8 +14,8 @@ interchangeably.
 
 All four components are built, wired, and tested. Evaluation harness
 is in, plus a knowledge graph v0 spike and table extraction v0. The real
-corpus has arrived, the taxonomy is reconciled against it, and the rule
-layer is measured on it. 264 tests pass.
+corpus has arrived, the taxonomy is reconciled against it, and the system is
+measured end to end on it. 268 tests pass.
 
 | Component | State | Notes |
 | --- | --- | --- |
@@ -568,6 +568,10 @@ side effect of this work.
 Rule layer only, no model, on the 72 PDFs of the labelled set, scored against
 the mapped labels. Four passes, each isolating one cause:
 
+Rule layer only, PDFs only, measured by script rather than by the harness.
+Kept because the decomposition is the point; superseded as a headline by the
+end to end number below.
+
 | pass | score | what changed |
 | --- | --- | --- |
 | as found | 52 / 72 = 0.722 | 8 unknown, 7 wrong to `purchase_order`, 4 wrong to `bank_statement` |
@@ -580,13 +584,63 @@ The one remaining miss is `1-8-2026Eoscar.pdf` at 0.6, below
 assigned a wrong class**, so rule layer precision is 1.0 and the deficit is
 entirely recall, which is the trade the whole system is built to make.
 
-Two caveats on that 0.986, both material:
+That 0.986 was measured with the rule layer alone, on PDFs only, by a script
+rather than by the harness. Running the real pipeline over the whole labelled
+set corrected it in both directions, and the correction is below.
 
-- **The quality gate is disabled by default**, so a run today reproduces the
-  0.736 line, not the 0.986 one. The number is real but it is conditional on
-  turning the gate on.
-- **The 40 image files in the labelled set are not in it.** They need OCR end
-  to end and were out of scope here.
+### The end to end number
+
+`baseline import-labels` turns `Classification.csv` into gold, `baseline run`
+processes the corpus, `baseline eval` scores it. All 112 files, images
+included, gate on, model loaded. This is the first number in this project that
+anyone can reproduce with three commands.
+
+| metric | value |
+| --- | --- |
+| accuracy | 0.786 |
+| macro F1 | 0.625 |
+| coverage | 0.821 |
+| **accuracy when it answers** | **0.956** |
+
+| population | n | correct | abstained | wrong |
+| --- | --- | --- | --- | --- |
+| PDFs | 71 | 69 (0.972) | 2 | 0 |
+| images | 40 | 18 (0.450) | 18 | 4 |
+
+The gate rescued **44 pages across 28 documents**.
+
+Two things this says that the PDF only number could not.
+
+**The images are the whole remaining problem.** 0.450 against 0.972, and they
+are 40 of the 112. Everything the handoff has said since before this work
+about OCR on real scans being the critical path is now measured rather than
+predicted.
+
+**Precision holds where the text is readable.** Zero wrong answers on 71 PDFs.
+All four wrong answers are images, and two of them are documents the client
+filed under `tax document` whose own title is TAX INVOICE, which taxonomy.yaml
+already records as a lossy label. So at least two of the four are arguably
+right about the document and wrong only about the client's filing.
+
+### A bug this run found, worth recording
+
+The first full run scored 0.845 on the PDFs where the rule layer alone had
+scored 0.972. The cause was the cascade in `classify.py` not doing what
+this file said it did.
+
+Documented: strong rule, then model, then weak rule, then unknown, with the
+weak rule running "only if the model declined or is absent". Actual: a model
+returning anything below `model_min_confidence` returned `unknown`
+immediately, and the weak rule layer was never reached. **A model that had
+declined was being treated as a model that had disagreed.**
+
+It cost 11 invoices carrying a rule score of 0.88 against a `rule_min` of 0.7.
+The model in question is trained on 42 synthetic samples and has no
+`court_document` class at all; it cannot speak loudly about anything, and its
+silence was being read as a verdict. Below threshold now falls through.
+
+This is the second time in this work that a documented behaviour and the code
+disagreed, and both times the code was wrong and the documentation was right.
 
 **Read this as a rule layer floor, not a system score.** No model ran.
 
@@ -611,11 +665,9 @@ its own. Had they been fixed together, none of these numbers would exist.
 
 ## Known gaps
 
-1. **The quality gate is built but disabled.** Enabling it needs somewhere in
-   the record to say a page was rescued, and that is a versioned schema
-   change. Until it lands, a run reproduces 0.736 on the labelled PDFs, not
-   the 0.986 the gate makes possible. This is the highest value open item in
-   the repo.
+1. **OCR on real scanned images is the critical path and it is measured now.**
+   0.450 on the 40 image files against 0.972 on the PDFs. 18 of the 40
+   abstain. Nothing else in the system will move the overall number as much.
 
 2. **Most numbers in this file are still from 10 synthetic documents.**
    Classification is now measured on the real labelled PDFs. Metadata,
