@@ -16,6 +16,23 @@ extraction:
     psm: 3
     timeout_s: 120
   # Native text is trusted. OCR confidence comes from the engine.
+  # A native text layer can itself be somebody else's bad OCR, saved into the
+  # PDF. When it is, the extractor never routes the page to OCR and nothing
+  # downstream learns the text is corrupt. This gate scores the text and
+  # re-renders the page through OCR when it looks substituted.
+  #
+  # threshold measured on the client set: the 25 client invoices, all of which
+  # carry a corrupt text layer, score 0.028 to 0.191. The 46 court PDFs, which
+  # are clean, score 0.000 to 0.013. 0.02 sits in the gap with no overlap on
+  # either side. See baseline/textquality.py for what the score counts.
+  #
+  # enabled: false until the record contract gains somewhere to report the
+  # rescue. Turning it on changes extraction output without changing the
+  # schema, which would make two runs incomparable and unexplainable.
+  quality_gate:
+    enabled: false
+    threshold: 0.02
+    min_tokens: 40
   native_confidence: 0.98
   # Docs with no extractable text at all.
   empty_confidence: 0.0
