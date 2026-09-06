@@ -15,6 +15,13 @@ extraction:
     dpi: 300
     psm: 3
     timeout_s: 120
+    # An image file arrives at whatever resolution it was saved at, while the
+    # PDF route renders every scanned page at the dpi above. Small images were
+    # the OCR failure: on the 40 labelled images, raising the short side to
+    # 1000px moved mean confidence 0.689 -> 0.766 and cut the count scoring
+    # under 0.6 from 15 to 8. 1300 and 1600 were both worse, so this is a knee
+    # and not a "bigger is better" knob. Zero disables the rescale.
+    min_short_side: 1000
   # Native text is trusted. OCR confidence comes from the engine.
   # A native text layer can itself be somebody else's bad OCR, saved into the
   # PDF. When it is, the extractor never routes the page to OCR and nothing

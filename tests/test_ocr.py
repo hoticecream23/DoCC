@@ -188,3 +188,71 @@ def test_engine_is_pluggable_and_null_engine_is_never_available():
 def test_unknown_engine_name_fails_loudly():
     with pytest.raises(KeyError):
         get_engine("definitely_not_an_engine")
+
+
+# ------------------------------------------------- upscale and coordinates
+
+def test_upscale_only_enlarges_below_target():
+    from PIL import Image
+
+    from baseline.extract import _upscale_for_ocr
+
+    small = Image.new("RGB", (400, 600))
+    out, scale = _upscale_for_ocr(small, {"min_short_side": 1000})
+    assert scale == 2.5
+    assert min(out.size) == 1000
+
+    big = Image.new("RGB", (1200, 1600))
+    out, scale = _upscale_for_ocr(big, {"min_short_side": 1000})
+    assert scale == 1.0
+    assert out is big
+
+    off, scale = _upscale_for_ocr(small, {"min_short_side": 0})
+    assert scale == 1.0
+    assert off is small
+
+
+def test_ocr_words_land_in_page_coordinate_space():
+    """Boxes are divided by the scale of the image the engine actually read.
+
+    metadata.py normalises every box by page_sizes, so a box read off a
+    rendered or enlarged image has to come back down first.
+    """
+    from baseline.extract import _ocr_words
+
+    word = OCRWord(text="x", x0=100, y0=200, x1=140, y1=260, conf=0.9,
+                   char_start=0, char_end=1)
+    at_300dpi = _ocr_words([word], pno=2, scale=300 / 72.0)[0]
+    assert at_300dpi.page == 2
+    assert at_300dpi.x0 == pytest.approx(24.0)
+    assert at_300dpi.y1 == pytest.approx(62.4)
+    assert at_300dpi.char_start == 0
+
+    assert _ocr_words([word], pno=0, scale=1.0)[0].x0 == 100
+
+
+def test_image_word_boxes_stay_inside_the_page(tmp_path, cfg):
+    """The regression this guards: upscaling for OCR without scaling back
+    pushed every box outside page_sizes, and template regions read
+    w.x0 / page_width.
+
+    Builds its own image, deliberately below min_short_side, because the
+    synthetic corpus has no image files and this check has to run.
+    """
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (420, 560), "white")
+    draw = ImageDraw.Draw(img)
+    draw.text((20, 20), "INVOICE 12345", fill="black")
+    draw.text((20, 60), "TOTAL 99.00", fill="black")
+    path = tmp_path / "small.png"
+    img.save(path)
+
+    opts = cfg.extract_opts().get("ocr", {})
+    assert min(img.size) < int(opts.get("min_short_side", 0)), "image must be under the target"
+
+    res = extract(path, cfg)
+    pw, ph = res.page_sizes[0]
+    assert (pw, ph) == (420.0, 560.0)
+    assert res.words, "expected word boxes"
+    assert all(w.x1 <= pw and w.y1 <= ph for w in res.words)

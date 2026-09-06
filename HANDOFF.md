@@ -94,14 +94,71 @@ running anything:
    Do not enable it without one of these. A silent accuracy jump that no stored
    record can explain is exactly the failure `schema_version` exists to prevent.
 
-3. **Improve OCR on real scanned images. This is now the top item.** Measured,
-   not predicted: 0.450 on the 40 image files in the labelled set against
-   0.972 on the 71 PDFs, with 18 of the 40 abstaining. The PDF half of the
-   corpus is close to done and the image half is barely started, and images
-   are 70% of `Client_Documents/`. Look at preprocessing before models:
-   deskew, denoise, binarise, and check `psm` per document, since a single
-   column invoice and a two column statement do not want the same page
-   segmentation mode.
+3. ~~**Improve OCR on real scanned images.**~~ **Partly done. Still the top
+   item, but for a different reason than this file assumed.**
+
+   The cause was not skew, noise or binarisation. It was **resolution**, and
+   it was an asymmetry between the two routes rather than a hard OCR problem.
+   A scanned PDF page is rendered by `page.get_pixmap(dpi=300)`, so it reaches
+   Tesseract at 300 DPI. An image file was opened and passed straight through
+   at whatever resolution it was saved at, and most of the corpus is far under
+   300 DPI: 17 of the 40 labelled images have a short side below 640px. Mean
+   OCR confidence on those was 0.508 against 0.813 for the rest, and 76% of
+   them came back `unknown`. Pearson r between log short side and OCR
+   confidence is 0.61.
+
+   `extraction.ocr.min_short_side: 1000` now upscales an image below the
+   target with LANCZOS before OCR. Measured on the labelled set:
+
+   | | before | after |
+   |---|---|---|
+   | image accuracy | 0.450 | **0.525** |
+   | image abstentions | 18/40 | **14/40** |
+   | mean OCR confidence, images | 0.683 | **0.765** |
+   | PDF accuracy | 0.972 | 0.972 (unchanged) |
+   | overall accuracy | 0.784 | **0.811** |
+   | macro F1 | 0.625 | **0.664** |
+   | coverage | 0.821 | **0.857** |
+
+   Three things worth knowing before anyone changes this:
+
+   - **1000 is a knee, not a floor.** Targets of 1300 and 1600 were both
+     worse: 1000 improved 22 images and regressed 3, 1600 improved 19 and
+     regressed 6, some badly (`vendor contract template.png` 0.871 to 0.505).
+     Enlarging an image that is already legible only softens its glyphs. Do
+     not raise this number without re-running the sweep.
+   - **Grayscale conversion does nothing and sometimes hurts.** Mean across
+     the 40 was 0.689 against 0.688, and it cost three large scans real
+     accuracy (`PostDapartment_Payslip.jpg` 0.765 to 0.660). It is not in the
+     code. Do not add it back on the assumption that it must help.
+   - **No single `psm` wins.** Swept 3, 4, 6, 11 and 12 over the images still
+     failing after upscale. The best mode is per document and the spread is
+     wide: `Sample_voter_id.jpg` wants 12 (0.268 to 0.546), `Tax_statement.jpg`
+     and `Aadhar_card.webp` are both best at 3. Picking best-of-N by the
+     engine's own confidence is a trap, because a mode that reads half the
+     page can score higher on the half it read. If this is worth doing it
+     needs an external quality signal, so `psm` stays at 3 for now.
+
+   **A coordinate bug was found and fixed on the way past.** OCR word boxes
+   were stored in the pixel space of the image the engine read, while
+   `page_sizes` held the page's own units, and `metadata.py` normalises every
+   box as `w.x0 / page_width`. For OCR'd PDF pages those two differed by
+   `dpi/72`, so **24 of 29 OCR'd PDFs had over half their word boxes outside
+   the declared page**, and every template region over a scanned page was
+   reading against a box four times too large. `_ocr_words` now divides by the
+   scale of the image that was actually read, at all three OCR call sites.
+   That count is 0/29 now. This never showed up in the numbers above because
+   no template currently fires on a scanned page, but it would have silently
+   broken the layout work that is the whole point of step 7's offsets.
+
+   **What is left, and it is still the largest gap in the system.** Images are
+   0.525 against 0.972 for PDFs. The residue is dominated by ID cards, which
+   are not page-like: Aadhaar, PAN, voter ID and passport are dense, coloured,
+   and printed over patterned security backgrounds. Upscaling does not help
+   them much and `psm` helps inconsistently. They likely want their own route
+   rather than another global knob. Before adding one, check how many of the
+   259 real files are actually ID cards; the labelled set may over-represent
+   them.
 
 4. **Decide what happens to the 21 unsupported files** before the first real
    run, so the document count in the report means what it appears to mean.
@@ -299,6 +356,10 @@ the proven edges distinguishable from the inferred ones.
 - `tables.py` must stay a separate pass. The moment a table lands inside
   `DocumentRecord`, the record contract stops being frozen and every stored
   run needs re-extracting to gain a field.
+- OCR word boxes and `page_sizes` must be in the same coordinate space.
+  `metadata.py` normalises every box as `w.x0 / page_width`, so a box read off
+  a rendered or upscaled image has to be divided back down first. `_ocr_words`
+  is the only place that should build a `WordBox` from an `OCRWord`.
 - Table cell offsets are null or exact, never approximate. `verify_offsets`
   on `TableRecord` enforces it, same as on the record.
 - `config/taxonomy.yaml` is the only place the client label mapping lives.
