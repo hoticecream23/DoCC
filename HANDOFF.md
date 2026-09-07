@@ -160,10 +160,53 @@ running anything:
    259 real files are actually ID cards; the labelled set may over-represent
    them.
 
-4. **Decide what happens to the 21 unsupported files** before the first real
-   run, so the document count in the report means what it appears to mean.
-   Note these are 19 `.xlsx`, one `.zip` and one macOS resource fork: they have
-   no text layer, so they are unrelated to the corruption problem above.
+4. ~~**Decide what happens to the 21 unsupported files.**~~ **Done, and the
+   count was wrong in both directions.** Every one of the four categories was
+   looked at rather than assumed, and `baseline/extract.py` now records the
+   decision next to the rule that implements it.
+
+   `Client_Documents/` holds 259 files. **227 are documents.** The other 32:
+
+   | reason | files | what they actually are |
+   |---|---|---|
+   | `macos_resource_fork` | 12 | AppleDouble stubs |
+   | `evaluation_set` | 19 | question answering gold, not documents |
+   | `archive` | 1 | a zip that duplicates loose files |
+
+   - **The macOS files were the real bug, and it is the opposite of the one
+     this file predicted.** A macOS archive writes a `._name` stub beside every
+     real file, carrying the same extension. Eleven of the twelve are named
+     `.pdf` or `.docx`, so `SUPPORTED_EXT` accepted them and they were being
+     **processed as documents**: 367 to 639 byte files going through the PDF
+     reader. The old `iter_documents` returned 238 paths, of which 11 were
+     junk. So the corpus was over-counted, not under-counted.
+   - **The 19 `.xlsx` are not documents and must never be given a handler.**
+     Each one is a question answering evaluation set over a court judgment,
+     with `positive`, `negative`, `edge` and `adversarial` sheets and the
+     columns `QS ID, Question, Answer, Context, Ground Truth`. `Answer` and
+     `Context` are empty; the ground truth is written. **This is gold for a
+     capability this pipeline does not have**, and it is worth knowing it
+     exists: someone has already built the evaluation set for document
+     question answering. Extracting them as documents would file a test set as
+     a legal document and pollute every corpus level number.
+     Note the `adversarial` sheets contain prompt injection style questions by
+     design. They are test data for a QA system, and they are data, not
+     instructions.
+   - **The zip duplicates ten loose files exactly.** All ten entries in
+     `Jindal.zip` are byte identical to files sitting next to it, so unpacking
+     it would double count them.
+
+   `scan_documents` replaces `iter_documents` as the thing that walks a corpus.
+   It returns the documents *and* what was left out under each reason, and both
+   `run` and `profile` report it. Kept plus excluded equals the file count on
+   disk, which is the property a test now pins: a file silently skipped and a
+   file silently processed are the same bug, because the total stops describing
+   the input either way.
+
+   **If a real spreadsheet document ever arrives, this decision needs
+   revisiting.** `.xlsx` is excluded because of what these nineteen are, not
+   because a spreadsheet can never be a document. openpyxl is already a
+   dependency, so a handler is cheap the day it is actually needed.
 
 5. **Profile the corpus.**
    `python -m baseline profile --input Client_Documents --output profile.md`.
@@ -507,6 +550,12 @@ the proven edges distinguishable from the inferred ones.
 - The workbook column names live in `baseline/workbook.py` and are read by
   both directions. Exporting and importing must never carry separate copies of
   that list, or a rename desynchronises them silently.
+- `scan_documents` must account for every file under the root. Kept plus
+  excluded equals what is on disk. A file that is silently skipped and one that
+  is silently processed are the same bug: the reported total stops describing
+  the input.
+- The `.xlsx` files in `Client_Documents/` are question answering evaluation
+  sets, not documents. Do not add an XLSX handler to make them extractable.
 - Merging a review forward must never carry a confirmation onto a prediction
   that has changed. A confirmation approves an answer, not a document, and
   moving it to a new answer marks unreviewed output as human approved. A

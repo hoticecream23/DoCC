@@ -17,7 +17,7 @@ from typing import Any, Callable, Iterable
 from . import classify as classify_mod
 from . import tagging as tagging_mod
 from .config import Config, load_config_cached
-from .extract import ExtractionResult, extract, iter_documents, to_canonical_offsets
+from .extract import ExtractionResult, extract, scan_documents, to_canonical_offsets
 from .logging_setup import get_logger, setup_logging
 from .metadata import extract_fields
 from .schema import (
@@ -249,7 +249,12 @@ def run_batch(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     bdir = Path(bbox_dir) if bbox_dir else out_path.with_suffix(out_path.suffix + ".bboxes")
 
-    paths = iter_documents(input_dir)
+    paths, excluded = scan_documents(input_dir)
+    if excluded:
+        # Say what was left out and why. A total that quietly omits input does
+        # not mean what it appears to mean.
+        log.info("files excluded as not documents",
+                 extra={reason: len(items) for reason, items in sorted(excluded.items())})
     skip = existing_doc_ids(out_path) if resume else set()
     todo = []
     for p in paths:
@@ -264,10 +269,11 @@ def run_batch(
     log.info(
         "batch starting",
         extra={"found": len(paths), "skipped": len(paths) - len(todo), "todo": len(todo),
-               "workers": workers},
+               "excluded": sum(len(v) for v in excluded.values()), "workers": workers},
     )
 
-    stats = {"found": len(paths), "skipped": len(paths) - len(todo), "written": 0, "failed": 0}
+    stats = {"found": len(paths), "skipped": len(paths) - len(todo), "written": 0, "failed": 0,
+             "excluded": {reason: len(items) for reason, items in sorted(excluded.items())}}
     if not todo:
         return stats
 

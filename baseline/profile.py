@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .classify import classify
 from .config import Config, load_config_cached
-from .extract import extract, iter_documents
+from .extract import extract, scan_documents
 from .logging_setup import get_logger
 from .metadata import _pattern_candidates
 from .schema import ExtractionMethod, build_canonical_text, compute_doc_id
@@ -39,9 +39,13 @@ def _dist(values: list[int]) -> dict:
 
 def profile_corpus(input_dir: str | Path, cfg: Config) -> dict:
     """Walk the corpus and count things. Nothing here needs a trained model."""
-    paths = iter_documents(input_dir)
+    paths, excluded = scan_documents(input_dir)
     stats: dict = {
         "n_documents": len(paths),
+        # What the corpus holds that is not a document, so the count above can
+        # be checked against the file count on disk rather than trusted.
+        "excluded": {reason: len(items) for reason, items in sorted(excluded.items())},
+        "n_files_seen": len(paths) + sum(len(v) for v in excluded.values()),
         "by_extension": collections.Counter(),
         "methods": collections.Counter(),
         "page_methods": collections.Counter(),
@@ -128,6 +132,20 @@ def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
     a("")
     a(f"Source: `{input_dir}`")
     a(f"Documents found: **{n}**")
+    excluded = stats.get("excluded") or {}
+    if excluded:
+        seen = stats.get("n_files_seen", n)
+        a("")
+        a(f"`{input_dir}` holds {seen} files. {seen - n} of them are not documents "
+          "and were excluded before anything ran:")
+        a("")
+        a("| reason | files |")
+        a("| --- | --- |")
+        for reason, count in excluded.items():
+            a(f"| `{reason}` | {count} |")
+        a("")
+        a("See `EXCLUDED_EXT` and `_exclusion_reason` in `extract.py` for what each "
+          "reason means and why it was decided that way.")
     a("")
     a("No models were used. Everything below is the deterministic floor.")
     a("")
