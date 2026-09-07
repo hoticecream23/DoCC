@@ -371,13 +371,52 @@ Open items:
     sheet was exported from an older run, so some confirmed values have drifted
     from what the pipeline currently produces.
 
-- **No exporter from `results.jsonl` into the workbook exists yet.** This is
-  now the binding constraint: the importer can consume a reviewed sheet, but
-  filling the next one still means doing it by hand.
-- **The Taxonomy tab is empty on purpose**, waiting on a generated CSV. It
-  should be exported from `classes.yaml`, `fields.yaml` and `tags.yaml` rather
-  than typed, or it drifts from the code within a month. The exporter is about
-  40 lines and has not been written yet.
+- ~~**No exporter from `results.jsonl` into the workbook.**~~ **Done.**
+  `baseline export-workbook --input results.jsonl --output workbook.xlsx
+  [--tables tables.jsonl]`. All five tabs, and the column headers are
+  byte identical to the sheet Karishma built, checked tab by tab. It lives in
+  the same module as the importer on purpose: the two have to agree on every
+  column name, and a rename touching only one of them breaks the loop in
+  silence.
+
+  What it will not do, and why:
+
+  - **The full text never goes in a cell.** `TEXT_PREVIEW` is 200 characters
+    with whitespace collapsed; `TEXT_SHA256` and `CHAR_COUNT` are the tripwire.
+  - **Every review column ships blank**, `IS_GOLD` above all. Pre-filling it
+    would turn an unreviewed export into gold on the next import and invent a
+    score out of nothing.
+  - **It refuses to overwrite an existing file** without `--overwrite`. Nothing
+    here can merge a review forward yet, so re-exporting over a reviewed sheet
+    would destroy the expensive half of the work. Merging corrections forward
+    across runs is the next thing this needs.
+  - **A string beginning with `=` is written as text.** openpyxl types it as a
+    formula otherwise, and OCR output is untrusted input.
+  - `LANGUAGE` and `QUALITY` are left blank. The pipeline has no source for
+    either, and filling them would be a guess wearing the pipeline's clothes.
+
+- ~~**The Taxonomy tab is empty.**~~ **Done**, and generated rather than typed.
+  35 rows out of `classes.yaml`, `fields.yaml` and `tags.yaml` on every export,
+  so it cannot drift from the code.
+
+- **The loop is closed and proved lossless.** Export the run, mark every row
+  `OK`, import it back, and the gold that comes out scores 1.0 against the
+  predictions that went in on classification, metadata and tagging. Two real
+  defects were found by that test and would not have been found any other way:
+
+  - A confirmed abstention was being written as a gold label of `unknown`.
+    There is no such class. Agreeing the pipeline was right not to answer is
+    not a label, and the document still has a real class nobody has recorded,
+    so those rows now carry no classification gold and the report says how many
+    are waiting on a `CLASS_CORRECTED`. On this run that is 17 of 112.
+  - A field whose `normalized_value` is null was being dropped on import. The
+    pipeline keeps such a field and the harness falls back to the raw value, so
+    dropping it lost a real answer. It now keeps the raw value too.
+
+- **Next on this track: merge a review forward.** Re-running the pipeline
+  produces a new results file, and today the only way to carry an existing
+  review onto it is by hand. That is what stands between one reviewed sheet and
+  a growing gold set.
 
 ## Knowledge graph, where v0 leaves off
 
@@ -420,6 +459,11 @@ the proven edges distinguishable from the inferred ones.
   is the only place that should build a `WordBox` from an `OCRWord`.
 - Table cell offsets are null or exact, never approximate. `verify_offsets`
   on `TableRecord` enforces it, same as on the record.
+- The workbook column names live in `baseline/workbook.py` and are read by
+  both directions. Exporting and importing must never carry separate copies of
+  that list, or a rename desynchronises them silently.
+- `export-workbook` must never fill a review column. `IS_GOLD` set by the
+  exporter turns an unreviewed sheet into gold on the next import.
 - A workbook verdict of `spurious` must produce no gold row. It records that
   the field is not there, and inventing a row for it converts a correct
   rejection into a false negative.

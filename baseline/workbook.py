@@ -1,4 +1,11 @@
-"""Turn the reviewed index workbook back into a gold file.
+"""The index workbook, in both directions.
+
+`export_workbook` writes `results.jsonl` out as the sheet a reviewer corrects.
+`import_workbook` reads the corrected sheet back as gold. They live in one
+module because they have to agree on every column name, and a rename that
+touches only one of them silently breaks the loop.
+
+## Importing
 
 The workbook is the human facing mirror of `results.jsonl`: every document,
 its class, its fields and its tags, exported so that non engineers can correct
@@ -67,6 +74,47 @@ VERDICTS = {
 }
 TRUTHY = {"true", "yes", "y", "1"}
 
+# The column spec, in sheet order. Both directions read it, so a rename cannot
+# desynchronise the export from the import.
+#
+# The trailing review columns of each tab are the reviewer's, and export leaves
+# every one of them blank. Pre-filling IS_GOLD in particular would turn an
+# unreviewed export into gold on the next import, which is the one mistake that
+# would quietly invent a score out of nothing.
+REVIEW_COLUMNS = ["VERDICT", "IS_GOLD", "REVIEWED_BY", "REVIEW_DATE", "NOTES"]
+
+DOCUMENT_COLUMNS = [
+    "DOC_ID", "RUN_ID", "EXTRACTED_AT", "SCHEMA_VERSION", "SOURCE_PATH", "FILE_NAME",
+    "FILE_TYPE", "PAGE_COUNT", "EXTRACTION_METHOD", "PAGE_METHOD", "HAS_NATIVE_TEXT",
+    "IS_SCANNED", "EXTRACTION_CONFIDENCE", "CHAR_COUNT", "TEXT_SHA256", "TEXT_PREVIEW",
+    "DOC_CLASS", "CLASS_CONFIDENCE", "CLASS_METHOD", "CLASS_RUNNER_UP",
+    "RUNNER_UP_CONFIDENCE", "ERROR_COUNT", "ERRORS", "LANGUAGE", "QUALITY",
+    "CLASS_CORRECTED", "CLASS_VERDICT", "IS_GOLD", "REVIEWED_BY", "REVIEW_DATE", "NOTES",
+]
+METADATA_COLUMNS = [
+    "FIELD_ROW_ID", "DOC_ID", "ROW_SOURCE", "FIELD", "VALUE", "NORMALIZED_VALUE",
+    "CURRENCY", "PAGE", "CHAR_START", "CHAR_END", "CONFIDENCE", "METHOD", "VALIDATED",
+    "NORMALIZER_VERSION", "CORRECTED_VALUE", "VERDICT", "IS_GOLD", "REVIEWED_BY",
+    "REVIEW_DATE", "NOTES",
+]
+TAG_COLUMNS = [
+    "DOC_ID", "TAG", "ROW_SOURCE", "CONFIDENCE", "METHOD",
+    "VERDICT", "IS_GOLD", "REVIEWED_BY", "REVIEW_DATE",
+]
+TAXONOMY_COLUMNS = ["KIND", "NAME", "DESCRIPTION", "VALUE_TYPE", "FORMAT", "APPLIES_TO_CLASSES"]
+LINE_ITEM_COLUMNS = [
+    "DOC_ID", "TABLE_ID", "PAGE", "TABLE_METHOD", "N_ROWS", "N_COL",
+    "ROW", "COL", "CELL_TEXT", "CHAR_START", "CHAR_END", "IS_HEADER",
+]
+
+# The full text never goes in a cell. PAGE_SEP carries a form feed and every
+# offset is counted against the exact canonical string, so Excel stripping that
+# character, rewriting the line endings or hitting its 32,767 character limit
+# would silently invalidate every char_start in the Metadata tab. The sheet
+# carries a hash and a length as a tripwire instead, and the JSONL stays the
+# source of truth for text.
+PREVIEW_CHARS = 200
+
 
 @dataclass
 class WorkbookImport:
@@ -77,6 +125,7 @@ class WorkbookImport:
     unknown_tags: list[str] = field(default_factory=list)
     unknown_verdicts: list[str] = field(default_factory=list)
     unresolved_doc_ids: list[str] = field(default_factory=list)
+    confirmed_abstentions: list[str] = field(default_factory=list)
     orphan_rows: list[str] = field(default_factory=list)
     missing_correction: list[str] = field(default_factory=list)
     skipped_not_gold: int = 0
@@ -204,6 +253,7 @@ def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> Wor
         raise NotADirectoryError(f"--root is not a directory: {root}")
 
     classes = {c.casefold() for c in cfg.class_names}
+    unknown_label = str(cfg.classify_opts().get("unknown_label", "unknown")).casefold()
     normalizers = {str(f.get("name", "")).casefold(): f.get("normalizer") for f in cfg.field_defs}
     fields = set(normalizers)
     tags = {str(t.get("name", "")).casefold() for t in cfg.tag_defs}
@@ -248,6 +298,15 @@ def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> Wor
             # No usable verdict means nobody has said what the truth is.
             continue
 
+        # Confirming an abstention says the pipeline was right not to answer.
+        # It does not say the document is of class "unknown", and no such class
+        # exists. There is no gold label here until a reviewer supplies the
+        # real one, so the row is recorded and skipped rather than failing the
+        # import: the pipeline abstains on a fifth of the corpus, and that is
+        # an expected outcome rather than a broken sheet.
+        if label == unknown_label:
+            res.confirmed_abstentions.append(doc_id)
+            continue
         if label not in classes:
             res.unknown_classes.append(label)
             continue
@@ -313,11 +372,16 @@ def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> Wor
         )
         value = "" if value is None else str(value).strip()
         if not value:
-            res.missing_correction.append(
-                f"Metadata/{doc_id}/{name}: {typed!r} did not normalise to anything")
-            continue
-        if value != typed:
+            # The normalizer could not read it. The pipeline keeps such a field
+            # with a null normalized_value rather than dropping it, and the
+            # harness falls back to the raw value when scoring, so dropping it
+            # here would lose a real answer and make the round trip lossy.
+            value = typed
+            res.counts["field_not_normalised"] += 1
+        elif value != typed:
             res.counts["field_normalised"] += 1
+        if not value:
+            continue
         entry = {"field": name, "normalized_value": value}
         entry.update(offsets)
 
@@ -389,6 +453,7 @@ def render_summary(res: WorkbookImport, xlsx_path: str, root: str) -> str:
         f"- gold tags: {sum(len(r['tags']) for r in res.rows)}",
         f"- rows the reviewer marked as not belonging: {res.spurious_rows}",
         f"- rows a human added rather than corrected: {res.human_rows}",
+        f"- confirmed abstentions, which carry no label: {len(res.confirmed_abstentions)}",
     ]
     if res.skipped_not_gold:
         lines.append(f"- rows skipped because IS_GOLD was not set: {res.skipped_not_gold}")
@@ -427,6 +492,14 @@ def render_summary(res: WorkbookImport, xlsx_path: str, root: str) -> str:
                   "not join to any prediction until the content turns up.", ""]
         lines += [f"- `{d}`" for d in sorted(set(res.unresolved_doc_ids))]
 
+    if res.confirmed_abstentions:
+        lines += ["", "## Abstentions confirmed as correct", "",
+                  "The reviewer agreed the pipeline was right not to answer. That is",
+                  "useful, but it is not a label: these documents still have a real",
+                  "class that nobody has written down, so they carry no classification",
+                  "gold. Put the true class in CLASS_CORRECTED to score them.", "",
+                  f"- {len(res.confirmed_abstentions)} document(s)"]
+
     if res.missing_correction:
         lines += ["", "## Rows marked wrong with nothing to replace them", "",
                   "Nobody has said what the right answer is, so these produce no gold.", ""]
@@ -446,3 +519,177 @@ def render_summary(res: WorkbookImport, xlsx_path: str, root: str) -> str:
         lines += [f"- {p}" for p in res.problems]
 
     return "\n".join(lines) + "\n"
+
+
+# ==========================================================================
+# Exporting
+#
+# The other half of the loop. Correcting an exported row is far faster than
+# annotating from scratch, so until this existed the sheet had to be filled by
+# hand and the review effort had nowhere to come from.
+# ==========================================================================
+
+
+def _preview(text: str) -> str:
+    """A short, Excel safe look at the text. Never the text itself.
+
+    Control characters are what make the full text unsafe to store, so they are
+    the first thing to go: a form feed or a stray carriage return in a cell is
+    exactly what would rewrite the string Excel hands back.
+    """
+    flat = " ".join(str(text or "").split())
+    return flat[:PREVIEW_CHARS]
+
+
+def _runner_up(scores: dict[str, Any], label: str) -> tuple[str, Any]:
+    """The best scoring class that is not the one we picked.
+
+    A reviewer deciding whether `purchase_order` should have been `invoice`
+    wants to see what came second and by how much.
+    """
+    others = [(k, v) for k, v in (scores or {}).items() if k != label]
+    if not others:
+        return "", ""
+    name, score = max(others, key=lambda kv: kv[1])
+    return name, round(float(score), 4)
+
+
+def _write_row(ws, values: list[Any]) -> None:
+    """Append a row, forcing every string to stay a string.
+
+    openpyxl infers a cell's type from its value, so a string beginning with
+    `=` is written as a formula. OCR text is untrusted input and does contain
+    such strings, and a formula would change what the importer reads back as
+    well as what Excel runs. Forcing the type keeps the value exact.
+    """
+    ws.append(values)
+    for cell in ws[ws.max_row]:
+        if isinstance(cell.value, str):
+            cell.data_type = "s"
+
+
+def export_workbook(
+    records: list[dict[str, Any]],
+    cfg: Config,
+    out_path: str | Path,
+    tables: list[dict[str, Any]] | None = None,
+    run_id: str = "",
+    overwrite: bool = False,
+) -> dict[str, int]:
+    """Write a results file out as the review workbook. Returns row counts."""
+    import hashlib
+
+    import openpyxl
+
+    out = Path(out_path)
+    if out.exists() and not overwrite:
+        # Re-exporting over a reviewed sheet destroys the review, and the
+        # review is the expensive half. Nothing here can merge corrections
+        # forward yet, so refusing is the only safe answer.
+        raise FileExistsError(
+            f"{out} exists. Exporting would overwrite any review already in it. "
+            "Write to a new path, or pass overwrite if the file is disposable."
+        )
+
+    run_id = run_id or f"run_{__import__('datetime').datetime.now():%Y%m%dT%H%M%S}"
+    extracted_at = f"{__import__('datetime').datetime.now():%Y-%m-%dT%H:%M:%S}"
+
+    wb = openpyxl.Workbook()
+    del wb["Sheet"]
+    docs = wb.create_sheet("Documents")
+    meta = wb.create_sheet("Metadata")
+    tags_ws = wb.create_sheet("Tags")
+    taxo = wb.create_sheet("Taxonomy")
+    items = wb.create_sheet("Line items")
+    for ws, cols in (
+        (docs, DOCUMENT_COLUMNS), (meta, METADATA_COLUMNS), (tags_ws, TAG_COLUMNS),
+        (taxo, TAXONOMY_COLUMNS), (items, LINE_ITEM_COLUMNS),
+    ):
+        _write_row(ws, cols)
+
+    counts = Counter()
+    for rec in records:
+        doc_id = rec.get("doc_id", "")
+        text = rec.get("text") or {}
+        cls = rec.get("classification") or {}
+        diag = rec.get("diagnostics") or {}
+        full = text.get("full") or ""
+        runner, runner_conf = _runner_up(cls.get("all_scores") or {}, cls.get("label"))
+        errors = diag.get("errors") or []
+        source = rec.get("source_path", "")
+
+        _write_row(docs, [
+            doc_id, run_id, extracted_at, rec.get("schema_version", ""), source,
+            rec.get("filename", ""),
+            source.rsplit(".", 1)[-1].lower() if "." in source else "",
+            diag.get("page_count", ""), text.get("method", ""),
+            ", ".join(text.get("page_methods") or []),
+            diag.get("has_native_text", ""), diag.get("is_scanned", ""),
+            text.get("extraction_confidence", ""), text.get("char_count", ""),
+            hashlib.sha256(full.encode("utf-8")).hexdigest(), _preview(full),
+            cls.get("label", ""), cls.get("confidence", ""), cls.get("method", ""),
+            runner, runner_conf, len(errors), "; ".join(errors),
+            # LANGUAGE and QUALITY have no pipeline source. They are the
+            # reviewer's, and inventing a value for them would be a guess
+            # wearing the pipeline's clothes.
+            "", "",
+            *[""] * 6,
+        ])
+        counts["documents"] += 1
+
+        for n, m in enumerate(rec.get("metadata") or [], start=1):
+            _write_row(meta, [
+                f"{doc_id}_{n}", doc_id, "pipeline", m.get("field", ""),
+                m.get("value", ""), m.get("normalized_value", ""), m.get("currency", ""),
+                m.get("page", ""), m.get("char_start", ""), m.get("char_end", ""),
+                m.get("confidence", ""),
+                # regex_checksum and regex_format stay distinct. Collapsing them
+                # to "regex" reintroduces the first bug the eval harness ever
+                # caught, at the human layer where nothing would catch it again.
+                m.get("method", ""),
+                m.get("validated", ""), m.get("normalizer_version", ""),
+                *[""] * 6,
+            ])
+            counts["metadata"] += 1
+
+        for t in rec.get("tags") or []:
+            _write_row(tags_ws, [
+                doc_id, t.get("tag", ""), "pipeline",
+                t.get("confidence", ""), t.get("method", ""),
+                *[""] * 4,
+            ])
+            counts["tags"] += 1
+
+    # The Taxonomy tab is generated, never typed. Typed, it drifts from the
+    # code within a month and the reviewer is checking against a vocabulary
+    # the pipeline no longer has.
+    for c in cfg.classes.get("classes", []):
+        _write_row(taxo, ["class", c.get("name", ""), c.get("description", ""), "", "", ""])
+        counts["taxonomy"] += 1
+    for f in cfg.field_defs:
+        _write_row(taxo, [
+            "field", f.get("name", ""), f.get("description", ""), f.get("type", ""),
+            (f.get("pattern") or {}).get("regex", ""),
+            ", ".join(f.get("classes") or []) or "all",
+        ])
+        counts["taxonomy"] += 1
+    for t in cfg.tag_defs:
+        _write_row(taxo, ["tag", t.get("name", ""), t.get("description", ""), "bool", "", ""])
+        counts["taxonomy"] += 1
+
+    for rec in tables or []:
+        doc_id = rec.get("doc_id", "")
+        for table in rec.get("tables") or []:
+            for cell in table.get("cells") or []:
+                _write_row(items, [
+                    doc_id, table.get("table_id", ""), table.get("page", ""),
+                    table.get("method", ""), table.get("n_rows", ""), table.get("n_cols", ""),
+                    cell.get("row", ""), cell.get("col", ""), cell.get("text", ""),
+                    cell.get("char_start", ""), cell.get("char_end", ""),
+                    bool(table.get("header")) and cell.get("row") == 0,
+                ])
+                counts["line_items"] += 1
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out)
+    return dict(counts)

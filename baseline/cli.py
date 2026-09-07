@@ -5,6 +5,7 @@
   baseline tune-thresholds --annotations FILE --predictions FILE
   baseline profile         --input DIR --output profile.md
   baseline import-labels   --csv FILE --root DIR --output gold.jsonl
+  baseline export-workbook --input results.jsonl --output workbook.xlsx
   baseline import-workbook --xlsx FILE --root DIR --output gold.jsonl
   baseline eval            --gold FILE --pred FILE [--output report.md]
   baseline compare         --gold FILE --a FILE --b FILE [--output cmp.md]
@@ -26,7 +27,7 @@ from .evaluate import compare, evaluate, render_comparison, render_report
 from .extract import extract
 from .graph import build as build_graph
 from .labels import import_labels, render_summary
-from .workbook import import_workbook
+from .workbook import export_workbook, import_workbook
 from .workbook import render_summary as render_workbook_summary
 from .logging_setup import get_logger, setup_logging
 from .pipeline import run_batch
@@ -224,6 +225,31 @@ def cmd_import_labels(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export_workbook(args: argparse.Namespace) -> int:
+    cfg = load_config_cached(args.config)
+    # Not splitlines(): it also breaks on the form feed inside PAGE_SEP and on
+    # U+2028, either of which would cut a record in half.
+    def load(path):
+        with open(path, "r", encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
+    records = load(args.input)
+    tables = load(args.tables) if args.tables else None
+    try:
+        counts = export_workbook(records, cfg, args.output, tables=tables,
+                                 run_id=args.run_id or "", overwrite=args.overwrite)
+    except FileExistsError as exc:
+        log.error("refusing to overwrite", extra={"error": str(exc)})
+        return 1
+    log.info("workbook written", extra={"output": str(args.output), **counts})
+    print(f"Wrote {args.output}")
+    for name, n in sorted(counts.items()):
+        print(f"  {name}: {n}")
+    print("Review columns are blank on purpose. A row becomes gold only once "
+          "IS_GOLD and a verdict are filled in.")
+    return 0
+
+
 def cmd_import_workbook(args: argparse.Namespace) -> int:
     cfg = load_config_cached(args.config)
     res = import_workbook(args.xlsx, args.root, cfg)
@@ -409,6 +435,16 @@ def build_parser() -> argparse.ArgumentParser:
     il.add_argument("--name-column", default="File_Name")
     il.add_argument("--label-column", default="Document_Type")
     il.set_defaults(func=cmd_import_labels)
+
+    ew = sub.add_parser("export-workbook",
+                        help="write a results file out as the review workbook")
+    ew.add_argument("--input", required=True, help="results JSONL")
+    ew.add_argument("--output", required=True, help="workbook to write")
+    ew.add_argument("--tables", help="tables JSONL, fills the Line items tab")
+    ew.add_argument("--run-id", help="defaults to a timestamp")
+    ew.add_argument("--overwrite", action="store_true",
+                    help="replace an existing file, discarding any review in it")
+    ew.set_defaults(func=cmd_export_workbook)
 
     iw = sub.add_parser("import-workbook",
                         help="convert the reviewed index workbook into a gold file")

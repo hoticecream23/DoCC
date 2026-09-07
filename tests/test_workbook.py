@@ -251,3 +251,189 @@ def test_gold_scores_against_the_harness(tmp_path, corpus_root, cfg):
     assert scores["classification"]["accuracy_overall"] == 1.0
     assert scores["metadata"]["value"]["micro"]["f1"] == 1.0
     assert scores["tagging"]["micro"]["f1"] == 1.0
+
+
+# ------------------------------------------------------------- exporting
+
+def _record(doc_id, **over):
+    rec = {
+        "doc_id": doc_id,
+        "source_path": "corpus/invoice.pdf",
+        "filename": "invoice.pdf",
+        "schema_version": "1.1.0",
+        "text": {"full": "INVOICE\x0cpage two", "pages": ["INVOICE", "page two"],
+                 "method": "native", "char_count": 16, "extraction_confidence": 0.98,
+                 "page_methods": ["native", "native"]},
+        "classification": {"label": "invoice", "confidence": 0.9,
+                           "all_scores": {"invoice": 0.9, "receipt": 0.4}, "method": "rule"},
+        "metadata": [{"field": "total_amount", "value": "500", "normalized_value": "500.00",
+                      "page": 0, "char_start": 1, "char_end": 4, "confidence": 0.9,
+                      "method": "anchor", "validated": False,
+                      "normalizer_version": "1.0.0", "currency": "INR"}],
+        "tags": [{"tag": "has_line_items", "confidence": 0.8, "method": "keyword"}],
+        "diagnostics": {"page_count": 2, "is_scanned": False, "has_native_text": True,
+                        "timings_ms": {}, "errors": []},
+    }
+    rec.update(over)
+    return rec
+
+
+def _tab(path, name):
+    wb = openpyxl.load_workbook(path)
+    ws = wb[name]
+    rows = list(ws.iter_rows(values_only=True))
+    header = [str(c).strip().upper() if c else "" for c in rows[0]]
+    return header, [dict(zip(header, r)) for r in rows[1:]]
+
+
+def test_export_writes_every_tab_with_the_agreed_columns(tmp_path, cfg):
+    from baseline.workbook import (DOCUMENT_COLUMNS, LINE_ITEM_COLUMNS, METADATA_COLUMNS,
+                                   TAG_COLUMNS, TAXONOMY_COLUMNS, export_workbook)
+
+    out = tmp_path / "wb.xlsx"
+    counts = export_workbook([_record("a" * 16)], cfg, out)
+    assert counts["documents"] == 1
+    for name, cols in (("Documents", DOCUMENT_COLUMNS), ("Metadata", METADATA_COLUMNS),
+                       ("Tags", TAG_COLUMNS), ("Taxonomy", TAXONOMY_COLUMNS),
+                       ("Line items", LINE_ITEM_COLUMNS)):
+        assert _tab(out, name)[0] == cols
+
+
+def test_export_never_puts_the_full_text_in_a_cell(tmp_path, cfg):
+    """PAGE_SEP carries a form feed and every offset is counted against the
+    exact canonical string. Excel would rewrite it and silently invalidate
+    every char_start in the Metadata tab."""
+    import hashlib
+
+    from baseline.workbook import export_workbook
+
+    out = tmp_path / "wb.xlsx"
+    rec = _record("b" * 16)
+    export_workbook([rec], cfg, out)
+    row = _tab(out, "Documents")[1][0]
+    full = rec["text"]["full"]
+
+    assert row["TEXT_PREVIEW"] != full
+    assert "\x0c" not in row["TEXT_PREVIEW"]
+    # The tripwire: a hash and a length, so a mangled text is detectable.
+    assert row["TEXT_SHA256"] == hashlib.sha256(full.encode("utf-8")).hexdigest()
+    assert row["CHAR_COUNT"] == rec["text"]["char_count"]
+
+
+def test_export_leaves_every_review_column_blank(tmp_path, cfg):
+    """Pre-filling IS_GOLD would turn an unreviewed export into gold on the
+    next import, inventing a score out of nothing."""
+    from baseline.workbook import export_workbook
+
+    out = tmp_path / "wb.xlsx"
+    export_workbook([_record("c" * 16)], cfg, out)
+    doc = _tab(out, "Documents")[1][0]
+    assert doc["IS_GOLD"] is None and doc["CLASS_VERDICT"] is None
+    assert doc["CLASS_CORRECTED"] is None
+    meta = _tab(out, "Metadata")[1][0]
+    assert meta["IS_GOLD"] is None and meta["VERDICT"] is None
+    assert meta["CORRECTED_VALUE"] is None
+
+
+def test_export_keeps_a_leading_equals_as_text(tmp_path, cfg):
+    """OCR text is untrusted input. openpyxl writes a string starting with an
+    equals sign as a formula, which changes both what Excel runs and what the
+    importer reads back."""
+    from baseline.workbook import export_workbook
+
+    out = tmp_path / "wb.xlsx"
+    rec = _record("d" * 16)
+    rec["metadata"][0]["value"] = "=SUM(1,2)"
+    rec["metadata"][0]["normalized_value"] = "=SUM(1,2)"
+    export_workbook([rec], cfg, out)
+
+    ws = openpyxl.load_workbook(out)["Metadata"]
+    header = [str(c.value).strip().upper() for c in ws[1]]
+    cell = ws.cell(row=2, column=header.index("VALUE") + 1)
+    assert cell.value == "=SUM(1,2)"
+    assert cell.data_type == "s", "written as a formula, not text"
+
+
+def test_export_keeps_the_two_regex_methods_apart(tmp_path, cfg):
+    """Collapsing regex_checksum and regex_format to one name reintroduces the
+    first bug the eval harness ever caught, at the human layer."""
+    from baseline.workbook import export_workbook
+
+    out = tmp_path / "wb.xlsx"
+    rec = _record("e" * 16)
+    rec["metadata"][0]["method"] = "regex_checksum"
+    export_workbook([rec], cfg, out)
+    assert _tab(out, "Metadata")[1][0]["METHOD"] == "regex_checksum"
+
+
+def test_export_refuses_to_overwrite_a_reviewed_sheet(tmp_path, cfg):
+    """The review is the expensive half and nothing here can merge it forward."""
+    from baseline.workbook import export_workbook
+
+    out = tmp_path / "wb.xlsx"
+    export_workbook([_record("f" * 16)], cfg, out)
+    with pytest.raises(FileExistsError):
+        export_workbook([_record("f" * 16)], cfg, out)
+    export_workbook([_record("f" * 16)], cfg, out, overwrite=True)
+
+
+def test_a_confirmed_abstention_produces_no_label(tmp_path, corpus_root, cfg):
+    """Agreeing the pipeline was right not to answer is not a label. There is
+    no class called unknown, and the document still has a real one."""
+    root, a, _ = corpus_root
+    xlsx = _write(
+        tmp_path / "wb.xlsx",
+        docs=[[a, "a.txt", "unknown", None, "OK", "True"]],
+    )
+    res = import_workbook(xlsx, root, cfg)
+    assert res.rows == []
+    assert res.confirmed_abstentions == [a]
+    assert not res.problems, "an abstention is expected, not a broken sheet"
+
+
+def test_export_then_import_is_lossless(tmp_path, cfg):
+    """The loop that matters: a reviewer who confirms everything must produce
+    gold identical to what the pipeline said, or review effort is being lost
+    somewhere inside the sheet."""
+    from baseline.schema import compute_doc_id
+    from baseline.workbook import export_workbook
+
+    root = tmp_path / "docs"
+    root.mkdir()
+    src = root / "invoice.pdf"
+    src.write_bytes(b"whatever, the doc_id just has to resolve")
+    doc_id = compute_doc_id(src)
+
+    out = tmp_path / "wb.xlsx"
+    rec = _record(doc_id)
+    # A field the normalizer cannot read. The pipeline keeps it, so must this.
+    rec["metadata"].append({"field": "invoice_date", "value": "not a date",
+                            "normalized_value": None, "page": 0, "char_start": 0,
+                            "char_end": 3, "confidence": 0.5, "method": "anchor",
+                            "validated": False, "normalizer_version": "1.0.0",
+                            "currency": None})
+    export_workbook([rec], cfg, out)
+
+    # Stand in for the reviewer: confirm every row.
+    wb = openpyxl.load_workbook(out)
+    for tab, vcol in (("Documents", "CLASS_VERDICT"), ("Metadata", "VERDICT"),
+                      ("Tags", "VERDICT")):
+        ws = wb[tab]
+        header = [str(c.value).strip().upper() for c in ws[1]]
+        v, g = header.index(vcol) + 1, header.index("IS_GOLD") + 1
+        for r in range(2, ws.max_row + 1):
+            ws.cell(row=r, column=v).value = "OK"
+            ws.cell(row=r, column=g).value = "True"
+    wb.save(out)
+
+    res = import_workbook(out, root, cfg)
+    assert len(res.rows) == 1
+    gold = res.rows[0]
+    assert gold["label"] == rec["classification"]["label"]
+    assert gold["tags"] == [t["tag"] for t in rec["tags"]]
+    assert {(e["field"], e["normalized_value"]) for e in gold["metadata"]} == {
+        ("total_amount", "500.00"), ("invoice_date", "not a date"),
+    }
+    by_field = {e["field"]: e for e in gold["metadata"]}
+    assert by_field["total_amount"]["char_start"] == 1
+    assert by_field["total_amount"]["char_end"] == 4
