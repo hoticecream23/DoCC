@@ -437,3 +437,198 @@ def test_export_then_import_is_lossless(tmp_path, cfg):
     by_field = {e["field"]: e for e in gold["metadata"]}
     assert by_field["total_amount"]["char_start"] == 1
     assert by_field["total_amount"]["char_end"] == 4
+
+
+# --------------------------------------------------- merging a review forward
+#
+# The distinction every one of these turns on: a correction is a fact about the
+# document and always survives, a confirmation is a fact about a prediction and
+# survives only while the prediction does.
+
+
+def _reviewed_sheet(tmp_path, doc_id, name="prior.xlsx", **kw):
+    """A workbook with a review already written into it."""
+    return _write(tmp_path / name, **kw)
+
+
+def _export_merged(tmp_path, cfg, records, prior, name="new.xlsx"):
+    from baseline.workbook import export_workbook
+
+    out = tmp_path / name
+    counts = export_workbook(records, cfg, out, merge_from=prior)
+    return out, counts
+
+
+@pytest.fixture()
+def one_doc(tmp_path):
+    root = tmp_path / "docs"
+    root.mkdir()
+    src = root / "invoice.pdf"
+    src.write_bytes(b"one document is enough for the merge rules")
+    from baseline.schema import compute_doc_id
+
+    return root, compute_doc_id(src)
+
+
+def test_a_confirmation_carries_while_the_prediction_holds(tmp_path, one_doc, cfg):
+    root, doc_id = one_doc
+    prior = _reviewed_sheet(tmp_path, doc_id,
+                            docs=[[doc_id, "invoice.pdf", "invoice", None, "OK", "True"]])
+    out, counts = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
+    row = _tab(out, "Documents")[1][0]
+    assert row["CLASS_VERDICT"] == "OK"
+    assert row["IS_GOLD"] == "True"
+    assert counts["document_confirmations_carried"] == 1
+
+
+def test_a_confirmation_is_cleared_when_the_prediction_changes(tmp_path, one_doc, cfg):
+    """The dangerous case. Carrying the approval forward would mark an answer
+    nobody has looked at as human approved."""
+    root, doc_id = one_doc
+    prior = _reviewed_sheet(tmp_path, doc_id,
+                            docs=[[doc_id, "invoice.pdf", "receipt", None, "OK", "True"]])
+    rec = _record(doc_id)  # now classified invoice, not receipt
+    out, counts = _export_merged(tmp_path, cfg, [rec], prior)
+    row = _tab(out, "Documents")[1][0]
+    assert row["CLASS_VERDICT"] is None, "stale approval carried onto a new answer"
+    assert row["IS_GOLD"] is None
+    assert "re-review" in row["NOTES"]
+    assert counts["document_confirmations_invalidated"] == 1
+
+
+def test_a_correction_carries_whatever_the_pipeline_now_says(tmp_path, one_doc, cfg):
+    root, doc_id = one_doc
+    prior = _reviewed_sheet(
+        tmp_path, doc_id,
+        docs=[[doc_id, "invoice.pdf", "receipt", "contract", "wrong", "True"]])
+    out, counts = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
+    row = _tab(out, "Documents")[1][0]
+    assert row["CLASS_CORRECTED"] == "contract"
+    assert row["CLASS_VERDICT"] == "wrong"
+    assert counts["document_corrections_carried"] == 1
+
+
+def test_a_correction_the_pipeline_caught_up_with_becomes_a_confirmation(
+        tmp_path, one_doc, cfg):
+    """The reviewer said invoice, the pipeline now says invoice. There is
+    nothing left to correct and the row should stop asking to be corrected."""
+    root, doc_id = one_doc
+    prior = _reviewed_sheet(
+        tmp_path, doc_id,
+        docs=[[doc_id, "invoice.pdf", "receipt", "Invoice", "wrong", "True"]])
+    out, counts = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
+    row = _tab(out, "Documents")[1][0]
+    assert row["CLASS_CORRECTED"] is None
+    assert row["CLASS_VERDICT"] == "OK"
+    assert "now agrees" in row["NOTES"]
+    assert counts["document_corrections_now_agreed"] == 1
+
+
+def test_a_field_correction_follows_the_field_when_the_value_moves(tmp_path, one_doc, cfg):
+    """The reviewer corrected total_amount while the pipeline said 300. It now
+    says 500. The correction is about the document, so it must land on the new
+    row rather than being stranded on a value that no longer exists."""
+    root, doc_id = one_doc
+    prior = _reviewed_sheet(
+        tmp_path, doc_id,
+        docs=[[doc_id, "invoice.pdf", "invoice", None, "OK", "True"]],
+        meta=[[doc_id, "pipeline", "total_amount", "300", "300.00", 0, 1, 4,
+               "4044", "wrong", "True"]])
+    out, counts = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
+    row = _tab(out, "Metadata")[1][0]
+    assert row["VALUE"] == "500", "this is the new run's own value"
+    assert row["CORRECTED_VALUE"] == "4044"
+    assert counts["field_corrections_carried"] == 1
+
+
+def test_a_confirmed_value_the_run_lost_comes_back_as_a_human_row(tmp_path, one_doc, cfg):
+    """A confirmation says the value belongs on the document. If the pipeline
+    stops finding it, that statement is still true and becomes a `missing`
+    row, which is exactly what the importer turns into gold."""
+    root, doc_id = one_doc
+    prior = _reviewed_sheet(
+        tmp_path, doc_id,
+        docs=[[doc_id, "invoice.pdf", "invoice", None, "OK", "True"]],
+        meta=[[doc_id, "pipeline", "invoice_number", "INV-9", "INV-9", 0, 1, 6,
+               None, "OK", "True"]])
+    rec = _record(doc_id)  # carries total_amount only, no invoice_number
+    out, counts = _export_merged(tmp_path, cfg, [rec], prior)
+    rows = {r["FIELD"]: r for r in _tab(out, "Metadata")[1]}
+    assert "invoice_number" in rows, "a confirmed value was dropped with its prediction"
+    assert rows["invoice_number"]["ROW_SOURCE"] == "human"
+    assert rows["invoice_number"]["VERDICT"] == "missing"
+    assert rows["invoice_number"]["CORRECTED_VALUE"] == "INV-9"
+    assert counts["field_reviews_rescued"] == 1
+
+
+def test_a_spurious_row_the_run_stopped_emitting_is_simply_gone(tmp_path, one_doc, cfg):
+    """The reviewer said the field did not belong and the pipeline has stopped
+    producing it. Nothing is left to review, and resurrecting it would ask the
+    same question twice."""
+    root, doc_id = one_doc
+    prior = _reviewed_sheet(
+        tmp_path, doc_id,
+        docs=[[doc_id, "invoice.pdf", "invoice", None, "OK", "True"]],
+        meta=[[doc_id, "pipeline", "invoice_number", "junk", "junk", 0, 1, 4,
+               None, "spurious", "True"]])
+    out, counts = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
+    fields = {r["FIELD"] for r in _tab(out, "Metadata")[1]}
+    assert "invoice_number" not in fields
+    assert counts["field_spurious_resolved"] == 1
+
+
+def test_a_rejected_tag_the_run_stopped_emitting_is_gone_but_a_confirmed_one_survives(
+        tmp_path, one_doc, cfg):
+    root, doc_id = one_doc
+    prior = _reviewed_sheet(
+        tmp_path, doc_id,
+        docs=[[doc_id, "invoice.pdf", "invoice", None, "OK", "True"]],
+        tags=[[doc_id, "signed", "pipeline", "WRONG", "True"],
+              [None, "multi_page", "pipeline", "OK", "True"]])
+    rec = _record(doc_id)  # emits has_line_items only
+    out, counts = _export_merged(tmp_path, cfg, [rec], prior)
+    tags = {r["TAG"]: r for r in _tab(out, "Tags")[1]}
+    assert "signed" not in tags
+    assert tags["multi_page"]["VERDICT"] == "missing"
+    assert tags["multi_page"]["ROW_SOURCE"] == "human"
+    assert counts["tag_spurious_resolved"] == 1
+    assert counts["tag_reviews_rescued"] == 1
+
+
+def test_merging_forward_never_marks_anything_gold_without_a_verdict(tmp_path, one_doc, cfg):
+    """IS_GOLD with no verdict is a row claiming review it did not get."""
+    root, doc_id = one_doc
+    prior = _reviewed_sheet(
+        tmp_path, doc_id,
+        docs=[[doc_id, "invoice.pdf", "receipt", None, "OK", "True"]],
+        meta=[[doc_id, "pipeline", "total_amount", "300", "300.00", 0, 1, 4,
+               None, "OK", "True"]],
+        tags=[[doc_id, "signed", "pipeline", "OK", "True"]])
+    out, _ = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
+    for name, vcol in (("Documents", "CLASS_VERDICT"), ("Metadata", "VERDICT"),
+                       ("Tags", "VERDICT")):
+        for row in _tab(out, name)[1]:
+            if row.get("IS_GOLD"):
+                assert row.get(vcol), f"{name} row is gold with no verdict"
+
+
+def test_a_review_survives_a_full_re_export_and_import(tmp_path, one_doc, cfg):
+    """End to end: review a run, re-run the pipeline, merge forward, import.
+    The reviewer's corrections must still be the gold at the far end."""
+    root, doc_id = one_doc
+    prior = _reviewed_sheet(
+        tmp_path, doc_id,
+        docs=[[doc_id, "invoice.pdf", "receipt", "contract", "wrong", "True"]],
+        meta=[[doc_id, "pipeline", "total_amount", "300", "300.00", 0, 1, 4,
+               "4044", "wrong", "True"]],
+        tags=[[doc_id, "has_line_items", "pipeline", "OK", "True"]])
+
+    merged, _ = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
+    res = import_workbook(merged, root, cfg)
+
+    assert len(res.rows) == 1
+    gold = res.rows[0]
+    assert gold["label"] == "contract", "the class correction did not survive"
+    assert gold["tags"] == ["has_line_items"]
+    values = {e["field"]: e["normalized_value"] for e in gold["metadata"]}
+    assert values["total_amount"] == "4044.00", "the field correction did not survive"

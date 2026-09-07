@@ -413,10 +413,55 @@ Open items:
     pipeline keeps such a field and the harness falls back to the raw value, so
     dropping it lost a real answer. It now keeps the raw value too.
 
-- **Next on this track: merge a review forward.** Re-running the pipeline
-  produces a new results file, and today the only way to carry an existing
-  review onto it is by hand. That is what stands between one reviewed sheet and
-  a growing gold set.
+- ~~**Merge a review forward.**~~ **Done.**
+  `baseline export-workbook --input new_results.jsonl --output next.xlsx
+  --merge-from reviewed.xlsx`. This is what makes the loop iterative rather
+  than a one shot: without it a pipeline change threw away every review made
+  against the previous run.
+
+  **One distinction decides everything in it.** A **correction** is a fact
+  about the *document* ("the total is 4044"), and stays true whatever the
+  pipeline says next, so it always carries. A **confirmation** is a fact about
+  a *prediction* ("what you said is right"), and means nothing once the
+  prediction changes, so it carries only while the answer is the same.
+
+  Getting that backwards is a silent data problem in both directions. Carry a
+  confirmation onto a changed prediction and a brand new, unreviewed answer is
+  marked human approved. Drop a correction because the prediction moved and the
+  expensive half of the work is gone. `tests/test_workbook.py` has a test for
+  each direction; the first one is the one that matters.
+
+  Three consequences fall out of the same rule:
+
+  - **A confirmed value the new run no longer produces comes back as a human
+    `missing` row.** The confirmation was still a statement that the value
+    belongs on the document, so it survives the prediction that carried it.
+    Same for a confirmed tag.
+  - **A `spurious` row the new run has stopped emitting is simply dropped.**
+    The reviewer said it did not belong and the pipeline agrees now. Keeping it
+    would ask the same question twice.
+  - **A correction the pipeline has caught up with becomes a confirmation**,
+    with a note saying what it used to say. The row stops asking to be
+    corrected once there is nothing left to correct.
+
+  Merging the real 21 document review onto the current run: 10 confirmations
+  carried, 5 corrections carried, 22 field reviews and 22 tag reviews carried,
+  6 field reviews and 3 tag reviews rescued as human rows, 5 spurious rows
+  resolved by the pipeline, and 1 confirmation invalidated for re-review.
+  **Four class corrections and two field corrections were "now agreed"** —
+  the OCR resolution fix moved the pipeline onto the answer the reviewer had
+  already written down.
+
+  Gold out of the merged sheet is 19 rows against 21 from the original. Both
+  losses are correct: one is the row whose content is not in the corpus, and
+  one is the invalidated confirmation, which is waiting on a human rather than
+  carrying a stale approval.
+
+- **What this track still does not do.** The merge keys documents on `doc_id`,
+  which is content addressed, so a document that is re-scanned or re-exported
+  by the client is a new document and its review does not follow. That is the
+  correct default and probably the permanent one, but it means a corpus refresh
+  loses review in a way a pipeline change no longer does.
 
 ## Knowledge graph, where v0 leaves off
 
@@ -462,6 +507,11 @@ the proven edges distinguishable from the inferred ones.
 - The workbook column names live in `baseline/workbook.py` and are read by
   both directions. Exporting and importing must never carry separate copies of
   that list, or a rename desynchronises them silently.
+- Merging a review forward must never carry a confirmation onto a prediction
+  that has changed. A confirmation approves an answer, not a document, and
+  moving it to a new answer marks unreviewed output as human approved. A
+  correction is the opposite and must never be dropped because the prediction
+  moved.
 - `export-workbook` must never fill a review column. `IS_GOLD` set by the
   exporter turns an unreviewed sheet into gold on the next import.
 - A workbook verdict of `spurious` must produce no gold row. It records that

@@ -237,7 +237,8 @@ def cmd_export_workbook(args: argparse.Namespace) -> int:
     tables = load(args.tables) if args.tables else None
     try:
         counts = export_workbook(records, cfg, args.output, tables=tables,
-                                 run_id=args.run_id or "", overwrite=args.overwrite)
+                                 run_id=args.run_id or "", overwrite=args.overwrite,
+                                 merge_from=args.merge_from)
     except FileExistsError as exc:
         log.error("refusing to overwrite", extra={"error": str(exc)})
         return 1
@@ -245,8 +246,13 @@ def cmd_export_workbook(args: argparse.Namespace) -> int:
     print(f"Wrote {args.output}")
     for name, n in sorted(counts.items()):
         print(f"  {name}: {n}")
-    print("Review columns are blank on purpose. A row becomes gold only once "
-          "IS_GOLD and a verdict are filled in.")
+    if args.merge_from:
+        print(f"Carried the review from {args.merge_from}. A confirmation of a "
+              "prediction that has since changed was cleared for re-review; every "
+              "correction was kept.")
+    else:
+        print("Review columns are blank on purpose. A row becomes gold only once "
+              "IS_GOLD and a verdict are filled in.")
     return 0
 
 
@@ -442,6 +448,9 @@ def build_parser() -> argparse.ArgumentParser:
     ew.add_argument("--output", required=True, help="workbook to write")
     ew.add_argument("--tables", help="tables JSONL, fills the Line items tab")
     ew.add_argument("--run-id", help="defaults to a timestamp")
+    ew.add_argument("--merge-from",
+                    help="an earlier reviewed workbook, whose review is carried "
+                         "onto this run wherever it still applies")
     ew.add_argument("--overwrite", action="store_true",
                     help="replace an existing file, discarding any review in it")
     ew.set_defaults(func=cmd_export_workbook)
