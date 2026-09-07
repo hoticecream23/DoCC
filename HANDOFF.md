@@ -308,18 +308,76 @@ Three decisions in it that must not be quietly undone:
    Collapsing them to "regex" reintroduces the first bug the eval harness ever
    caught, at the human layer where nothing will catch it again.
 
+**The first reviewed sheet has arrived**, as
+`Classification_Doc/Classification_Sheets.xlsx` inside the `ML_Documents/`
+delivery. 21 documents, 36 metadata rows, 30 tag rows, all reviewed by a
+human. The reviewer found real errors: 10 of the 21 classes were wrong, and 11
+of 36 field values.
+
 Open items:
 
+- ~~**No importer back out of it into `gold.jsonl`.**~~ **Done.**
+  `baseline import-workbook --xlsx FILE --root DIR --output gold.jsonl`.
+  See `baseline/workbook.py`. Four things in it are load bearing:
+
+  - **`spurious` produces nothing.** The gold for a field the pipeline
+    invented is its *absence*. Writing a row for it would turn every correctly
+    rejected field into a false negative and flatter the score.
+  - **Corrections are normalised through the field's own normalizer.** The
+    reviewer types `742.7` and `12/22/2025`; the pipeline emits `742.70` and
+    `2025-12-22`. Comparing them raw marks the pipeline wrong for being right,
+    and it cost 0.09 of metadata F1 before this was in. Confirmed values go
+    through it too, because the sheet's `NORMALIZED_VALUE` column is only as
+    normalised as whoever filled it in. The normalizers are idempotent, tested
+    over all 177 values the current run emits, so this cannot corrupt a value
+    the pipeline already produced.
+  - **Only confirmed rows carry offsets.** A corrected value has no span: the
+    reviewer typed an answer, not a location.
+  - **`DOC_ID` is forward filled.** It is written once per group, so 18 of 36
+    metadata rows and 14 of 30 tag rows have a blank one. Without the fill,
+    half the sheet orphans.
+
+  An undeclared class, field or tag name is a hard failure that writes no gold,
+  the same way `import-labels` refuses an unmapped label. On this sheet that
+  fires once, on `Aadhar_card`, which is not a name in `fields.yaml`. It is
+  almost certainly `aadhaar`, but almost certainly is not good enough and the
+  fix is one cell.
+
+- **First score against human reviewed gold.** With that one cell corrected in
+  a scratch copy: classification accuracy 0.700 over 20 joinable documents,
+  **accuracy when answered 1.000**, every error an abstention. Metadata value
+  micro F1 0.465, tagging micro F1 0.533. `validated_precision` is **1.0**, and
+  this is the first time it has been measurable on real data rather than null.
+
+  **Span scoring has now run for the first time: micro F1 0.207 over the 11
+  documents carrying offsets.** That number is the one the layout model has to
+  beat, and it is low enough to be worth beating.
+
+  `total_amount` is 7 of the 11 remaining misses, and they are not close
+  (`4532321.00` against `5.00`). The anchor layer is picking the wrong number
+  on real documents, exactly as this file predicted.
+
+- **Three things for the sheet itself, none of them code.**
+
+  - One row references `3af3c1b47e4af807`, a `Sample_voter_id.jpg` whose bytes
+    are not in the corpus. Both copies on disk hash to `83304e91bf6833a4`. It
+    was reviewed against a different file and cannot be scored until that file
+    turns up.
+  - An `aadhaar` was corrected to `XXXX XXXX 3208`. Redacting PII in the gold
+    is reasonable but it makes the row unscoreable, since the normalizer
+    reduces it to `3208`. Decide whether gold should hold real identifiers or
+    the field should be excluded from scoring.
+  - `buyer_name` reads `John doe` where the pipeline now emits `John Doe`. The
+    sheet was exported from an older run, so some confirmed values have drifted
+    from what the pipeline currently produces.
+
+- **No exporter from `results.jsonl` into the workbook exists yet.** This is
+  now the binding constraint: the importer can consume a reviewed sheet, but
+  filling the next one still means doing it by hand.
 - **The Taxonomy tab is empty on purpose**, waiting on a generated CSV. It
   should be exported from `classes.yaml`, `fields.yaml` and `tags.yaml` rather
   than typed, or it drifts from the code within a month. The exporter is about
-  40 lines and has not been written yet. Do this after the taxonomy
-  reconciliation above, not before, or it will need regenerating anyway.
-- **No exporter from `results.jsonl` into the workbook exists yet.** Right now
-  the sheet would have to be filled by hand, which defeats the point.
-- **No importer back out of it into `gold.jsonl` exists yet.** That is the
-  piece that actually turns review effort into a score, and it is the one to
-  build first once the sheet has real rows in it.
+  40 lines and has not been written yet.
 
 ## Knowledge graph, where v0 leaves off
 
@@ -362,6 +420,12 @@ the proven edges distinguishable from the inferred ones.
   is the only place that should build a `WordBox` from an `OCRWord`.
 - Table cell offsets are null or exact, never approximate. `verify_offsets`
   on `TableRecord` enforces it, same as on the record.
+- A workbook verdict of `spurious` must produce no gold row. It records that
+  the field is not there, and inventing a row for it converts a correct
+  rejection into a false negative.
+- `ML_Documents/` is gitignored explicitly. It was previously covered only by
+  accident, because `Client_Documents/` and `Classification_Doc/` carry no
+  leading slash and so matched the copies nested inside it.
 - `config/taxonomy.yaml` is the only place the client label mapping lives.
   Restating it in the gold builder or the workbook is how the two drift apart.
   `tests/test_taxonomy.py` fails if a label stops mapping to a declared class.

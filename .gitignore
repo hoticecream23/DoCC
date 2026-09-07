@@ -23,6 +23,12 @@ tables.md
 Client_Documents/
 Classification_Doc/
 
+# A second delivery of the same material, plus the review workbook. The two
+# patterns above already match the copies nested inside it, but only because
+# they carry no leading slash. Anything dropped directly into ML_Documents/
+# would not be covered, and all of it is client material.
+ML_Documents/
+
 # Anything derived from them. A gold file built from Classification.csv carries
 # client file names and paths in every row, so it is client material too.
 gold_classification.jsonl

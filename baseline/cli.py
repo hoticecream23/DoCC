@@ -5,6 +5,7 @@
   baseline tune-thresholds --annotations FILE --predictions FILE
   baseline profile         --input DIR --output profile.md
   baseline import-labels   --csv FILE --root DIR --output gold.jsonl
+  baseline import-workbook --xlsx FILE --root DIR --output gold.jsonl
   baseline eval            --gold FILE --pred FILE [--output report.md]
   baseline compare         --gold FILE --a FILE --b FILE [--output cmp.md]
   baseline graph           --input results.jsonl --output graph.json
@@ -25,6 +26,8 @@ from .evaluate import compare, evaluate, render_comparison, render_report
 from .extract import extract
 from .graph import build as build_graph
 from .labels import import_labels, render_summary
+from .workbook import import_workbook
+from .workbook import render_summary as render_workbook_summary
 from .logging_setup import get_logger, setup_logging
 from .pipeline import run_batch
 from .profile import run_profile
@@ -221,6 +224,32 @@ def cmd_import_labels(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import_workbook(args: argparse.Namespace) -> int:
+    cfg = load_config_cached(args.config)
+    res = import_workbook(args.xlsx, args.root, cfg)
+    summary = render_workbook_summary(res, str(args.xlsx), str(args.root))
+
+    # A name the config does not declare is never guessed at, so the report is
+    # still written and the exit code says the file is not fit to score with.
+    if args.report:
+        Path(args.report).write_text(summary, encoding="utf-8")
+    else:
+        print(summary)
+    if res.problems:
+        return 1
+    if not res.rows:
+        log.error("no gold rows produced, check the workbook has reviewed rows")
+        return 1
+
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8", newline="\n") as fh:
+        for row in res.rows:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    log.info("gold written", extra={"output": str(out), "rows": len(res.rows)})
+    return 0
+
+
 def cmd_eval(args: argparse.Namespace) -> int:
     cfg = load_config_cached(args.config)
     unknown = str(cfg.classify_opts().get("unknown_label", "unknown"))
@@ -380,6 +409,16 @@ def build_parser() -> argparse.ArgumentParser:
     il.add_argument("--name-column", default="File_Name")
     il.add_argument("--label-column", default="Document_Type")
     il.set_defaults(func=cmd_import_labels)
+
+    iw = sub.add_parser("import-workbook",
+                        help="convert the reviewed index workbook into a gold file")
+    iw.add_argument("--xlsx", required=True, help="the reviewed workbook")
+    iw.add_argument("--root", required=True,
+                    help="directory the reviewed documents live under, used to "
+                         "resolve each doc_id back to a file")
+    iw.add_argument("--output", required=True, help="gold JSONL to write")
+    iw.add_argument("--report", help="write the import summary here instead of stdout")
+    iw.set_defaults(func=cmd_import_workbook)
 
     ev = sub.add_parser("eval", help="score predictions against gold")
     ev.add_argument("--gold", required=True)
