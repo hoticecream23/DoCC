@@ -1,7 +1,7 @@
 # Project state
 
-Last updated: 2026-09-04 (taxonomy reconciled; text quality gate live;
-first end to end score on the real corpus)
+Last updated: 2026-09-10 (first full run over all 227 client documents; eight
+banking classes added from the POC 1 deck; ID card route cancelled on evidence)
 
 ## What this is
 
@@ -15,15 +15,17 @@ interchangeably.
 All four components are built, wired, and tested. Evaluation harness
 is in, plus a knowledge graph v0 spike and table extraction v0. The real
 corpus has arrived, the taxonomy is reconciled against it, and the system is
-measured end to end on it. 268 tests pass.
+measured end to end on it. **The whole of `Client_Documents` has now been
+processed in one run: 227 documents, 32 correctly excluded as not documents.**
+337 tests pass.
 
 | Component | State | Notes |
 | --- | --- | --- |
 | Text extraction | Done | All three routes verified against a real engine: native, ocr, hybrid. |
-| Classification | Done | Rule layer plus calibrated TF-IDF SVM, both verified. |
+| Classification | Done | Rule layer plus calibrated TF-IDF SVM, both verified. 17 classes: 9 measured, 8 declared from the deck and unmeasured. |
 | Metadata | Done | All three strategies implemented. Positional has no templates registered yet. |
 | Tagging | Done | Keyword, model, and derived rules all firing. Threshold tuning verified. |
-| CLI | Done | run, train, tune-thresholds, profile, eval, compare, graph, tables all exercised. |
+| CLI | Done | run, train, tune-thresholds, profile, import-labels, export-workbook, import-workbook, eval, compare, graph, tables all exercised. |
 | Eval harness | Done | Schema driven, does not import the pipeline. Scores tables too. |
 | Knowledge graph | v0 spike | Verified identifiers only. Deliberately narrow. |
 | Table extraction | v0 | Two strategies over boxes and over text. Abstains rather than guess. |
@@ -481,7 +483,7 @@ change a class level score, but the file name is not a key over this set and
 
 ### court_document markers, measured not guessed
 
-Ten markers, all checked against the 72 text bearing PDFs in
+Twelve markers, all checked against the 72 text bearing PDFs in
 `Classification_Doc` before being written: **46/46 court PDFs fire at or above
 0.88, and 0/26 business PDFs fire any of them.**
 
@@ -496,6 +498,72 @@ Two of them exist for specific reasons:
   contract layer's 0.92 `hereinafter referred to as`, which judgments quote
   constantly. Before it was added, *Prakash Singh vs Union of India* tied at
   0.92 and classified as `contract`.
+
+### The deck's banking classes, declared not measured
+
+`POC_1_PRESENTATION_TRIMMED.docx` proposes a banking taxonomy. Eight of its
+classes had no counterpart here and are now declared in `classes.yaml`, taking
+the list from 9 to 17: `address_proof`, `kyc_form`, `customer_application`,
+`loan_application`, `sanction_letter`, `repayment_schedule`,
+`account_opening_form`, `account_closure_form`. Full mapping, including the
+deck's own contradiction between the 15 classes its prose claims and the 20 its
+table lists, is in `taxonomy_reconciliation.md`.
+
+**These are the only classes in the file whose markers were written rather than
+measured**, because no corpus we hold contains an instance of any of them. Only
+the negative is verified: 0 fires across the 112 labelled documents and 0
+across the 227 in `Client_Documents`.
+
+Verifying that negative caught two false positives, both the same failure this
+file already records for `purchase_order`:
+
+- `repayment_schedule` took `payment_agreement sample.jpg` off `contract` at
+  0.95, on a Payment Plan Agreement's own clause "as well as the repayment
+  schedule, have been created".
+- `sanction_letter` claimed `Axis_Memorandum to ALCO.docx` at 0.80. That is an
+  internal ALCO credit memo *seeking* approval, carrying rate of interest,
+  tenure and moratorium as every credit note does.
+
+**A document citing a form is not that form.** Both are fixed and pinned by
+tests. With no corpus to tune against, only unambiguous self identification is
+allowed to decide any of these eight.
+
+### What the full corpus run found
+
+First run over all of `Client_Documents`. 227 documents, 32 excluded, and the
+exclusion counts match what `extract.py` predicted exactly.
+
+| label | n | share |
+| --- | --- | --- |
+| `invoice` | 147 | 64.8% |
+| `unknown` | 56 | 24.7% |
+| `court_document` | 17 | 7.5% |
+| `purchase_order` | 6 | 2.6% |
+| `tax_form` | 1 | 0.4% |
+
+Two thirds invoices. **The 24.7% abstention rate is now the largest single
+number in the system.**
+
+**There are zero identity cards in the 227.** This cancels the ID card route
+`HANDOFF.md` was weighing. The four in `Classification_Doc` are specimen images
+(`Aadhar_card.webp`, `pan_card.webp`, `sample-indian-passport-1.jpg`,
+`Sample_voter_id.jpg`), not client filing.
+
+The evidence needs two detectors, because neither is sufficient alone:
+
+- **The classifier finds 1 of the 4 known cards.** Only `pan_card.webp`, at
+  0.93. A zero from a detector with that recall proves nothing, so do not cite
+  the label counts for this.
+- **A keyword scan over raw OCR text finds 3 of 4**, missing only
+  `Sample_voter_id.jpg`, whose OCR is 100 characters of noise at 0.27
+  extraction confidence. Over all 227 it returns 8 documents, every one a court
+  judgment discussing passports, voters or the Election Commission.
+- **The blind spot where both fail is one file**, a Word lock stub. No image in
+  the 227 has the failed-OCR profile that hid the voter ID.
+
+Image extraction at 0.525 against 0.972 for PDFs is still the ceiling on
+everything. ID cards are simply not what causes it, so re-diagnose it against
+`client_results.jsonl` before spending on OCR again.
 
 ### Text layer corruption, and the quality gate
 
@@ -677,8 +745,12 @@ its own. Had they been fixed together, none of these numbers would exist.
 3. **Models are trained on synthetic data only** and have never been run on
    the real corpus. Every number here is the rule layer alone. 42 generated
    samples across 7 classes, no `court_document` among them, so the model
-   cannot currently predict 41% of the labelled set at all. Retraining is
-   blocked on nothing but time.
+   cannot currently predict 41% of the labelled set at all. The class list has
+   since grown to 17, so the model is now blind to 9 of them. Nothing breaks,
+   because the rule layer carries every class and a model below
+   `model_min_confidence` counts as declining rather than disagreeing. Do not
+   retrain until gold is large enough to be worth fitting: a model trained on
+   21 documents would be worse than the rules it would override.
 4. **Metadata extraction has no vocabulary for court documents.** The current
    field set returns 7 fields across all 46 court PDFs: 5 emails, 1 phone, 1
    account number. Everything substantive in `fields.yaml` is scoped to

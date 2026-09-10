@@ -7,9 +7,9 @@ Baseline is built, OCR is verified, the evaluation harness is in, the
 knowledge graph v0 spike is done, and table extraction v0 is in.
 
 **The real documents have arrived, and the system has now been measured on
-them.** Every number in `PROJECT_STATE.md` is still from the 10 document
-synthetic corpus and should be read as historical. The real numbers are in
-this file.
+them.** `PROJECT_STATE.md` now carries the real numbers too, but some of its
+older sections are still from the 10 document synthetic corpus and say so
+where they are. When the two files disagree, this one is newer.
 
 ## Start here
 
@@ -26,18 +26,21 @@ the ceiling is real, but **ID cards are not what causes it**. There are zero of
 them in the 227 client documents, and the four in the labelled set are
 specimens. Step 3 has the evidence. Do not build an ID route.
 
-The corpus is **64.8% invoices and 24.2% abstentions**. Those 55 abstaining
+The corpus is **64.8% invoices and 24.7% abstentions**. Those 56 abstaining
 documents are the highest value thing a human can label right now.
 
 The review loop is finished and closed in all three directions, which is what
 makes growing a real gold set possible now:
 
 ```bash
-python -m baseline run             --input Client_Documents --output results.jsonl --workers 4
-python -m baseline export-workbook --input results.jsonl --output review.xlsx [--merge-from previous.xlsx]
+# the run is already done; client_results.jsonl is a full pass over all 227
+python -m baseline export-workbook --input client_results.jsonl --output review.xlsx [--merge-from previous.xlsx]
 # a human corrects review.xlsx
 python -m baseline import-workbook --xlsx review.xlsx --root Client_Documents --output gold.jsonl
-python -m baseline eval            --gold gold.jsonl --pred results.jsonl
+python -m baseline eval            --gold gold.jsonl --pred client_results.jsonl
+
+# only if config changed since that run, which invalidates it:
+python -m baseline run --input Client_Documents --output client_results.jsonl --workers 4 --no-resume
 ```
 
 Export and import round trip losslessly, and `--merge-from` carries an
@@ -57,11 +60,11 @@ running anything:
    the corpus goes down the OCR route. Everything the state file says about
    OCR being verified only on clean synthetic scans is now the critical path
    rather than a footnote. Expect the 0.99 character similarity to fall hard.
-2. **21 files will be silently skipped.** 19 `.xlsx`, one `.zip`, and one
-   macOS resource fork. `SUPPORTED_EXT` in `extract.py` does not include them,
-   so `iter_documents` never picks them up and they appear in no error list.
-   The run will report a total that quietly excludes them. Either add an XLSX
-   handler or decide to drop them on purpose, but do not leave it implicit.
+2. ~~**21 files will be silently skipped.**~~ **The real count is 32, and it
+   is no longer silent.** See step 4: 19 `.xlsx` evaluation-set files, 12
+   macOS resource forks and 1 archive, each excluded against a named rule that
+   `extract.py` records. 259 files in, 227 documents out, and the run logs the
+   breakdown.
 3. **The client taxonomy does not match ours**, and it is worse than a naming
    mismatch. Their folders name 14 types. Seven of those map cleanly onto our
    classes. The other seven are not document types at all: every file under
@@ -270,6 +273,15 @@ running anything:
    | `evaluation_set` | 19 | question answering gold, not documents |
    | `archive` | 1 | a zip that duplicates loose files |
 
+   **One category is still missing, found on the full run.** A Word lock stub,
+   `~$rdness_Failure_minimization_plan.docx`, is the only document in the whole
+   227 that records an error: `PackageNotFoundError`, because it is not a real
+   `.docx`. It behaves correctly - the error is recorded and the batch
+   completes - but it is the same kind of thing as an AppleDouble stub and
+   belongs beside it. A `~$` prefix rule in `extract.py` would take the count
+   to 226 documents and 33 exclusions, and take the error list to empty. Small,
+   and worth doing next time that file is open.
+
    - **The macOS files were the real bug, and it is the opposite of the one
      this file predicted.** A macOS archive writes a `._name` stub beside every
      real file, carrying the same extension. Eleven of the twelve are named
@@ -411,7 +423,7 @@ running anything:
    | label | n | share |
    |---|---|---|
    | `invoice` | 147 | 64.8% |
-   | `unknown` | 55 | 24.2% |
+   | `unknown` | 56 | 24.7% |
    | `court_document` | 17 | 7.5% |
    | `purchase_order` | 6 | 2.6% |
    | `tax_form` | 1 | 0.4% |
@@ -419,7 +431,7 @@ running anything:
    Two thirds of the corpus is invoices, which is worth knowing before
    annotating: the review effort is mostly one document type. **The 24%
    abstention rate is now the largest single number in the system**, and those
-   55 documents are where review pays for itself, because an abstention that a
+   56 documents are where review pays for itself, because an abstention that a
    human labels becomes training data for step 9 while a correct invoice
    mostly confirms what the rules already knew.
 
