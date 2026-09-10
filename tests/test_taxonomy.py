@@ -177,6 +177,94 @@ def test_a_confident_model_still_wins_over_a_weak_rule(cfg):
     assert result.method.value == "tfidf_svm"
 
 
+# ------------------------------------------------- the deck's banking classes
+
+# The eight classes taken from the POC 1 deck have no documents behind them, so
+# these are the only checks that exist for them. Each pair asks the two
+# questions the corpus cannot: does the title classify, and does a document
+# merely mentioning the title stay where it was.
+
+BANKING = {
+    "address_proof": "PROOF OF ADDRESS\nThis is to certify the residence of ...\n",
+    "kyc_form": "KYC FORM\nKnow Your Customer declaration\nCustomer due diligence\n",
+    "customer_application": "CUSTOMER APPLICATION FORM\nCustomer ID: 4471\nApplicant details\n",
+    "loan_application": "LOAN APPLICATION FORM\nApplicant: R Mehta\nLoan amount: 500000\n",
+    "sanction_letter": "LOAN SANCTION LETTER\nWe are pleased to sanction the facility\nRate of interest: 9.1%\n",
+    "repayment_schedule": "REPAYMENT SCHEDULE\nEMI No | Principal | Interest | Outstanding balance\n1 | 4210 | 1880 | 495790\n",
+    "account_opening_form": "ACCOUNT OPENING FORM\nSavings account\nNomination details\n",
+    "account_closure_form": "ACCOUNT CLOSURE FORM\nReason for closure: relocation\nUnused cheque leaves surrendered\n",
+}
+
+
+@pytest.mark.parametrize("name,text", sorted(BANKING.items()))
+def test_each_banking_class_classifies_its_own_title(cfg, name, text):
+    result = classify(text, [text], cfg, model=None)
+    assert result.label == name, f"{name} scored {result.all_scores}"
+
+
+def test_no_banking_marker_fires_on_a_court_judgment(cfg):
+    """The corpus is 41% court PDFs. A banking marker reaching them is the
+    whole risk of adding classes with no documents to tune against."""
+    result = classify(COURT_TEXT, [COURT_TEXT], cfg, model=None)
+    assert result.label == "court_document"
+    for name in BANKING:
+        assert result.all_scores.get(name, 0.0) == 0.0, f"{name} fired on a judgment"
+
+
+def test_sanction_in_the_criminal_sense_is_not_a_sanction_letter(cfg):
+    """s.197 CrPC sanction for prosecution. A bare \\bsanction\\b marker would
+    claim every one of these, and there are a lot of them in the corpus."""
+    text = (
+        "IN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+        "The question is whether sanction under Section 197 of the Code was "
+        "obtained before cognizance. The sanction accorded by the competent "
+        "authority is assailed by the petitioner.\n"
+    )
+    result = classify(text, [text], cfg, model=None)
+    assert result.all_scores.get("sanction_letter", 0.0) == 0.0
+    assert result.label == "court_document"
+
+
+def test_a_credit_memo_seeking_sanction_is_not_a_sanction_letter(cfg):
+    """Regression: Axis_Memorandum to ALCO.docx, found on the first real run
+    over Client_Documents. A sanction letter is the reply, not the request."""
+    text = (
+        "Memorandum to the Asset Liability Management Committee\n"
+        "Approval of Interest Rate for Refinance\n"
+        "The rate of interest, tenure and moratorium have been negotiated.\n"
+        "Recommendations would be submitted to the competent authority, viz., "
+        "IFCC-CGM for sanction. Submitted please.\n"
+    )
+    result = classify(text, [text], cfg, model=None)
+    assert result.label != "sanction_letter", f"scored {result.all_scores}"
+
+
+def test_an_agreement_citing_a_repayment_schedule_stays_a_contract(cfg):
+    """Regression: payment_agreement sample.jpg. Reached repayment_schedule at
+    0.95 on a body clause, off contract, before the determiner lookbehinds."""
+    text = (
+        "PAYMENT PLAN AGREEMENT\n"
+        "This Payment Plan Agreement (hereinafter referred to as the "
+        '"Agreement") is made and effective as of the Effective Date.\n'
+        "The Debtor hereby represents and warrants that this Agreement, as "
+        "well as the repayment schedule, have been created in a way that the "
+        "Debtor believes they can satisfy the Creditor's demands.\n"
+    )
+    result = classify(text, [text], cfg, model=None)
+    assert result.label == "contract", f"scored {result.all_scores}"
+
+
+def test_a_utility_bill_still_reads_as_an_invoice(cfg):
+    """address_proof markers sit below the invoice layer deliberately. If that
+    ordering is ever reversed it should be a decision, not this test failing."""
+    text = (
+        "ELECTRICITY BILL\nBill To: R Mehta\nSupply address: 14 Link Road\n"
+        "Invoice Number: EB-9931\nInvoice Date: 01-08-2026\nAmount due: 2,410.00\n"
+    )
+    result = classify(text, [text], cfg, model=None)
+    assert result.label == "invoice"
+
+
 def test_an_abstention_still_carries_a_distribution_to_diagnose_it(cfg):
     from baseline.classify import classify
 

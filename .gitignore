@@ -37,3 +37,13 @@ results_classification.jsonl.bboxes/
 scores_classification.json
 report_classification.md
 labels.md
+
+# A full run over Client_Documents. This one carries the extracted text of all
+# 227 documents, not just their names, so it is the single largest piece of
+# client material any command in this repo produces.
+client_results.jsonl
+client_results.jsonl.bboxes/
+client_run.log
+
+# Generated summary documents. Rebuild them rather than tracking the binary.
+What_We_Built.pdf

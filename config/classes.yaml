@@ -132,3 +132,118 @@ classes:
       # download banner. Kept low so it cannot short circuit on its own.
       - {kind: regex, pattern: '\bvs\.?\b.{0,120}\bon\s+\d{1,2}\s+\w+,\s*\d{4}', scope: header, specificity: 0.8}
       - {kind: regex, pattern: '\b(?:petitioner|appellant)s?\b', scope: first_page, specificity: 0.7}
+
+  # ------------------------------------------------------------------ banking
+  # The eight classes below come from the POC 1 deck's taxonomy matrix, not from
+  # any document we hold. See taxonomy_reconciliation.md. Nothing in
+  # Classification_Doc or Client_Documents is an instance of any of them, so
+  # unlike every class above, these markers were written rather than measured.
+  #
+  # What that costs: a marker above cites how many real PDFs it fires on. These
+  # cannot, so each one is a title or a self identifying phrase only, never
+  # topical vocabulary. A judgment about a loan dispute says "loan" hundreds of
+  # times and is still a court_document. The one thing that has been measured
+  # is the negative: all eight fire on 0 of the 112 labelled documents.
+  #
+  # Until a banking corpus arrives, treat every specificity here as provisional
+  # and none of them as evidence the class works.
+
+  - name: address_proof
+    description: Utility bill or similar document evidencing a residential address.
+    markers:
+      - {kind: regex, pattern: '\b(?:proof\s+of\s+address|address\s+proof)\b', scope: anywhere, specificity: 0.93}
+      - {kind: regex, pattern: '\bresidence\s+(?:proof|certificate)\b', scope: anywhere, specificity: 0.9}
+      # A utility bill IS an invoice by form: it has a bill number, an amount
+      # due and a payment term, so invoice markers legitimately reach 0.9 on it.
+      # These sit below that on purpose. Which class should win is a business
+      # decision nobody has made yet; this encodes "invoice wins" until someone
+      # decides otherwise, because that is the answer supported by evidence.
+      - {kind: keywords, all: ["bill"], any: ["electricity", "gas connection", "water supply", "broadband"], scope: anywhere, specificity: 0.65}
+      - {kind: keywords, any: ["service address", "supply address", "installation address"], scope: anywhere, specificity: 0.6}
+
+  - name: kyc_form
+    description: Customer due diligence / know your customer record.
+    markers:
+      - {kind: regex, pattern: '\bknow\s+your\s+(?:customer|client)\b', scope: anywhere, specificity: 0.94}
+      - {kind: regex, pattern: '\bkyc\s+(?:form|application|declaration|record)\b', scope: anywhere, specificity: 0.93}
+      - {kind: regex, pattern: '\bcustomer\s+due\s+diligence\b', scope: anywhere, specificity: 0.9}
+      # Bare "KYC" is compliance vocabulary. It appears in banking litigation,
+      # in account opening forms and in circulars, none of which are KYC forms.
+      # Below rule_min_confidence so it can only ever support another marker.
+      - {kind: keywords, any: [kyc, "re-kyc"], scope: anywhere, specificity: 0.5}
+
+  - name: customer_application
+    description: >
+      General customer onboarding or service request form. Overlaps by design
+      with account_opening_form, which is the same act narrowed to a deposit
+      account; the deck carries both. Kept a notch lower so the specific class
+      wins whenever it fires.
+    markers:
+      - {kind: regex, pattern: '\bcustomer\s+application\s+form\b', scope: first_page, specificity: 0.92}
+      - {kind: regex, pattern: '\bcustomer\s+(?:onboarding|enrolment|enrollment)\s+form\b', scope: first_page, specificity: 0.91}
+      - {kind: keywords, all: ["application form"], any: ["customer id", "customer details", "applicant details"], scope: anywhere, specificity: 0.72}
+
+  - name: loan_application
+    description: Credit request form submitted by a borrower.
+    markers:
+      - {kind: regex, pattern: '\bloan\s+application\s+form\b', scope: first_page, specificity: 0.95}
+      - {kind: regex, pattern: '\bapplication\s+for\s+(?:a\s+)?(?:\w+\s+){0,2}loan\b', scope: first_page, specificity: 0.9}
+      # first_page only, and never anywhere. A judgment recites the history of a
+      # loan application at length; a loan application form says so in its title.
+      - {kind: keywords, all: ["loan amount"], any: ["applicant", "borrower", "co-applicant"], scope: first_page, specificity: 0.72}
+
+  - name: sanction_letter
+    description: Lender's letter approving a credit facility.
+    markers:
+      # "Sanction" is the trap in this class. Under s.197 CrPC and s.19 PC Act
+      # it means sanction for prosecution, and it is everywhere in the court
+      # PDFs. Every marker here requires the lending sense explicitly. A bare
+      # \bsanction\b marker would be the single worst thing in this file.
+      - {kind: regex, pattern: '\b(?:loan|credit|facility)\s+sanction\s+letter\b', scope: anywhere, specificity: 0.96}
+      - {kind: regex, pattern: '\bsanction\s+letter\b', scope: first_page, specificity: 0.92}
+      - {kind: regex, pattern: '\bsanctioned\s+(?:loan\s+)?amount\b', scope: anywhere, specificity: 0.85}
+      - {kind: keywords, all: ["pleased to sanction"], scope: anywhere, specificity: 0.88}
+      # Bare "sanction" plus lending vocabulary claimed Axis_Memorandum to
+      # ALCO.docx at 0.80 on the first real run over Client_Documents. That
+      # file is an internal credit memo *seeking* approval - "submitted to the
+      # competent authority, viz., IFCC-CGM for sanction" - and it carries rate
+      # of interest, tenure and moratorium because every credit note does.
+      # A sanction letter is the reply, not the request. Requiring the past
+      # participle is what separates them, and even that sits below
+      # rule_min_confidence: with no real sanction letter in any corpus we
+      # hold, only an explicit title above is allowed to decide this class.
+      - {kind: keywords, all: ["sanctioned"], any: ["rate of interest", "tenure", "moratorium", "disbursement"], scope: anywhere, specificity: 0.65}
+
+  - name: repayment_schedule
+    description: EMI or amortisation table for a credit facility.
+    markers:
+      # A determiner in front of the phrase means the document is referring to
+      # a schedule, not being one. Without these lookbehinds this marker took
+      # payment_agreement sample.jpg off contract at 0.95 on the sentence "as
+      # well as the repayment schedule, have been created ...", which is a
+      # Payment Plan Agreement talking about its own annexure. Same failure as
+      # "Purchase Order No." above and "due upon receipt" above that.
+      - {kind: regex, pattern: '(?<!the\s)(?<!a\s)(?<!this\s)(?<!said\s)(?<!its\s)\b(?:repayment|amortisation|amortization)\s+schedule\b', scope: anywhere, specificity: 0.93}
+      - {kind: regex, pattern: '\bemi\s+schedule\b', scope: anywhere, specificity: 0.94}
+      - {kind: regex, pattern: '\bschedule\s+of\s+repayment\b', scope: first_page, specificity: 0.93}
+      # What a repayment schedule actually is: the table. Cited in prose these
+      # words do not co-occur; printed as a schedule they always do.
+      - {kind: keywords, all: ["emi"], any: ["principal", "outstanding balance", "installment no", "instalment no"], scope: anywhere, specificity: 0.75}
+      # The bare phrase, kept below rule_min_confidence so that a passing
+      # mention can support a decision but can never make one.
+      - {kind: regex, pattern: '\b(?:repayment|amortisation|amortization)\s+schedule\b', scope: anywhere, specificity: 0.55}
+
+  - name: account_opening_form
+    description: Request to open a deposit account.
+    markers:
+      - {kind: regex, pattern: '\baccount\s+opening\s+form\b', scope: anywhere, specificity: 0.96}
+      - {kind: regex, pattern: '\bapplication\s+for\s+opening\s+(?:an?\s+|a\s+new\s+)?account\b', scope: first_page, specificity: 0.93}
+      - {kind: keywords, all: ["account opening"], any: ["savings", "current account", "fixed deposit", "nomination"], scope: anywhere, specificity: 0.8}
+
+  - name: account_closure_form
+    description: Request to close an existing account.
+    markers:
+      - {kind: regex, pattern: '\baccount\s+closure\s+form\b', scope: anywhere, specificity: 0.96}
+      - {kind: regex, pattern: '\b(?:application|request)\s+for\s+(?:the\s+)?clos(?:ure|ing)\s+of\s+(?:my\s+|the\s+)?account\b', scope: first_page, specificity: 0.94}
+      - {kind: regex, pattern: '\bclose\s+my\s+account\b', scope: anywhere, specificity: 0.85}
+      - {kind: keywords, all: ["closure"], any: ["surrender the cheque", "unused cheque", "debit card is surrendered", "reason for closure"], scope: anywhere, specificity: 0.82}

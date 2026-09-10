@@ -21,6 +21,14 @@ governs everything else is this:
 > sits below 0.6 extraction confidence. Extraction quality is the ceiling on
 > every other metric in the system.
 
+One correction to that, added after the first full run over `Client_Documents`:
+the ceiling is real, but **ID cards are not what causes it**. There are zero of
+them in the 227 client documents, and the four in the labelled set are
+specimens. Step 3 has the evidence. Do not build an ID route.
+
+The corpus is **64.8% invoices and 24.2% abstentions**. Those 55 abstaining
+documents are the highest value thing a human can label right now.
+
 The review loop is finished and closed in all three directions, which is what
 makes growing a real gold set possible now:
 
@@ -92,6 +100,37 @@ running anything:
    The rule layer alone now gets 46/46 on court documents and 52/72 overall on
    the labelled PDFs. Every remaining miss is an invoice, which is step 4's
    problem, not the taxonomy's.
+
+   **Eight banking classes have since been added from the POC 1 deck**, taking
+   the class list from 9 to 17: `address_proof`, `kyc_form`,
+   `customer_application`, `loan_application`, `sanction_letter`,
+   `repayment_schedule`, `account_opening_form`, `account_closure_form`. The
+   full mapping between the deck's taxonomy and ours is in
+   `taxonomy_reconciliation.md`.
+
+   **Read these as provisional.** Every other class in `classes.yaml` cites
+   how many real documents its markers fire on. These cannot, because no
+   corpus we hold contains a single instance of any of them. Only the negative
+   is verified: they fire on 0 of the 112 labelled documents and 0 of the 227
+   in `Client_Documents`.
+
+   That verification was not free, and it is the reason to re-run it after any
+   edit here. Two false positives were caught by it and both are the same bug
+   this file already documents twice, under `purchase_order` and `receipt`:
+
+   - `repayment_schedule` took `payment_agreement sample.jpg` off `contract`
+     at 0.95, on a Payment Plan Agreement's own clause "as well as the
+     repayment schedule, have been created". Fixed with determiner lookbehinds.
+   - `sanction_letter` claimed `Axis_Memorandum to ALCO.docx` at 0.80. That is
+     an internal ALCO credit memo *seeking* approval, and it carries rate of
+     interest, tenure and moratorium because every credit note does. A sanction
+     letter is the reply, not the request. Fixed by requiring the past
+     participle, and demoted below `rule_min_confidence`.
+
+   The lesson generalises: **a document citing a form is not that form.** With
+   no corpus to tune against, only unambiguous self identification is allowed
+   to decide any of these eight classes. `tests/test_taxonomy.py` holds both
+   regressions plus a title case for each class.
 
 2. ~~**Wire in the text quality gate and turn it on.**~~ **Done.** Schema
    1.1.0, `ExtractionMethod.ocr_rescued`, gate enabled. It rescued 44 pages
@@ -182,9 +221,41 @@ running anything:
    are not page-like: Aadhaar, PAN, voter ID and passport are dense, coloured,
    and printed over patterned security backgrounds. Upscaling does not help
    them much and `psm` helps inconsistently. They likely want their own route
-   rather than another global knob. Before adding one, check how many of the
-   259 real files are actually ID cards; the labelled set may over-represent
-   them.
+   rather than another global knob.
+
+   **Do not build that route. The count was run and it is zero.** The
+   suspicion in the paragraph above was right and then some: the labelled set
+   does not over-represent ID cards, it is the only place they exist.
+
+   | | ID cards |
+   |---|---|
+   | `Classification_Doc`, labelled set | 4, and all four are specimens |
+   | `Client_Documents`, 227 documents | **0** |
+
+   The four are `Aadhar_card.webp`, `pan_card.webp`,
+   `sample-indian-passport-1.jpg` and `Sample_voter_id.jpg`. Sample images,
+   near certainly dropped in to exercise the PAN and Aadhaar checksums. They
+   are not client filing and nothing in `Client_Documents` resembles them.
+
+   Two independent detectors agree, which matters because neither is good
+   enough alone:
+
+   - **The classifier finds 1 of the 4 known cards.** Only `pan_card.webp`
+     classifies, at 0.93. The other three abstain. A zero from a detector with
+     that recall proves nothing on its own, so do not cite the label counts
+     for this.
+   - **A keyword scan over the raw OCR text finds 3 of 4**, missing only
+     `Sample_voter_id.jpg`, whose OCR is 100 characters of noise at 0.27
+     extraction confidence. Run over all 227 it returns 8 documents, and all
+     8 are court judgments *discussing* passports, voters and the Election
+     Commission. Not one is a card.
+   - **The blind spot where both fail is one file**, and it is
+     `~$rdness_Failure_minimization_plan.docx`, a Word lock stub. No image in
+     the 227 has the failed-OCR profile that hid the voter ID.
+
+   So image accuracy at 0.525 is still real and still the ceiling, but
+   whatever causes it is not ID cards. Re-diagnose it against
+   `client_results.jsonl` before spending anything more on OCR.
 
 4. ~~**Decide what happens to the 21 unsupported files.**~~ **Done, and the
    count was wrong in both directions.** Every one of the four categories was
@@ -332,6 +403,26 @@ running anything:
    Today's gold is **21 reviewed documents**, of which 20 join. The corpus is
    227. That gap is the work.
 
+   **The run half of that loop is already done.** `client_results.jsonl` is a
+   full pass over all 227 documents of `Client_Documents`, so start at
+   `export-workbook` rather than re-running the pipeline. What it says the
+   corpus is:
+
+   | label | n | share |
+   |---|---|---|
+   | `invoice` | 147 | 64.8% |
+   | `unknown` | 55 | 24.2% |
+   | `court_document` | 17 | 7.5% |
+   | `purchase_order` | 6 | 2.6% |
+   | `tax_form` | 1 | 0.4% |
+
+   Two thirds of the corpus is invoices, which is worth knowing before
+   annotating: the review effort is mostly one document type. **The 24%
+   abstention rate is now the largest single number in the system**, and those
+   55 documents are where review pays for itself, because an abstention that a
+   human labels becomes training data for step 9 while a correct invoice
+   mostly confirms what the rules already knew.
+
    Offsets are no longer a problem: the exporter carries `CHAR_START` and
    `CHAR_END`, the importer keeps them on confirmed rows, and **span scoring
    has now run for the first time at micro F1 0.207 over 11 documents.** That
@@ -355,6 +446,15 @@ running anything:
 
 9. **Retrain and retune.** `train`, then `tune-thresholds`, once there is
    enough corrected data to train on.
+
+   **`models/classifier` is now stale against 17 classes.** It already had no
+   `court_document` in its training set, so it could not predict 41% of the
+   labelled corpus; it now also has none of the eight banking classes. Nothing
+   breaks, because the rule layer carries all of them and a model below
+   `model_min_confidence` counts as declining rather than disagreeing, which
+   `test_a_quiet_model_does_not_veto_a_confident_rule` pins down. But do not
+   retrain before step 7 has produced real volume: a model fitted on 21
+   documents would be worse than the rules it would be overriding.
 
 ## Then the new approach
 
