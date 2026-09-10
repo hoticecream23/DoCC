@@ -243,3 +243,41 @@ def test_run_validator_is_safe_on_junk():
     assert run_validator("nope_not_a_validator", "x") is False
     assert run_validator(None, "x") is False
     assert run_validator("luhn", None) is False
+
+
+# ------------------------------------------------- invoice_number pattern
+
+@pytest.mark.parametrize("word", [
+    # Every one of these matched before a digit was required, and the first is
+    # printed on nearly every invoice in the corpus.
+    "INVOICE", "INVOICES", "POLICY", "PORTAL", "POSTAL", "PORTION",
+    "POWER", "BILLING", "BILLABLE", "PORTNON",
+])
+def test_invoice_number_pattern_ignores_ordinary_words(word, cfg):
+    """The pattern layer emitted seven English words for every real reference.
+
+    A field that fires on the word INVOICE fires on every invoice, which is
+    why the hit rate looked like 69% and the validation rate like 1%.
+    """
+    import re
+
+    rx = _invoice_number_regex(cfg)
+    assert rx.search(word) is None, f"{word} still reads as an invoice number"
+
+
+@pytest.mark.parametrize("ref", [
+    "INV-2024-0042", "PO-1234", "PO-001234", "INV/2024/7", "BILL-99", "INV2024",
+])
+def test_invoice_number_pattern_still_reads_real_references(ref, cfg):
+    rx = _invoice_number_regex(cfg)
+    m = rx.search(ref)
+    assert m is not None and m.group(1) == ref
+
+
+def _invoice_number_regex(cfg):
+    import re
+
+    for f in cfg.field_defs:
+        if f["name"] == "invoice_number":
+            return re.compile(f["pattern"]["regex"])
+    raise AssertionError("invoice_number is not in fields.yaml")

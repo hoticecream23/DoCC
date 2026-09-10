@@ -6,9 +6,35 @@ next.
 Baseline is built, OCR is verified, the evaluation harness is in, the
 knowledge graph v0 spike is done, and table extraction v0 is in.
 
-**The real documents have arrived.** Every number in `PROJECT_STATE.md` is
-still from the 10 document synthetic corpus, so the accuracy of this system on
-real input is currently unknown. Closing that is the whole job now.
+**The real documents have arrived, and the system has now been measured on
+them.** Every number in `PROJECT_STATE.md` is still from the 10 document
+synthetic corpus and should be read as historical. The real numbers are in
+this file.
+
+## Start here
+
+Steps 1 to 6 below are done and struck through; read them for the reasoning,
+not for work. **The live work is steps 7, 8 and 9**, and the one number that
+governs everything else is this:
+
+> **Images score 0.525 against 0.972 for PDFs**, and 60.4% of the real corpus
+> sits below 0.6 extraction confidence. Extraction quality is the ceiling on
+> every other metric in the system.
+
+The review loop is finished and closed in all three directions, which is what
+makes growing a real gold set possible now:
+
+```bash
+python -m baseline run             --input Client_Documents --output results.jsonl --workers 4
+python -m baseline export-workbook --input results.jsonl --output review.xlsx [--merge-from previous.xlsx]
+# a human corrects review.xlsx
+python -m baseline import-workbook --xlsx review.xlsx --root Client_Documents --output gold.jsonl
+python -m baseline eval            --gold gold.jsonl --pred results.jsonl
+```
+
+Export and import round trip losslessly, and `--merge-from` carries an
+existing review onto a new run. See the index workbook section for the rules
+that make that safe.
 
 ## The real corpus
 
@@ -208,11 +234,79 @@ running anything:
    because a spreadsheet can never be a document. openpyxl is already a
    dependency, so a handler is cheap the day it is actually needed.
 
-5. **Profile the corpus.**
+5. ~~**Profile the corpus.**~~ **Done.** `profile.md` is gitignored, so the
+   numbers are here. Regenerate with
    `python -m baseline profile --input Client_Documents --output profile.md`.
-   The native versus scanned split, the per field pattern hit rates, and the
-   rule layer coverage decide where the effort goes. Expect this to say that
-   OCR quality is the dominant variable.
+   It takes about half an hour: 194 of the 227 documents go through OCR and
+   `profile` has no `--workers`, unlike `run`. Adding one is a cheap win if
+   this gets run often.
+
+   **It said what this file predicted it would say, and then some.**
+
+   | | |
+   |---|---|
+   | documents | 227 |
+   | fully scanned | 194 (85.5%) |
+   | has native text | 32 (14.1%) |
+   | no text at all | 1 |
+   | mean extraction confidence | **0.632** |
+   | **documents below 0.6 confidence** | **137 (60.4%)** |
+   | mean page confidence, native | 0.980 |
+   | mean page confidence, OCR | 0.666 |
+   | rule layer coverage | 75.3% |
+
+   Four things in it are worth more than the headline:
+
+   - **The document split and the page split point opposite ways.** 85.5% of
+     *documents* are scanned, but only 271 of 1119 *pages* are. The native PDFs
+     are long, up to 132 pages, and the images are one page each. So OCR
+     dominates the document count and native text dominates the character
+     count. Which of those matters depends on the task: classification is per
+     document and is therefore an OCR problem, while anything trained on text
+     volume will be mostly reading clean native text.
+   - **The 0.089 "confidence drop when OCR'd" is one document.** Only
+     `Tax Invoice_027_SIDBI.pdf` carries both routes, so that row is a single
+     observation, not a corpus statistic. Do not quote it.
+   - **60.4% of documents sit below 0.6 extraction confidence** even after the
+     resolution fix in step 3. That is the same conclusion step 3 reached from
+     the other end, and it is the number to move.
+   - **`invoice` at 147 of 227 (64.8%) has not been verified and looks high.**
+     The labelled set in `Classification_Doc/` is 41% court documents; this
+     corpus reads as two thirds invoices off the rule layer alone. It may be
+     true, since `Client_Documents/` is a different corpus, but the invoice
+     markers were widened for US commercial vocabulary and an over firing rule
+     would look exactly like this. **Check it before trusting any per class
+     number from this corpus**: run `baseline run` over `Client_Documents`,
+     then look at which marker fired on the documents classified `invoice` and
+     read twenty of them.
+
+   **The profile earned its keep by exposing a real bug, now fixed.**
+   `invoice_number` had a 69.2% hit rate against a **1.3%** validation rate.
+   The cause was the pattern itself: `(?:INV|BILL|PO)[/-]?[A-Z0-9/-]{3,20}`
+   matches the word **`INVOICE`**, which is printed on nearly every invoice in
+   the corpus. `INV` plus `OICE` clears the `{3,20}` tail. So do `POLICY`,
+   `PORTAL`, `POSTAL`, `POWER`, `PORTION`, `BILLING`, `BILLABLE` and
+   `INVOICES`. On the labelled set the pattern layer emitted 8 values and 7 of
+   them were English words: `INVOICE` three times, `BILLING` twice, `PORTAL`,
+   `PORTNON`, and one real `PO-001234`.
+
+   The fix is a lookahead requiring a digit, since a real reference always has
+   one. Metadata micro F1 on the reviewed gold went 0.4651 to **0.4762** with
+   no regression anywhere, gated through `compare --fail-on-regression`.
+
+   **Two similar gaps are still open, and both are PII.** `aadhaar` has 8 hits
+   and **0 validated**; `card_number` has 6 hits and **0 validated**. The
+   checksums are rejecting every one, which is the validators working, but the
+   fields are still emitted unvalidated at 0.4 confidence. So the system is
+   currently asserting Aadhaar and card numbers that are almost certainly OCR
+   noise. Either tighten those patterns the way `invoice_number` was tightened,
+   or stop emitting an unvalidated candidate for a checksummed field at all.
+   The second is probably right: for a field that carries a checksum, failing
+   it is strong evidence rather than weak.
+
+   Also open: **1 document produced no text at all and 1 extract error.**
+   Neither is identified in the profile output, which is a gap in the profile
+   itself. It should name them.
 
 6. ~~**Score classification.**~~ **Done, and it is reproducible.**
 
@@ -230,16 +324,34 @@ running anything:
    predict 41% of the labelled set. Retrain first, then take the threshold
    from the harness's coverage at 1, 5 and 10 percent error.
 
-7. **Build gold for the rest.** Do not annotate cold. Run the baseline, then
-   correct its output, which is far faster. Format is in `tests/make_gold.py`.
-   **Include character offsets this time.** Synthetic gold could not provide
-   them honestly, so span scoring has never run, and span accuracy is exactly
-   what a layout model gets judged on.
+7. **Build gold for the rest. This is the live item.** Do not annotate cold,
+   and do not hand write the sheet either: both tools now exist. Run the
+   baseline, export the workbook, correct it, import it back. The commands are
+   at the top of this file.
 
-8. **Score the baseline for real.**
-   `python -m baseline eval --gold gold.jsonl --pred results.jsonl --pred-tables tables.jsonl`.
-   That number is the floor. Write it down. Everything from here is measured
-   against it.
+   Today's gold is **21 reviewed documents**, of which 20 join. The corpus is
+   227. That gap is the work.
+
+   Offsets are no longer a problem: the exporter carries `CHAR_START` and
+   `CHAR_END`, the importer keeps them on confirmed rows, and **span scoring
+   has now run for the first time at micro F1 0.207 over 11 documents.** That
+   is the number a layout model has to beat.
+
+8. **Score the baseline for real.** Partly done, on 20 documents. The floor,
+   written down, against human reviewed gold:
+
+   | metric | value |
+   |---|---|
+   | classification accuracy | 0.700 |
+   | **accuracy when answered** | **1.000** |
+   | metadata value micro F1 | 0.476 |
+   | span micro F1 | 0.207 (11 docs) |
+   | tagging micro F1 | 0.533 |
+   | `validated_precision` | 1.0 |
+
+   Every classification error is an abstention; the system is not yet wrong
+   when it answers. Redo this on a larger gold set from step 7 and treat the
+   above as provisional until then.
 
 9. **Retrain and retune.** `train`, then `tune-thresholds`, once there is
    enough corrected data to train on.
@@ -258,8 +370,17 @@ Do not upgrade everything uniformly. The error surface is lopsided:
 - **Metadata on court documents is the real open gap.** 7 fields across 46
   judgments today. Parties, court, bench, citation, case number and judgment
   date are all sitting there at 16 to 44 hits out of 46. See PROJECT_STATE.
-- **Anchor fields are the weak point.** Amounts, dates in roles, party names.
-  Brittle to layout, and confidences near 0.95 that mean nothing.
+- **Anchor fields are the weak point, now with evidence.** `total_amount` is
+  7 of the 11 remaining misses against reviewed gold, and they are not near
+  misses: `4532321.00` wanted against `5.00` produced. Amounts, dates in roles
+  and party names are brittle to layout and carry confidences near 0.95 that
+  mean nothing.
+- **A checksummed field should probably not emit an unvalidated candidate.**
+  On the real corpus `aadhaar` has 8 hits and 0 validated, `card_number` 6 and
+  0. The checksums are doing their job; the pipeline emits the candidates
+  anyway at 0.4 confidence, so the system asserts PII that is almost certainly
+  OCR noise. `invoice_number` was the same shape and was fixed by tightening
+  its pattern. See step 5.
 - **Tables exist now but only just.** v0 is precision first and refuses
   anything it cannot read cleanly. On real documents expect the abstention
   rate to be the number that moves, not the error rate.

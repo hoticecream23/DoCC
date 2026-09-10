@@ -103,7 +103,15 @@ fields:
     pattern:
       # Capture the whole reference including its prefix. Grouping only the
       # tail turned INV-2024-0042 into 2024-0042.
-      regex: '\b((?:INV|BILL|PO)[/-]?[A-Z0-9/-]{3,20})\b'
+      #
+      # The lookahead requires a digit somewhere in the reference. Without it
+      # this pattern matched the word INVOICE, which is printed on nearly every
+      # invoice: INV plus OICE clears the {3,20} tail. So did POLICY, PORTAL,
+      # POSTAL, POWER, BILLING and INVOICES. Measured on the client corpus that
+      # was a 69.2% hit rate against a 1.3% validation rate, and 7 of the 8
+      # values the pattern layer actually emitted were ordinary English words.
+      # A real invoice or PO reference always carries a digit.
+      regex: '\b((?:INV|BILL|PO)[/-]?(?=[A-Z0-9/-]*[0-9])[A-Z0-9/-]{3,20})\b'
       validator: invoice_number
       confidence_validated: 0.7
       confidence_unvalidated: 0.4
