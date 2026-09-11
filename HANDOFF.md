@@ -594,7 +594,7 @@ Open items:
 
 - ~~**No importer back out of it into `gold.jsonl`.**~~ **Done.**
   `baseline import-workbook --xlsx FILE --root DIR --output gold.jsonl`.
-  See `baseline/workbook.py`. Four things in it are load bearing:
+  See `baseline/workbook/importer.py`. Four things in it are load bearing:
 
   - **`spurious` produces nothing.** The gold for a field the pipeline
     invented is its *absence*. Writing a row for it would turn every correctly
@@ -650,8 +650,8 @@ Open items:
 - ~~**No exporter from `results.jsonl` into the workbook.**~~ **Done.**
   `baseline export-workbook --input results.jsonl --output workbook.xlsx
   [--tables tables.jsonl]`. All five tabs, and the column headers are
-  byte identical to the sheet Karishma built, checked tab by tab. It lives in
-  the same module as the importer on purpose: the two have to agree on every
+  byte identical to the sheet Karishma built, checked tab by tab. It reads its
+  columns from the same `columns.py` as the importer on purpose: the two have to agree on every
   column name, and a rename touching only one of them breaks the loop in
   silence.
 
@@ -780,7 +780,7 @@ the proven edges distinguishable from the inferred ones.
   is the only place that should build a `WordBox` from an `OCRWord`.
 - Table cell offsets are null or exact, never approximate. `verify_offsets`
   on `TableRecord` enforces it, same as on the record.
-- The workbook column names live in `baseline/workbook.py` and are read by
+- The workbook column names live in `baseline/workbook/columns.py` and are read by
   both directions. Exporting and importing must never carry separate copies of
   that list, or a rename desynchronises them silently.
 - `scan_documents` must account for every file under the root. Kept plus
