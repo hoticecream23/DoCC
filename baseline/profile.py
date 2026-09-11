@@ -12,9 +12,10 @@ from pathlib import Path
 
 from .classify import classify
 from .config import Config, load_config_cached
-from .extract import extract, scan_documents
+from .extract import extract
 from .logging_setup import get_logger
 from .metadata.fields import _pattern_candidates
+from .scan import scan_documents
 from .schema import ExtractionMethod, build_canonical_text, compute_doc_id
 
 log = get_logger(__name__)
@@ -144,7 +145,7 @@ def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
         for reason, count in excluded.items():
             a(f"| `{reason}` | {count} |")
         a("")
-        a("See `EXCLUDED_EXT` and `_exclusion_reason` in `extract.py` for what each "
+        a("See `EXCLUDED_EXT` and `_exclusion_reason` in `scan.py` for what each "
           "reason means and why it was decided that way.")
     a("")
     a("No models were used. Everything below is the deterministic floor.")

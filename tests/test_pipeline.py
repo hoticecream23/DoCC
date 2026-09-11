@@ -8,8 +8,9 @@ import yaml
 
 from baseline.classify import classify
 from baseline.config import load_config
-from baseline.extract import extract, iter_documents
+from baseline.extract import extract
 from baseline.pipeline import dumps, existing_doc_ids, process_document, run_batch
+from baseline.scan import iter_documents
 from baseline.schema import DocumentRecord, ExtractionMethod, compute_doc_id
 from baseline.tagging import apply_tags, derived_scores
 

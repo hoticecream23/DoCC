@@ -63,7 +63,7 @@ running anything:
 2. ~~**21 files will be silently skipped.**~~ **The real count is 32, and it
    is no longer silent.** See step 4: 19 `.xlsx` evaluation-set files, 12
    macOS resource forks and 1 archive, each excluded against a named rule that
-   `extract.py` records. 259 files in, 227 documents out, and the run logs the
+   `scan.py` records. 259 files in, 227 documents out, and the run logs the
    breakdown.
 3. **The client taxonomy does not match ours**, and it is worse than a naming
    mismatch. Their folders name 14 types. Seven of those map cleanly onto our
@@ -262,7 +262,7 @@ running anything:
 
 4. ~~**Decide what happens to the 21 unsupported files.**~~ **Done, and the
    count was wrong in both directions.** Every one of the four categories was
-   looked at rather than assumed, and `baseline/extract.py` now records the
+   looked at rather than assumed, and `baseline/scan.py` now records the
    decision next to the rule that implements it.
 
    `Client_Documents/` holds 259 files. **227 are documents.** The other 32:
@@ -278,7 +278,7 @@ running anything:
    227 that records an error: `PackageNotFoundError`, because it is not a real
    `.docx`. It behaves correctly - the error is recorded and the batch
    completes - but it is the same kind of thing as an AppleDouble stub and
-   belongs beside it. A `~$` prefix rule in `extract.py` would take the count
+   belongs beside it. A `~$` prefix rule in `scan.py` would take the count
    to 226 documents and 33 exclusions, and take the error list to empty. Small,
    and worth doing next time that file is open.
 

@@ -8,7 +8,7 @@ includes junk is as wrong as one that silently drops input.
 
 from __future__ import annotations
 
-from baseline.extract import scan_documents
+from baseline.scan import scan_documents
 
 
 def _corpus(tmp_path):

@@ -325,6 +325,7 @@ either way.
 baseline/
   schema.py      the output format, the contract
   extract.py     text extraction and page routing
+  scan.py        which files in a corpus are documents
   ocr.py         OCR engine interface, Tesseract by default
   rules.py       keyword and regex matching, shared
   classify.py    document type

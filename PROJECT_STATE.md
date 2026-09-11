@@ -531,7 +531,7 @@ allowed to decide any of these eight.
 ### What the full corpus run found
 
 First run over all of `Client_Documents`. 227 documents, 32 excluded, and the
-exclusion counts match what `extract.py` predicted exactly.
+exclusion counts match what `scan.py` predicted exactly.
 
 | label | n | share |
 | --- | --- | --- |

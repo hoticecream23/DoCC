@@ -16,9 +16,10 @@ from typing import Any, Callable
 from . import classify as classify_mod
 from . import tagging as tagging_mod
 from .config import Config, load_config_cached
-from .extract import ExtractionResult, extract, scan_documents, to_canonical_offsets
+from .extract import ExtractionResult, extract, to_canonical_offsets
 from .logging_setup import get_logger, setup_logging
 from .metadata import extract_fields
+from .scan import scan_documents
 from .schema import (
     BBoxSidecar,
     Classification,
