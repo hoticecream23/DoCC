@@ -498,7 +498,7 @@ Do not upgrade everything uniformly. The error surface is lopsided:
   rate to be the number that moves, not the error rate.
 
 So the target is layout aware token classification over text plus bounding
-boxes, and better table structure. `tables.py` is the first consumer of the
+boxes, and better table structure. `baseline/tables/` is the first consumer of the
 word boxes, and it is a classical geometric reading of them. A layout model
 should be measured against it with the same two numbers, not instead of them.
 
@@ -771,7 +771,7 @@ the proven edges distinguishable from the inferred ones.
 - Config over code. A class, field or tag name in a `.py` file is a bug.
 - `evaluate.py` must never import the pipeline. The moment it does, it stops
   being able to score a competing implementation fairly.
-- `tables.py` must stay a separate pass. The moment a table lands inside
+- `baseline/tables/` must stay a separate pass. The moment a table lands inside
   `DocumentRecord`, the record contract stops being frozen and every stored
   run needs re-extracting to gain a field.
 - OCR word boxes and `page_sizes` must be in the same coordinate space.

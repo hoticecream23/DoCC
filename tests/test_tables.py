@@ -11,16 +11,10 @@ import pytest
 
 from baseline.pipeline import dumps, process_document
 from baseline.schema import TableMethod
-from baseline.tables import (
-    _blank_runs,
-    _build_columns,
-    _Cell,
-    _is_header_row,
-    _segment_cells,
-    _Line,
-    build_record,
-    detect_text_grid,
-)
+from baseline.tables import build_record, detect_text_grid
+from baseline.tables.assemble import _is_header_row
+from baseline.tables.geometry import _build_columns, _Cell, _Line, _segment_cells
+from baseline.tables.text_grid import _blank_runs
 
 
 @pytest.fixture(scope="module")
@@ -259,8 +253,11 @@ def test_no_column_or_table_vocabulary_is_hardcoded():
     """Config over code, same rule the rest of the pipeline lives under."""
     from pathlib import Path
 
-    src = Path(__file__).resolve().parent.parent / "baseline" / "tables.py"
-    body = src.read_text(encoding="utf-8").lower()
+    pkg = Path(__file__).resolve().parent.parent / "baseline" / "tables"
+    files = sorted(pkg.glob("*.py"))
+    # An empty glob would pass this test vacuously, so insist the package is there.
+    assert files, "baseline/tables/ has moved; point this test at it"
+    body = "".join(p.read_text(encoding="utf-8") for p in files).lower()
     for word in ("qty", "invoice", "debit", "credit", "balance", "hsn"):
         assert word not in body, f"{word!r} is domain vocabulary, it belongs in yaml"
 

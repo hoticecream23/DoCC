@@ -212,7 +212,7 @@ explicitly out of scope for v0.
 
 ## Table extraction v0
 
-`baseline tables`, in `tables.py`, config in `config/tables.yaml`. A separate
+`baseline tables`, in `baseline/tables/`, config in `config/tables.yaml`. A separate
 pass over the results file plus the bbox sidecar, on the graph's pattern. It
 never touches the document record, so tables can be rebuilt from an old run
 without re-extracting anything.
@@ -805,7 +805,7 @@ its own. Had they been fixed together, none of these numbers would exist.
 hold all the vocabulary and rules. No class, field, tag or pattern is
 hardcoded in any module, and `test_a_new_document_class_needs_only_a_yaml_edit`
 enforces that. `test_no_column_or_table_vocabulary_is_hardcoded` does the same
-for `tables.py`.
+for every module in `baseline/tables/`.
 
 | File | Holds |
 | --- | --- |

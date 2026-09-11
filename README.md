@@ -334,7 +334,8 @@ baseline/
   profile.py     corpus measurement
   evaluate.py    scoring, imports nothing from the pipeline
   graph.py       knowledge graph over a results file
-  tables.py      table extraction over a results file
+  tables/        table extraction over a results file
+  workbook/      the review sheet, out and back in
   cli.py         commands
 config/          all the vocabulary and settings
 tests/
