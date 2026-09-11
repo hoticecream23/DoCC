@@ -97,7 +97,7 @@ confidence drop. Currently 0.083 on the synthetic corpus.
 
 ## Evaluation harness
 
-`baseline eval` and `baseline compare`, in `evaluate.py`. It imports nothing
+`baseline eval` and `baseline compare`, in `baseline/evaluate/`. It imports nothing
 from the pipeline. It reads JSONL and the schema, so the baseline and any
 replacement are scored by identical code. That was the whole point of fixing
 the schema first.

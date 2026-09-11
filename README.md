@@ -332,7 +332,7 @@ baseline/
   tagging.py     tags and threshold tuning
   pipeline.py    ties it together, batch runs
   profile.py     corpus measurement
-  evaluate.py    scoring, imports nothing from the pipeline
+  evaluate/      scoring, imports nothing from the pipeline
   graph.py       knowledge graph over a results file
   tables/        table extraction over a results file
   workbook/      the review sheet, out and back in

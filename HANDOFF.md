@@ -769,7 +769,7 @@ the proven edges distinguishable from the inferred ones.
 - `PAGE_SEP` in `schema.py`. Changing it invalidates every stored offset.
 - The `extra="forbid"` schema models. Adding a field is a versioned change.
 - Config over code. A class, field or tag name in a `.py` file is a bug.
-- `evaluate.py` must never import the pipeline. The moment it does, it stops
+- `baseline/evaluate/` must never import the pipeline. The moment it does, it stops
   being able to score a competing implementation fairly.
 - `baseline/tables/` must stay a separate pass. The moment a table lands inside
   `DocumentRecord`, the record contract stops being frozen and every stored
