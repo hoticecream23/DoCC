@@ -47,3 +47,9 @@ client_run.log
 
 # Generated summary documents. Rebuild them rather than tracking the binary.
 What_We_Built.pdf
+
+# Review workbooks exported from a run. Every one carries client file names,
+# text previews and extracted field values, so they are client material even
+# though the pipeline generated them.
+review*.xlsx
+*_review.xlsx

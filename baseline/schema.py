@@ -7,6 +7,7 @@ Adding fields is a versioned change, not a casual one.
 from __future__ import annotations
 
 import hashlib
+import json
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any
@@ -330,3 +331,21 @@ class TableRecord(Strict):
                         f"text[{c.char_start}:{c.char_end}]={got!r} != {c.text!r}"
                     )
         return problems
+
+
+def read_jsonl(path: str | Path) -> list[dict]:
+    """One record per line. Iterating the handle rather than splitlines() is
+    deliberate: splitlines() also breaks on the form feed inside PAGE_SEP and
+    on U+2028, either of which would cut a record in half.
+    """
+    rows = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for i, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{path}:{i} is not valid JSON: {exc}") from exc
+    return rows

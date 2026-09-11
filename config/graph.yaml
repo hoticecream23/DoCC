@@ -14,7 +14,6 @@ identity:
     # carrying only a GSTIN and one carrying only a PAN resolve to the same
     # organisation with no guessing involved.
     gstin_embeds_pan: true
-    canonical_key: pan
   account:
     keys: [account_number]
     qualifier: ifsc          # same number at a different bank is a different account

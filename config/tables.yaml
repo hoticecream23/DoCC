@@ -50,8 +50,6 @@ text_grid:
   # A run of this many columns that is blank on every line of the band is a
   # column separator. Two is enough when the alignment is real.
   min_separator_width: 2
-  # A band ends at a blank line or at a line this much longer than the rest.
-  max_blank_lines: 0
   # At least this fraction of lines must actually straddle a separator.
   # Otherwise the alignment is a coincidence in a block of prose.
   min_multi_cell_rows: 0.75

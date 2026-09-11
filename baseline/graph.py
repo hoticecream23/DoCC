@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .logging_setup import get_logger
+from .schema import read_jsonl
 
 log = get_logger(__name__)
 
@@ -111,16 +112,6 @@ def _all_fields(record: dict) -> dict[str, list[dict]]:
     return out
 
 
-def _canonical_org(gstins: list[str], pans: list[str], cfg: dict) -> str | None:
-    """Resolve to one key. A GSTIN carries its PAN, so PAN is canonical."""
-    if cfg.get("gstin_embeds_pan", True):
-        for g in sorted(gstins):
-            return g[GSTIN_PAN_SLICE]
-    for p in sorted(pans):
-        return p
-    return None
-
-
 def org_key(value: str) -> str:
     """One organisation, one key. A GSTIN reduces to the PAN it carries."""
     return value[GSTIN_PAN_SLICE] if len(value) == 15 else value
@@ -195,7 +186,6 @@ def match_roles(role_items: dict[str, list[dict]], id_items: list[dict],
 def build_graph(records: list[dict], gcfg: dict) -> tuple[Graph, dict]:
     g = Graph()
     ident = gcfg.get("identity", {})
-    org_cfg = ident.get("organization", {})
     acct_cfg = ident.get("account", {})
     roles = gcfg.get("roles", {})
     role_limit = int(gcfg.get("role_max_distance", 400))
@@ -517,12 +507,7 @@ def render_report(g: Graph, stats: dict, chains, exposure, orphans, source: str)
 
 
 def build(input_path, output_path, gcfg: dict, dot_path=None, report_path=None) -> dict:
-    records = []
-    with open(input_path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
+    records = read_jsonl(input_path)
 
     g, stats = build_graph(records, gcfg)
     chains = find_chains(g)

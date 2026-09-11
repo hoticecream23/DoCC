@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import gzip
 import json
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 from . import classify as classify_mod
 from . import tagging as tagging_mod

@@ -41,8 +41,6 @@ extraction:
     threshold: 0.02
     min_tokens: 40
   native_confidence: 0.98
-  # Docs with no extractable text at all.
-  empty_confidence: 0.0
   capture_bboxes: true
 
 classification:

@@ -15,7 +15,7 @@ same evaluation harness scores it without any changes.
 ## Quick start
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
 Make some sample documents to play with:

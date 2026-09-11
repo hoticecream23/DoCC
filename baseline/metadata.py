@@ -225,8 +225,6 @@ _MONTHS = {
 
 def _parse_date(value: str, dayfirst: bool = True):
     """Deterministic date parsing. No fuzzy guessing, no locale surprises."""
-    import datetime
-
     v = value.strip().replace(",", " ")
     v = re.sub(r"\s+", " ", v)
 

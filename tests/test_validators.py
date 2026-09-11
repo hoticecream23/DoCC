@@ -259,7 +259,6 @@ def test_invoice_number_pattern_ignores_ordinary_words(word, cfg):
     A field that fires on the word INVOICE fires on every invoice, which is
     why the hit rate looked like 69% and the validation rate like 1%.
     """
-    import re
 
     rx = _invoice_number_regex(cfg)
     assert rx.search(word) is None, f"{word} still reads as an invoice number"

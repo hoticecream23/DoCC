@@ -272,8 +272,6 @@ def test_compare_flags_a_regression(tmp_path):
 
 def test_harness_scores_the_real_baseline_output(tmp_path):
     """The harness must not depend on the pipeline, only on the schema."""
-    import subprocess
-    import sys
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent

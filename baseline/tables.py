@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import statistics
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,7 @@ from .schema import (
     TableMethod,
     TableRecord,
     page_spans,
+    read_jsonl,
 )
 
 log = get_logger(__name__)
@@ -56,12 +58,7 @@ def _percentile(values: list[float], pct: float) -> float:
 
 
 def _median(values: list[float]) -> float:
-    if not values:
-        return 0.0
-    s = sorted(values)
-    n = len(s)
-    mid = n // 2
-    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
+    return statistics.median(values) if values else 0.0
 
 
 def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
@@ -728,14 +725,7 @@ def build_record(
 # --------------------------------------------------------------------------
 
 
-def load_results(path: str | Path) -> list[dict]:
-    rows = []
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+load_results = read_jsonl
 
 
 def load_words(bbox_dir: Path, doc_id: str) -> list[dict]:

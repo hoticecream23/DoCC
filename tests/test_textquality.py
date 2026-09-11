@@ -5,9 +5,8 @@ gitignored, so the corpus itself cannot appear in a test. What can be pinned is
 the behaviour those measurements justify, on strings short enough to read.
 """
 
-import pytest
 
-from baseline.textquality import TextQuality, prefer, score_text
+from baseline.textquality import prefer, score_text
 
 # Verbatim from 1-2-2026 (1)Ev.pdf and 1-28-202610011.pdf, which are the
 # documents that motivated this module. Both fell to unknown on this text.

@@ -32,7 +32,7 @@ from .workbook import render_summary as render_workbook_summary
 from .logging_setup import get_logger, setup_logging
 from .pipeline import run_batch
 from .profile import run_profile
-from .schema import build_canonical_text
+from .schema import build_canonical_text, read_jsonl
 from .tables import build as build_tables
 
 log = get_logger(__name__)
@@ -40,16 +40,7 @@ log = get_logger(__name__)
 
 def _read_annotations(path: str | Path) -> list[dict]:
     """JSONL of {path|text, label?, tags?}. Sorted so training is reproducible."""
-    rows = []
-    with open(path, "r", encoding="utf-8") as fh:
-        for i, line in enumerate(fh, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{i} is not valid JSON: {exc}") from exc
+    rows = read_jsonl(path)
     rows.sort(key=lambda r: str(r.get("doc_id") or r.get("path") or r.get("text", ""))[:200])
     return rows
 
@@ -227,14 +218,8 @@ def cmd_import_labels(args: argparse.Namespace) -> int:
 
 def cmd_export_workbook(args: argparse.Namespace) -> int:
     cfg = load_config_cached(args.config)
-    # Not splitlines(): it also breaks on the form feed inside PAGE_SEP and on
-    # U+2028, either of which would cut a record in half.
-    def load(path):
-        with open(path, "r", encoding="utf-8") as fh:
-            return [json.loads(line) for line in fh if line.strip()]
-
-    records = load(args.input)
-    tables = load(args.tables) if args.tables else None
+    records = read_jsonl(args.input)
+    tables = read_jsonl(args.tables) if args.tables else None
     try:
         counts = export_workbook(records, cfg, args.output, tables=tables,
                                  run_id=args.run_id or "", overwrite=args.overwrite,
@@ -510,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         log.warning("interrupted")
         return 130
-    except Exception as exc:
+    except Exception:
         log.exception("command failed", extra={"command": args.command})
         return 1
 

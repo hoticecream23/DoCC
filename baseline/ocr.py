@@ -8,7 +8,7 @@ from __future__ import annotations
 import functools
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from .logging_setup import get_logger
 
@@ -143,14 +143,10 @@ class NullEngine(OCREngine):
         return OCRPage(engine=self.name)
 
 
-_REGISTRY: dict[str, Callable[[], OCREngine]] = {
+_REGISTRY: dict[str, type[OCREngine]] = {
     "tesseract": TesseractEngine,
     "null": NullEngine,
 }
-
-
-def register_engine(name: str, factory: Callable[[], OCREngine]) -> None:
-    _REGISTRY[name] = factory
 
 
 @functools.lru_cache(maxsize=8)
