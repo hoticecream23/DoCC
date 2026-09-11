@@ -37,6 +37,12 @@ Process everything into JSONL:
 python -m baseline run --input corpus --output results.jsonl --workers 4
 ```
 
+Build the hand written gold and training annotations for that corpus:
+
+```bash
+cd tests && python make_annotations.py ../annotations.jsonl && python make_gold.py ../gold.jsonl && cd ..
+```
+
 Score a run against ground truth:
 
 ```bash

@@ -8,6 +8,8 @@ includes junk is as wrong as one that silently drops input.
 
 from __future__ import annotations
 
+import pytest
+
 from baseline.scan import scan_documents
 
 
@@ -70,3 +72,9 @@ def test_a_single_file_root_is_taken_as_given(tmp_path):
     kept, excluded = scan_documents(one)
     assert kept == [one]
     assert excluded == {}
+
+
+def test_a_missing_root_is_an_error_not_an_empty_corpus(tmp_path):
+    """A mistyped --input used to walk nothing and report a clean run of zero."""
+    with pytest.raises(FileNotFoundError):
+        scan_documents(tmp_path / "does_not_exist")

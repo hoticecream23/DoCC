@@ -74,6 +74,9 @@ def scan_documents(root) -> tuple[list, dict[str, list[str]]]:
     r = Path(root)
     if r.is_file():
         return [r], {}
+    if not r.is_dir():
+        # A mistyped path would otherwise walk nothing and report a clean run.
+        raise FileNotFoundError(f"no such file or directory: {r}")
 
     kept, excluded = [], {}
     for p in sorted(r.rglob("*"), key=lambda p: str(p).lower()):
