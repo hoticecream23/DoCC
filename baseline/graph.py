@@ -185,91 +185,111 @@ def match_roles(role_items: dict[str, list[dict]], id_items: list[dict],
 
 def build_graph(records: list[dict], gcfg: dict) -> tuple[Graph, dict]:
     g = Graph()
+    skipped_unverified = 0
+    for rec in records:
+        if rec.get("doc_id"):
+            skipped_unverified += _add_document(g, rec, gcfg)
+    _add_references(g, records, gcfg.get("references", {}))
+    duplicates = _add_duplicates(g, records, gcfg.get("duplicates", {}))
+
+    stats = {
+        "documents": sum(1 for n in g.nodes if n.kind == "document"),
+        "organizations": sum(1 for n in g.nodes if n.kind == "organization"),
+        "accounts": sum(1 for n in g.nodes if n.kind == "account"),
+        "edges": len(g.edges),
+        "edges_by_type": dict(sorted(collections.Counter(e.type for e in g.edges).items())),
+        "duplicate_groups": duplicates,
+        "unverified_ids_ignored": skipped_unverified,
+    }
+    return g, stats
+
+
+def _add_document(g: Graph, rec: dict, gcfg: dict) -> int:
+    """One document, its verified organisations and their roles, and its accounts.
+
+    Returns how many unverified identifiers the document carried. They are
+    counted so the report can say what was refused, and never used.
+    """
     ident = gcfg.get("identity", {})
     acct_cfg = ident.get("account", {})
     roles = gcfg.get("roles", {})
     role_limit = int(gcfg.get("role_max_distance", 400))
     role_margin = int(gcfg.get("role_min_margin", 0))
-    ref_cfg = gcfg.get("references", {})
-    dup_cfg = gcfg.get("duplicates", {})
 
-    skipped_unverified = 0
-    doc_orgs: dict[str, list[str]] = {}
+    doc_id = rec.get("doc_id")
+    cls = (rec.get("classification") or {}).get("label", "unknown")
+    vfields = _validated(rec)
+    afields = _all_fields(rec)
 
-    for rec in records:
-        doc_id = rec.get("doc_id")
-        if not doc_id:
+    doc_node = f"doc:{doc_id}"
+    g.add_node(
+        doc_node, "document",
+        filename=rec.get("filename", ""),
+        label=cls,
+        page_count=(rec.get("diagnostics") or {}).get("page_count", 0),
+        method=(rec.get("text") or {}).get("method", ""),
+    )
+
+    # ---- organisations, verified identity only ----
+    gstins = [m["normalized_value"] for m in vfields.get("gstin", []) if m.get("normalized_value")]
+    pans = [m["normalized_value"] for m in vfields.get("pan", []) if m.get("normalized_value")]
+    org_ids: list[str] = []
+    seen_keys: set[str] = set()
+    for source in (gstins, pans):
+        for value in sorted(source):
+            key = value[GSTIN_PAN_SLICE] if len(value) == 15 else value
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            node = f"org:{key}"
+            attrs: dict[str, Any] = {"pan": key}
+            if len(value) == 15:
+                attrs["gstins"] = [value]
+            g.add_node(node, "organization", **attrs)
+            g.add_edge(doc_node, node, "mentions_org")
+            org_ids.append(node)
+
+    # Count what we deliberately refused to use.
+    skipped = 0
+    for name in ("gstin", "pan"):
+        skipped += len(afields.get(name, [])) - len(vfields.get(name, []))
+
+    # ---- roles, one per verified identity ----
+    id_items = collapse_identities(vfields.get("gstin", []) + vfields.get("pan", []))
+    wanted = {etype: afields.get(fname, [])
+              for etype, fname in sorted(roles.items()) if afields.get(fname)}
+    if wanted and id_items:
+        for edge_type, (dist, role_item, id_item) in sorted(
+            match_roles(wanted, id_items, role_limit, role_margin).items()
+        ):
+            value = id_item.get("normalized_value", "")
+            key = value[GSTIN_PAN_SLICE] if len(value) == 15 else value
+            g.add_node(f"org:{key}", "organization",
+                       names=[role_item.get("normalized_value", "")])
+            g.add_edge(doc_node, f"org:{key}", edge_type,
+                       name=role_item.get("normalized_value", ""), distance=dist)
+
+    # ---- accounts ----
+    for m in vfields.get("account_number", []) + afields.get("account_number", []):
+        number = m.get("normalized_value")
+        if not number:
             continue
-        cls = (rec.get("classification") or {}).get("label", "unknown")
-        vfields = _validated(rec)
-        afields = _all_fields(rec)
+        ifscs = [x.get("normalized_value") for x in vfields.get(acct_cfg.get("qualifier", "ifsc"), [])]
+        ifsc = sorted([i for i in ifscs if i])[0] if any(ifscs) else None
+        # Without a verified IFSC the same number at two banks would merge,
+        # so an unqualified account is not an entity in v0.
+        if not ifsc:
+            continue
+        node = f"acct:{ifsc}:{number}"
+        g.add_node(node, "account", number=number, ifsc=ifsc)
+        g.add_edge(doc_node, node, "pays_to")
+        for org in org_ids:
+            g.add_edge(node, org, "held_by")
+    return skipped
 
-        doc_node = f"doc:{doc_id}"
-        g.add_node(
-            doc_node, "document",
-            filename=rec.get("filename", ""),
-            label=cls,
-            page_count=(rec.get("diagnostics") or {}).get("page_count", 0),
-            method=(rec.get("text") or {}).get("method", ""),
-        )
 
-        # ---- organisations, verified identity only ----
-        gstins = [m["normalized_value"] for m in vfields.get("gstin", []) if m.get("normalized_value")]
-        pans = [m["normalized_value"] for m in vfields.get("pan", []) if m.get("normalized_value")]
-        org_ids: list[str] = []
-        seen_keys: set[str] = set()
-        for source in (gstins, pans):
-            for value in sorted(source):
-                key = value[GSTIN_PAN_SLICE] if len(value) == 15 else value
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-                node = f"org:{key}"
-                attrs: dict[str, Any] = {"pan": key}
-                if len(value) == 15:
-                    attrs["gstins"] = [value]
-                g.add_node(node, "organization", **attrs)
-                g.add_edge(doc_node, node, "mentions_org")
-                org_ids.append(node)
-        doc_orgs[doc_node] = org_ids
-
-        # Count what we deliberately refused to use.
-        for name in ("gstin", "pan"):
-            skipped_unverified += len(afields.get(name, [])) - len(vfields.get(name, []))
-
-        # ---- roles, one per verified identity ----
-        id_items = collapse_identities(vfields.get("gstin", []) + vfields.get("pan", []))
-        wanted = {etype: afields.get(fname, [])
-                  for etype, fname in sorted(roles.items()) if afields.get(fname)}
-        if wanted and id_items:
-            for edge_type, (dist, role_item, id_item) in sorted(
-                match_roles(wanted, id_items, role_limit, role_margin).items()
-            ):
-                value = id_item.get("normalized_value", "")
-                key = value[GSTIN_PAN_SLICE] if len(value) == 15 else value
-                g.add_node(f"org:{key}", "organization",
-                           names=[role_item.get("normalized_value", "")])
-                g.add_edge(doc_node, f"org:{key}", edge_type,
-                           name=role_item.get("normalized_value", ""), distance=dist)
-
-        # ---- accounts ----
-        for m in vfields.get("account_number", []) + afields.get("account_number", []):
-            number = m.get("normalized_value")
-            if not number:
-                continue
-            ifscs = [x.get("normalized_value") for x in vfields.get(acct_cfg.get("qualifier", "ifsc"), [])]
-            ifsc = sorted([i for i in ifscs if i])[0] if any(ifscs) else None
-            # Without a verified IFSC the same number at two banks would merge,
-            # so an unqualified account is not an entity in v0.
-            if not ifsc:
-                continue
-            node = f"acct:{ifsc}:{number}"
-            g.add_node(node, "account", number=number, ifsc=ifsc)
-            g.add_edge(doc_node, node, "pays_to")
-            for org in org_ids:
-                g.add_edge(node, org, "held_by")
-
-    # ---- document to document references ----
+def _add_references(g: Graph, records: list[dict], ref_cfg: dict) -> None:
+    """Document to document edges: a document quoting a value another one owns."""
     ref_field = ref_cfg.get("field", "invoice_number")
     owners = set(ref_cfg.get("owner_classes") or [])
     edge_name = ref_cfg.get("edge", "references")
@@ -293,7 +313,12 @@ def build_graph(records: list[dict], gcfg: dict) -> tuple[Graph, dict]:
                 if citer != target:
                     g.add_edge(citer, target, edge_name, key=val)
 
-    # ---- duplicate candidates ----
+
+def _add_duplicates(g: Graph, records: list[dict], dup_cfg: dict) -> list[dict]:
+    """Same class documents that agree on every match_on field.
+
+    Returns the groups, and links every pair inside each one.
+    """
     match_on = dup_cfg.get("match_on") or []
     buckets: dict[tuple, list[str]] = collections.defaultdict(list)
     for rec in records:
@@ -323,17 +348,7 @@ def build_graph(records: list[dict], gcfg: dict) -> tuple[Graph, dict]:
             for i, a in enumerate(sorted(docs)):
                 for b in sorted(docs)[i + 1:]:
                     g.add_edge(a, b, "duplicate_of", key=" | ".join(key))
-
-    stats = {
-        "documents": sum(1 for n in g.nodes if n.kind == "document"),
-        "organizations": sum(1 for n in g.nodes if n.kind == "organization"),
-        "accounts": sum(1 for n in g.nodes if n.kind == "account"),
-        "edges": len(g.edges),
-        "edges_by_type": dict(sorted(collections.Counter(e.type for e in g.edges).items())),
-        "duplicate_groups": duplicates,
-        "unverified_ids_ignored": skipped_unverified,
-    }
-    return g, stats
+    return duplicates
 
 
 # --------------------------------------------------------------------------

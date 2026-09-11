@@ -7,6 +7,8 @@ hand and the review effort had nowhere to come from.
 
 from __future__ import annotations
 
+import datetime
+import hashlib
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -83,8 +85,6 @@ def export_workbook(
     merge_from carries an earlier review onto this run. See merge.py for what
     survives a changed prediction and what does not.
     """
-    import hashlib
-
     import openpyxl
 
     out = Path(out_path)
@@ -97,8 +97,8 @@ def export_workbook(
             "Write to a new path, or pass overwrite if the file is disposable."
         )
 
-    run_id = run_id or f"run_{__import__('datetime').datetime.now():%Y%m%dT%H%M%S}"
-    extracted_at = f"{__import__('datetime').datetime.now():%Y-%m-%dT%H:%M:%S}"
+    run_id = run_id or f"run_{datetime.datetime.now():%Y%m%dT%H%M%S}"
+    extracted_at = f"{datetime.datetime.now():%Y-%m-%dT%H:%M:%S}"
 
     wb = openpyxl.Workbook()
     del wb["Sheet"]
@@ -115,6 +115,35 @@ def export_workbook(
 
     prior = load_prior_review(merge_from) if merge_from else PriorReview()
     counts = Counter()
+    seen_docs = _write_document_rows(records, docs, meta, tags_ws, prior, counts,
+                                     run_id, extracted_at)
+
+    # Reviewed rows the new run no longer produces. They are appended rather
+    # than dropped, because what the reviewer said is still true about the
+    # document even though the prediction that carried it is gone.
+    for _doc_id, row in _rescue_metadata(prior, seen_docs, counts):
+        _write_row(meta, row)
+        counts["metadata"] += 1
+    for row in _rescue_tags(prior, seen_docs, counts):
+        _write_row(tags_ws, row)
+        counts["tags"] += 1
+
+    _write_taxonomy(taxo, cfg, counts)
+    _write_line_items(items, tables, counts)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out)
+    return dict(counts)
+
+
+def _write_document_rows(records: list[dict[str, Any]], docs, meta, tags_ws,
+                         prior: PriorReview, counts: Counter,
+                         run_id: str, extracted_at: str) -> set[str]:
+    """One Documents row per record, plus its Metadata and Tags rows.
+
+    Returns the doc_ids written, so the caller can tell which reviewed rows the
+    new run no longer produces.
+    """
     seen_docs: set[str] = set()
     for rec in records:
         doc_id = rec.get("doc_id", "")
@@ -170,39 +199,37 @@ def export_workbook(
                 *_carry_tag(prior, doc_id, str(t.get("tag") or "").casefold(), counts),
             ])
             counts["tags"] += 1
+    return seen_docs
 
-    # Reviewed rows the new run no longer produces. They are appended rather
-    # than dropped, because what the reviewer said is still true about the
-    # document even though the prediction that carried it is gone.
-    for _doc_id, row in _rescue_metadata(prior, seen_docs, counts):
-        _write_row(meta, row)
-        counts["metadata"] += 1
-    for row in _rescue_tags(prior, seen_docs, counts):
-        _write_row(tags_ws, row)
-        counts["tags"] += 1
 
-    # The Taxonomy tab is generated, never typed. Typed, it drifts from the
-    # code within a month and the reviewer is checking against a vocabulary
-    # the pipeline no longer has.
+def _write_taxonomy(ws, cfg: Config, counts: Counter) -> None:
+    """The Taxonomy tab, generated from config and never typed.
+
+    Typed, it drifts from the code within a month and the reviewer is checking
+    against a vocabulary the pipeline no longer has.
+    """
     for c in cfg.classes.get("classes", []):
-        _write_row(taxo, ["class", c.get("name", ""), c.get("description", ""), "", "", ""])
+        _write_row(ws, ["class", c.get("name", ""), c.get("description", ""), "", "", ""])
         counts["taxonomy"] += 1
     for f in cfg.field_defs:
-        _write_row(taxo, [
+        _write_row(ws, [
             "field", f.get("name", ""), f.get("description", ""), f.get("type", ""),
             (f.get("pattern") or {}).get("regex", ""),
             ", ".join(f.get("classes") or []) or "all",
         ])
         counts["taxonomy"] += 1
     for t in cfg.tag_defs:
-        _write_row(taxo, ["tag", t.get("name", ""), t.get("description", ""), "bool", "", ""])
+        _write_row(ws, ["tag", t.get("name", ""), t.get("description", ""), "bool", "", ""])
         counts["taxonomy"] += 1
 
+
+def _write_line_items(ws, tables: list[dict[str, Any]] | None, counts: Counter) -> None:
+    """The Line items tab, one row per table cell."""
     for rec in tables or []:
         doc_id = rec.get("doc_id", "")
         for table in rec.get("tables") or []:
             for cell in table.get("cells") or []:
-                _write_row(items, [
+                _write_row(ws, [
                     doc_id, table.get("table_id", ""), table.get("page", ""),
                     table.get("method", ""), table.get("n_rows", ""), table.get("n_cols", ""),
                     cell.get("row", ""), cell.get("col", ""), cell.get("text", ""),
@@ -210,7 +237,3 @@ def export_workbook(
                     bool(table.get("header")) and cell.get("row") == 0,
                 ])
                 counts["line_items"] += 1
-
-    out.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(out)
-    return dict(counts)

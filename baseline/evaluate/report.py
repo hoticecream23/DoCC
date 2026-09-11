@@ -58,7 +58,17 @@ def render_report(res: dict, gold_path: str, pred_path: str) -> str:
         a(f"Unmatched gold rows: {', '.join(res['unmatched_gold'])}")
         a("")
 
-    ex = res["extraction"]
+    L += _report_extraction(res["extraction"])
+    L += _report_classification(res["classification"])
+    L += _report_metadata(res["metadata"])
+    L += _report_tagging(res["tagging"])
+    L += _report_tables(res.get("tables") or {})
+    return "\n".join(L)
+
+
+def _report_extraction(ex: dict) -> list[str]:
+    L: list[str] = []
+    a = L.append
     a("## Extraction")
     a("")
     if ex.get("scored"):
@@ -71,8 +81,12 @@ def render_report(res: dict, gold_path: str, pred_path: str) -> str:
     else:
         a("No gold text supplied, so extraction was not scored.")
     a("")
+    return L
 
-    c = res["classification"]
+
+def _report_classification(c: dict) -> list[str]:
+    L: list[str] = []
+    a = L.append
     a("## Classification")
     a("")
     a("| metric | value |")
@@ -109,8 +123,12 @@ def render_report(res: dict, gold_path: str, pred_path: str) -> str:
         for k, v in c["confusion"].items():
             a(f"- {k}: {v}")
         a("")
+    return L
 
-    m = res["metadata"]
+
+def _report_metadata(m: dict) -> list[str]:
+    L: list[str] = []
+    a = L.append
     a("## Metadata")
     a("")
     a("Value scoring asks whether the answer was right. Span scoring asks")
@@ -127,7 +145,7 @@ def render_report(res: dict, gold_path: str, pred_path: str) -> str:
     a("")
     if m["span"].get("per_field"):
         a(f"Span micro F1 **{m['span']['micro']['f1']:.3f}** "
-          f"over {res['metadata']['span_scored_docs']} documents with gold offsets")
+          f"over {m['span_scored_docs']} documents with gold offsets")
     else:
         a("Span scoring skipped, the gold file carries no character offsets.")
     a("")
@@ -145,8 +163,12 @@ def render_report(res: dict, gold_path: str, pred_path: str) -> str:
         for e in m["errors"][:25]:
             a(f"- {e}")
         a("")
+    return L
 
-    t = res["tagging"]
+
+def _report_tagging(t: dict) -> list[str]:
+    L: list[str] = []
+    a = L.append
     a("## Tagging")
     a("")
     a(f"Micro F1 **{t['micro']['f1']:.3f}**, macro F1 **{t['macro_f1']:.3f}**")
@@ -157,7 +179,12 @@ def render_report(res: dict, gold_path: str, pred_path: str) -> str:
         a(f"| {k} | {v['precision']:.3f} | {v['recall']:.3f} | {v['f1']:.3f} "
           f"| {v['tp']} | {v['fp']} | {v['fn']} |")
     a("")
-    tb = res.get("tables") or {}
+    return L
+
+
+def _report_tables(tb: dict) -> list[str]:
+    L: list[str] = []
+    a = L.append
     if tb.get("scored"):
         a("## Tables")
         a("")
@@ -179,7 +206,7 @@ def render_report(res: dict, gold_path: str, pred_path: str) -> str:
         a("they came out next to the right neighbours, which is what separates")
         a("a real table from a bag of numbers.")
         a("")
-    return "\n".join(L)
+    return L
 
 
 # --------------------------------------------------------------------------

@@ -126,9 +126,22 @@ def profile_corpus(input_dir: str | Path, cfg: Config) -> dict:
 
 def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
     n = stats["n_documents"]
+    lines = (
+        _md_header(stats, input_dir, n)
+        + _md_extraction(stats, n)
+        + _md_sizes(stats, n)
+        + _md_ocr(stats)
+        + _md_classification(stats, n, cfg)
+        + _md_metadata(stats, n, cfg)
+        + _md_errors(stats)
+        + _md_extensions(stats)
+    )
+    return "\n".join(lines)
+
+
+def _md_header(stats: dict, input_dir: str, n: int) -> list[str]:
     L: list[str] = []
     a = L.append
-
     a("# Corpus profile")
     a("")
     a(f"Source: `{input_dir}`")
@@ -150,7 +163,12 @@ def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
     a("")
     a("No models were used. Everything below is the deterministic floor.")
     a("")
+    return L
 
+
+def _md_extraction(stats: dict, n: int) -> list[str]:
+    L: list[str] = []
+    a = L.append
     a("## Extraction")
     a("")
     a("| metric | value |")
@@ -173,7 +191,12 @@ def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
     for k, v in sorted(stats["page_methods"].items()):
         a(f"| {k} | {v} |")
     a("")
+    return L
 
+
+def _md_sizes(stats: dict, n: int) -> list[str]:
+    L: list[str] = []
+    a = L.append
     a("## Size distribution")
     a("")
     pc = _dist(stats["page_counts"])
@@ -193,7 +216,12 @@ def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
         low = sum(1 for c in conf if c < 0.6)
         a(f"Documents below 0.6 confidence: {low} ({_pct(low, n)})")
         a("")
+    return L
 
+
+def _md_ocr(stats: dict) -> list[str]:
+    L: list[str] = []
+    a = L.append
     a("## OCR quality proxy")
     a("")
     by_method = stats["conf_by_method"]
@@ -223,7 +251,12 @@ def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
         a("No document produced both a native and an OCR page, so there is no")
         a("like for like comparison. The table above is still indicative.")
         a("")
+    return L
 
+
+def _md_classification(stats: dict, n: int, cfg: Config) -> list[str]:
+    L: list[str] = []
+    a = L.append
     a("## Classification, rule layer only")
     a("")
     a("| label | docs | share |")
@@ -234,7 +267,12 @@ def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
     unknown = stats["rule_labels"].get(str(cfg.classify_opts().get("unknown_label", "unknown")), 0)
     a(f"Rule layer coverage: **{_pct(n - unknown, n)}**. The rest need the model.")
     a("")
+    return L
 
+
+def _md_metadata(stats: dict, n: int, cfg: Config) -> list[str]:
+    L: list[str] = []
+    a = L.append
     a("## Metadata, pattern layer only")
     a("")
     a("Anchors and templates are excluded, so this is the regex plus checksum floor.")
@@ -247,7 +285,12 @@ def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
         v = stats["field_validated"].get(name, 0)
         a(f"| {name} | {h} | {_pct(h, n)} | {v} | {_pct(v, h)} |")
     a("")
+    return L
 
+
+def _md_errors(stats: dict) -> list[str]:
+    L: list[str] = []
+    a = L.append
     if stats["errors"]:
         a("## Errors")
         a("")
@@ -262,7 +305,12 @@ def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
         for u in stats["unreadable"][:20]:
             a(f"- {u}")
         a("")
+    return L
 
+
+def _md_extensions(stats: dict) -> list[str]:
+    L: list[str] = []
+    a = L.append
     a("## Extensions")
     a("")
     a("| ext | count |")
@@ -270,7 +318,7 @@ def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
     for k, v in sorted(stats["by_extension"].items()):
         a(f"| {k} | {v} |")
     a("")
-    return "\n".join(L)
+    return L
 
 
 def run_profile(input_dir: str | Path, output: str | Path, config_dir: str | None = None) -> dict:

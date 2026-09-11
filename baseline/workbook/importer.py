@@ -146,13 +146,6 @@ def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> Wor
     if not root.is_dir():
         raise NotADirectoryError(f"--root is not a directory: {root}")
 
-    classes = {c.casefold() for c in cfg.class_names}
-    unknown_label = str(cfg.classify_opts().get("unknown_label", "unknown")).casefold()
-    normalizers = {str(f.get("name", "")).casefold(): f.get("normalizer") for f in cfg.field_defs}
-    fields = set(normalizers)
-    tags = {str(t.get("name", "")).casefold() for t in cfg.tag_defs}
-    norm_opts = cfg.fields.get("normalizer_options", {}) or {}
-
     wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
     try:
         doc_i, doc_rows = _read_tab(wb, "Documents")
@@ -164,9 +157,29 @@ def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> Wor
     if not doc_rows:
         return res
 
-    by_id = _doc_id_to_path(root)
+    gold = _import_documents(doc_i, doc_rows, _doc_id_to_path(root), cfg, res)
+    _import_metadata(meta_i, meta_rows, gold, cfg, res)
+    _import_tags(tag_i, tag_rows, gold, cfg, res)
 
-    # ---------------------------------------------------------- documents
+    for row in gold.values():
+        row["tags"].sort()
+        row["metadata"].sort(key=lambda e: (e["field"], e["normalized_value"]))
+    res.rows = [gold[k] for k in sorted(gold)]
+
+    if res.unresolved_doc_ids:
+        log.warning("workbook rows whose doc_id is not under --root",
+                    extra={"count": len(res.unresolved_doc_ids)})
+    for problem in res.problems:
+        log.error("workbook uses names the config does not declare", extra={"detail": problem})
+    return res
+
+
+def _import_documents(doc_i: dict[str, int], doc_rows: list[tuple], by_id: dict[str, str],
+                      cfg: Config, res: WorkbookImport) -> dict[str, dict[str, Any]]:
+    """The Documents tab: one gold row per document the reviewer gave a class."""
+    classes = {c.casefold() for c in cfg.class_names}
+    unknown_label = str(cfg.classify_opts().get("unknown_label", "unknown")).casefold()
+
     gold: dict[str, dict[str, Any]] = {}
     for row in doc_rows:
         doc_id = _get(row, doc_i, "DOC_ID")
@@ -216,8 +229,16 @@ def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> Wor
         filename = _get(row, doc_i, "FILE_NAME")
         if filename:
             gold[doc_id]["filename"] = filename
+    return gold
 
-    # ----------------------------------------------------------- metadata
+
+def _import_metadata(meta_i: dict[str, int], meta_rows: list[tuple],
+                     gold: dict[str, dict[str, Any]], cfg: Config, res: WorkbookImport) -> None:
+    """The Metadata tab: confirmed and corrected field values, normalised."""
+    normalizers = {str(f.get("name", "")).casefold(): f.get("normalizer") for f in cfg.field_defs}
+    fields = set(normalizers)
+    norm_opts = cfg.fields.get("normalizer_options", {}) or {}
+
     for row in meta_rows:
         doc_id = _get(row, meta_i, "DOC_ID")
         if doc_id not in gold:
@@ -279,14 +300,17 @@ def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> Wor
         entry = {"field": name, "normalized_value": value}
         entry.update(offsets)
 
-        if not value:
-            continue
         if _get(row, meta_i, "ROW_SOURCE").casefold() == "human":
             res.human_rows += 1
         res.counts[f"field_{verdict}"] += 1
         gold[doc_id]["metadata"].append(entry)
 
-    # --------------------------------------------------------------- tags
+
+def _import_tags(tag_i: dict[str, int], tag_rows: list[tuple],
+                 gold: dict[str, dict[str, Any]], cfg: Config, res: WorkbookImport) -> None:
+    """The Tags tab: a tag is either on the document or it is not."""
+    tags = {str(t.get("name", "")).casefold() for t in cfg.tag_defs}
+
     for row in tag_rows:
         doc_id = _get(row, tag_i, "DOC_ID")
         if doc_id not in gold:
@@ -316,18 +340,6 @@ def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> Wor
         res.counts[f"tag_{verdict}"] += 1
         if name not in gold[doc_id]["tags"]:
             gold[doc_id]["tags"].append(name)
-
-    for row in gold.values():
-        row["tags"].sort()
-        row["metadata"].sort(key=lambda e: (e["field"], e["normalized_value"]))
-    res.rows = [gold[k] for k in sorted(gold)]
-
-    if res.unresolved_doc_ids:
-        log.warning("workbook rows whose doc_id is not under --root",
-                    extra={"count": len(res.unresolved_doc_ids)})
-    for problem in res.problems:
-        log.error("workbook uses names the config does not declare", extra={"detail": problem})
-    return res
 
 
 def render_summary(res: WorkbookImport, xlsx_path: str, root: str) -> str:
