@@ -14,7 +14,7 @@ from .classify import classify
 from .config import Config, load_config_cached
 from .extract import extract, scan_documents
 from .logging_setup import get_logger
-from .metadata import _pattern_candidates
+from .metadata.fields import _pattern_candidates
 from .schema import ExtractionMethod, build_canonical_text, compute_doc_id
 
 log = get_logger(__name__)

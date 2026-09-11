@@ -180,7 +180,7 @@ def test_normalizer_version_is_recorded(cfg):
 
 def test_strict_mode_raises_on_a_deliberately_broken_offset(cfg, monkeypatch):
     """Prove the guard fires rather than silently passing bad spans through."""
-    import baseline.metadata as md
+    import baseline.metadata.fields as md
 
     real = md._pattern_candidates
 

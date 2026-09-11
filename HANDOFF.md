@@ -209,7 +209,7 @@ running anything:
 
    **A coordinate bug was found and fixed on the way past.** OCR word boxes
    were stored in the pixel space of the image the engine read, while
-   `page_sizes` held the page's own units, and `metadata.py` normalises every
+   `page_sizes` held the page's own units, and `metadata/fields.py` normalises every
    box as `w.x0 / page_width`. For OCR'd PDF pages those two differed by
    `dpi/72`, so **24 of 29 OCR'd PDFs had over half their word boxes outside
    the declared page**, and every template region over a scanned page was
@@ -775,7 +775,7 @@ the proven edges distinguishable from the inferred ones.
   `DocumentRecord`, the record contract stops being frozen and every stored
   run needs re-extracting to gain a field.
 - OCR word boxes and `page_sizes` must be in the same coordinate space.
-  `metadata.py` normalises every box as `w.x0 / page_width`, so a box read off
+  `metadata/fields.py` normalises every box as `w.x0 / page_width`, so a box read off
   a rendered or upscaled image has to be divided back down first. `_ocr_words`
   is the only place that should build a `WordBox` from an `OCRWord`.
 - Table cell offsets are null or exact, never approximate. `verify_offsets`

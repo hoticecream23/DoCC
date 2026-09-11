@@ -328,7 +328,7 @@ baseline/
   ocr.py         OCR engine interface, Tesseract by default
   rules.py       keyword and regex matching, shared
   classify.py    document type
-  metadata.py    fields, checksums, normalisers
+  metadata/      fields, checksums, normalisers
   tagging.py     tags and threshold tuning
   pipeline.py    ties it together, batch runs
   profile.py     corpus measurement
