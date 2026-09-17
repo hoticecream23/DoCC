@@ -143,6 +143,40 @@ def _upscale_for_ocr(image: Any, opts: dict) -> tuple[Any, float]:
     return resized, k
 
 
+def _prepare_pink_paper(image: Any, opts: dict) -> tuple[Any, dict]:
+    """On pink paper, read the red channel only, as one block of text.
+
+    Most of the client corpus is Yaumi invoices: blue print on pink paper, with
+    a big red logo printed behind the totals. In the red channel the paper and
+    the logo both turn near white and the blue ink stays dark. psm 6 keeps each
+    label on the same line as its value, where psm 3 splits them into columns.
+
+    Measured on 32 Yaumi scans: mean OCR confidence 0.503 -> 0.632, delivery
+    date read 11 -> 17. Applied to every image it cost the labelled set 2 of 40
+    images and 1 PDF, so it only runs when the paper itself is pink.
+
+    Returns the image to read and the OCR options to read it with.
+    """
+    rule = opts.get("pink_paper") or {}
+    if not rule:
+        return image, opts
+    from PIL import ImageStat
+
+    rgb = image.convert("RGB")
+    small = rgb.copy()
+    small.thumbnail((200, 200))
+    red, green, blue = ImageStat.Stat(small).median  # the median pixel is the paper
+    # ponytail: thresholds fit one scan batch. Yaumi sits at 36 to 45, the
+    # palest other pink paper at 32. Re-measure when a new tinted batch arrives.
+    is_pink = (
+        red - green >= rule["min_red_over_green"]
+        and abs(green - blue) <= rule["max_green_blue_gap"]
+    )
+    if not is_pink:
+        return image, opts
+    return rgb.getchannel("R"), {**opts, "psm": rule["psm"]}
+
+
 def _ocr_words(words: list, pno: int, scale: float = 1.0) -> list[WordBox]:
     """OCR words as WordBoxes in the page's own coordinate space.
 
@@ -329,7 +363,8 @@ def _extract_image(path: Path, cfg: Config, res: ExtractionResult) -> None:
         res.page_sizes.append((float(img.width), float(img.height)))
         try:
             for_ocr, scale = _upscale_for_ocr(img, ocr_opts)
-            ocr = _ocr_image(for_ocr, ocr_opts)
+            for_ocr, read_opts = _prepare_pink_paper(for_ocr, ocr_opts)
+            ocr = _ocr_image(for_ocr, read_opts)
         except Exception as exc:
             res.errors.append("ocr failed: " + str(exc))
             res.pages.append("")

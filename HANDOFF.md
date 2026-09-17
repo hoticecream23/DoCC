@@ -274,6 +274,41 @@ running anything:
    whatever causes it is not ID cards. Re-diagnose it against
    `client_results.jsonl` before spending anything more on OCR.
 
+   **Re-diagnosed on the Yaumi scans, and fixed for them.** They are already
+   300 DPI, so resolution is not it. The paper is pink, the print is faint blue
+   dot matrix, and a large red logo sits behind the totals block. On top of
+   that `psm 3` splits the header into a label column and a value column.
+
+   `extraction.ocr.pink_paper` now reads an image from its red channel with
+   `psm 6` when the paper's median pixel is pink (red over green by 34 or
+   more, green within 10 of blue). In the red channel the paper and the logo
+   turn near white and the ink stays dark. `_prepare_pink_paper` in
+   `extract.py` holds the measurements.
+
+   | AIP folder, 183 records | before | after |
+   |---|---|---|
+   | mean extraction confidence | 0.561 | **0.664** |
+   | records below 0.6 | 135 | **23** |
+   | classified invoice | 140 | **142** |
+   | `aadhaar` candidates, all OCR noise | 8 | **0** |
+
+   Worth knowing:
+
+   - **It must stay gated on paper colour.** Red channel on every image cost the
+     labelled set 2 of 40 images; red plus `psm 6` everywhere cost 2 images and
+     1 PDF. With the gate, the labelled set is identical to before.
+   - **The thresholds fit one batch.** Yaumi measures 36 to 45 red over green.
+     The palest other pink paper in the corpus, the NG L.L.C. invoices, measures
+     30 to 32, and the change was mixed on those, so they are left out.
+   - **`psm 6` reads TAX as T&X more often**, which dropped 5 invoices to
+     `unknown` until the `tax invoice` marker accepted `t[a&]x`.
+   - **Missing totals are mostly not OCR.** Many Yaumi invoices are two image
+     files, and the first page carries no totals block at all.
+
+   `client_results.jsonl` was not re-run, because `review.xlsx` was exported
+   from it and is with the reviewer. Re-run it after the review comes back, and
+   use `--merge-from` so the review carries onto the new run.
+
 4. ~~**Decide what happens to the 21 unsupported files.**~~ **Done, and the
    count was wrong in both directions.** Every one of the four categories was
    looked at rather than assumed, and `baseline/scan.py` now records the
@@ -545,9 +580,9 @@ Do not upgrade everything uniformly. The error surface is lopsided:
   the one miss abstains rather than errs. Retrain before assuming a model adds
   anything: the current one has no `court_document` in its training set at all,
   so it cannot predict 41% of the labelled corpus.
-- **Metadata on court documents is the real open gap.** 7 fields across 46
-  judgments today. Parties, court, bench, citation, case number and judgment
-  date are all sitting there at 16 to 44 hits out of 46. See PROJECT_STATE.
+- **Metadata on court documents now exists, but is unscored.** Seven fields
+  from the indiankanoon header, see PROJECT_STATE, Known gaps, item 4. They
+  need gold before anything replaces them.
 - **Anchor fields are the weak point, now with evidence.** `total_amount` is
   7 of the 11 remaining misses against reviewed gold, and they are not near
   misses: `4532321.00` wanted against `5.00` produced. Amounts, dates in roles

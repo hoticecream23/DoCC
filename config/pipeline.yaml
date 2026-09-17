@@ -22,6 +22,13 @@ extraction:
     # under 0.6 from 15 to 8. 1300 and 1600 were both worse, so this is a knee
     # and not a "bigger is better" knob. Zero disables the rescale.
     min_short_side: 1000
+    # Image files on pink paper are read from the red channel with psm 6.
+    # See _prepare_pink_paper in extract.py for the measurements. Remove this
+    # block to turn it off.
+    pink_paper:
+      min_red_over_green: 34
+      max_green_blue_gap: 10
+      psm: 6
   # Native text is trusted. OCR confidence comes from the engine.
   # A native text layer can itself be somebody else's bad OCR, saved into the
   # PDF. When it is, the extractor never routes the page to OCR and nothing

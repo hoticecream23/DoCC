@@ -17,7 +17,7 @@ is in, plus a knowledge graph v0 spike and table extraction v0. The real
 corpus has arrived, the taxonomy is reconciled against it, and the system is
 measured end to end on it. **The whole of `Client_Documents` has now been
 processed in one run: 227 documents, 32 correctly excluded as not documents.**
-338 tests pass.
+343 tests pass.
 
 | Component | State | Notes |
 | --- | --- | --- |
@@ -845,15 +845,26 @@ its own. Had they been fixed together, none of these numbers would exist.
    `model_min_confidence` counts as declining rather than disagreeing. Do not
    retrain until gold is large enough to be worth fitting: a model trained on
    21 documents would be worse than the rules it would override.
-4. **Metadata extraction has no vocabulary for court documents.** The current
-   field set returns 7 fields across all 46 court PDFs: 5 emails, 1 phone, 1
-   account number. Everything substantive in `fields.yaml` is scoped to
-   invoice, receipt and purchase order. Measured availability in the same 46:
-   parties 44, judge or bench 39, citation 28, court name 25, judgment date
-   20, case number 16, statute section 8. Citations and case numbers have
-   strict formats, so they are format validatable the way GSTIN is. This is a
-   `fields.yaml` job, not a modelling one, and it is the largest untouched
-   gap in the system.
+4. ~~**Metadata extraction has no vocabulary for court documents.**~~
+   **Done for judgments from indiankanoon.org, which is all of them.** Seven
+   fields in `fields.yaml`, scoped to `court_document`: `petitioner`,
+   `respondent`, `judgment_date`, `bench`, `court`, `citation`,
+   `case_number`. Hits over the 50 distinct court documents across both
+   corpora, every value checked by eye: parties 49, date 47, case number 43,
+   bench 35, court 30, citation 21. The blanks are mostly absent from the
+   document, not missed.
+
+   - Parties and date come from indiankanoon's title line, anchored to the
+     start of the document so a cited case can never match. Its placeholder
+     date, 1 January 1800, is refused.
+   - `court` must fill its whole line, which is what stops "the Bombay High
+     Court held" in the body. Supreme Court and High Courts only; tribunals and
+     lower courts return nothing.
+   - `case_number` is case sensitive, so running text is not swept in. It knows
+     the "No. n of year" shape and Delhi's "ITA 218/2017" shape.
+   - Over 286 non court documents classified as `unknown`, the only false hit
+     is one `case_number` on `SIDBI PO.pdf`.
+   - None of these fields is in gold yet, so there is no scored number.
 
 5. **The seven legal labels are unrecoverable.** They collapse to
    `court_document`, which is 41% of the labelled set. If the client needs
