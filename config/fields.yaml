@@ -233,6 +233,111 @@ fields:
         - {text: "customer name", specificity: 0.95}
         - {text: "ship to", specificity: 0.8}
 
+  # Court documents. Every judgment in both corpora comes from indiankanoon.org,
+  # which opens each one with the same title line:
+  #   "<petitioner> vs <respondent> on <day> <Month>, <year>"
+  # The title wraps onto a second line at most, anywhere in it. The \A anchor
+  # means only the start of the document can match, never a case cited in the body.
+  # ponytail: title patterns are indiankanoon only. A judgment from another
+  # source falls through to the header patterns below or returns nothing.
+  - name: petitioner
+    classes: [court_document]
+    type: text
+    normalizer: text_norm
+    strategies: [pattern]
+    pattern:
+      regex: '\A\s*([^\n]+?(?:\n[^\n]+?)?)\s+vs\.?\s+[^\n]+?(?:\n[^\n]+?)?\s+on\s+[0-9]{1,2}\s+[A-Za-z]+,\s+[0-9]{4}'
+      confidence_unvalidated: 0.9
+
+  - name: respondent
+    classes: [court_document]
+    type: text
+    normalizer: text_norm
+    strategies: [pattern]
+    pattern:
+      regex: '\A\s*[^\n]+?(?:\n[^\n]+?)?\s+vs\.?\s+([^\n]+?(?:\n[^\n]+?)?)\s+on\s+[0-9]{1,2}\s+[A-Za-z]+,\s+[0-9]{4}'
+      confidence_unvalidated: 0.9
+
+  - name: judgment_date
+    classes: [court_document]
+    type: date
+    normalizer: date_iso
+    strategies: [pattern]
+    pattern:
+      # 1 January 1800 is the date indiankanoon prints when it has none.
+      regex: '\A\s*[^\n]+?(?:\n[^\n]+?)?\s+vs\.?\s+[^\n]+?(?:\n[^\n]+?)?\s+on\s+([0-9]{1,2}\s+[A-Za-z]+,\s+(?!1800\b)[0-9]{4})'
+      validator: date_sane
+      validator_args: {min_year: 1900}
+      confidence_validated: 0.95
+      confidence_unvalidated: 0.3
+
+  - name: bench
+    classes: [court_document]
+    type: text
+    normalizer: text_norm
+    strategies: [pattern]
+    pattern:
+      # "Bench: A, B" on one line, or the older "BENCH:" with the names below.
+      # A line ending in a colon is the next heading ("ACT:"), not a name.
+      regex: '(?m)^[ \t]*Bench:[ \t]*\n?[ \t]*([A-Z][^\n]*[^:\n])[ \t]*$'
+      ignorecase: true
+      confidence_unvalidated: 0.9
+
+  - name: court
+    classes: [court_document]
+    type: text
+    normalizer: upper_strip
+    strategies: [pattern]
+    pattern:
+      # "IN THE SUPREME COURT OF INDIA", "In The High Court At Calcutta",
+      # "IN THE HIGH COURT OF DELHI AT NEW DELHI", "THE GAUHATI HIGH COURT".
+      # The name must fill its whole line. A court named in running text, like
+      # "the Bombay High Court held", never does.
+      # ponytail: Supreme Court and High Courts only. Tribunals and lower courts
+      # return nothing. Add their header shapes when a corpus needs them.
+      regex: '(?m)^[^A-Za-z\n]*(?:IN[ \t]+)?THE[ \t]+((?:SUPREME|HIGH)[ \t]+COURT[ \t]+(?:OF|AT)(?:[ \t]+[A-Za-z&]+){1,5}|[A-Za-z]+[ \t]+HIGH[ \t]+COURT)[ \t]*$'
+      ignorecase: true
+      confidence_unvalidated: 0.8
+
+  - name: citation
+    classes: [court_document]
+    type: text
+    normalizer: upper_strip
+    strategies: [anchor, pattern]
+    anchor:
+      # Only the first of the equivalent citations. The list can run to twenty.
+      window: 80
+      direction: after
+      value_regex: '[ \t]*([^,\n]+)'
+      labels:
+        - {text: "equivalent citations:", specificity: 0.95}
+    pattern:
+      # Neutral citation, e.g. "2026:KHC:5069" or "2026:GAU-NL:332-DB".
+      regex: '\b((?:19|20)[0-9]{2}:[A-Z]+(?:-[A-Z]+)?:[0-9]+(?:-DB)?)\b'
+      confidence_unvalidated: 0.9
+
+  - name: case_number
+    classes: [court_document]
+    type: text
+    normalizer: upper_strip
+    strategies: [anchor, pattern]
+    anchor:
+      window: 60
+      direction: after
+      value_regex: '[ \t]*:?\s*([A-Za-z][^\n]*?[0-9]+[^\n]*?(?:of[ \t]+|/)[0-9]{4})'
+      labels:
+        - {text: "case no", specificity: 0.95}
+    pattern:
+      # Case sensitive, so running text like "to a civil suit" is not swept in.
+      # Two shapes:
+      #   <TYPE> No. <n> of <year>   W.P. No. 26952 (W) of 2006, CIVIL APPEAL NO.733 OF 2012
+      #   <TYPE> <n>/<year>          ITA 218/2017, O.M.P. (COMM) 463/2023 (Delhi)
+      # In the first shape TYPE is W.P., WP(LODG), WPSR, CCC, MP, or up to two
+      # capitalised words before Appeal, Suit, Petition, Application or Case.
+      # Earliest match wins, and the header comes before any case it cites.
+      regex: '\b((?:W\.?[ \t]?P\.?(?:[ \t]?\([A-Z]+\))?|WPSR|CCC|MP|(?:[A-Z][A-Za-z]+[ \t]+){0,2}(?:APPEAL|SUIT|PETITION|APPLICATION|CASE|Appeal|Suit|Petition|Application|Case)(?:[ \t]*\([A-Z.]+\))?)[ \t]+(?:[Nn][Oo]\.?[ \t]*:?[ \t]*)?[0-9]+(?:[ \t]*\([A-Z-]+\))?[ \t]+(?:of|OF)[ \t]+[0-9]{4}|(?!NO\b)[A-Z][A-Z.]*(?:[ \t]*\([A-Z]+\))?[ \t]+[0-9]+/[0-9]{4})'
+      confidence_unvalidated: 0.8
+
 # Options handed to the normalizers. Keeps vocabulary out of the code.
 normalizer_options:
   date_iso:
