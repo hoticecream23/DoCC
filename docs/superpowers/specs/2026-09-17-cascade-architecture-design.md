@@ -1,7 +1,7 @@
 # Cascade: architecture design
 
 Date: 2026-09-17
-Status: draft, awaiting review
+Status: reviewed 2026-09-17, open questions below
 
 ## What this is
 
@@ -26,7 +26,8 @@ a more expensive one.
 
 ## Constraints
 
-- **Local models only.** No document content leaves the machine.
+- **Local models only.** No document content leaves the company. The one
+  outside call is OCR, to another team's internal service (see stage 1).
 - **CPU first.** A GPU exists on the development laptop (RTX 3070 Ti mobile) but
   the design must not depend on one. GPU paths are later, optional, and decided
   by measured need.
@@ -72,10 +73,16 @@ Decides how text is read, per page.
   gate (`baseline/textquality.py`). If the score marks it corrupt, the page is
   OCR'd and the cleaner reading is kept. This is not optional on this corpus:
   all 25 client invoice PDFs carry a corrupt embedded OCR layer.
-- A page with no text layer goes to OCR, with the pink paper preparation that
-  already exists in `baseline/extract.py`.
-- The OCR engine is pluggable behind `baseline/ocr.py`'s engine interface.
-  Which engine is the default is decided by experiment 1a.
+- A page with no text layer goes to OCR.
+- **OCR is not built here.** Another team has built an OCR system, and cascade
+  calls it through its API as an engine behind `baseline/ocr.py`'s engine
+  interface. Tesseract, with the existing pink paper preparation, stays as the
+  fallback when the service is unavailable, and as the comparison in 1a.
+- The service must return words with bounding boxes, not only text. LiLT and
+  the offset contract both need them. If it returns text only, that is a
+  blocker to raise with the other team before phase 3.
+- The calls are made with bounded timeouts and retries, and a document whose
+  OCR failed is recorded as failed, never silently emptied.
 - Output: canonical text, pages, word boxes with character offsets.
 
 Reuses: `baseline/extract.py`, `baseline/textquality.py`, `baseline/scan.py`.
@@ -92,12 +99,9 @@ one multi page document.
 
 A file joins a group only on an exact identifier match. No fuzzy joining.
 
-Open point for the spec review: the record contract has one record per file.
-Two options, to be settled in the plan:
-(a) keep one record per file, and have the grouper only share context, so page
-two inherits the class and header fields of page one;
-(b) emit one record per group. Option (a) needs no contract change and is the
-default.
+Decided: one record per file. The grouper only shares context, so page two
+inherits the class and header fields of page one. No contract change, and gold
+stays aligned with records.
 
 ### 3. Deterministic layer
 
@@ -265,9 +269,10 @@ The test split is frozen once Karishma's review returns. Until then, a
 provisional split is used and every number reported from it is marked
 provisional.
 
-**Reference text.** About 15 pages are transcribed by hand: Yaumi, NG L.L.C.,
-SIDBI and Jindal. They give character error rate for OCR, which field scores
-alone cannot.
+**Reference text.** Not needed up front. OCR comes from the other team, so the
+question is only whether their service beats Tesseract on our documents, and
+field value F1 answers that. If 1a comes out close, about 15 pages are
+transcribed then, starting from an OCR draft that a person corrects.
 
 **Metrics.** The harness's own, reported overall and per layout group:
 classification macro F1 and coverage at error rates, metadata value and span
@@ -284,15 +289,17 @@ Laptop wall clock time is recorded but not used for decisions.
 **Gate.** A change is kept only if `baseline compare --fail-on-regression`
 passes on both test views and its cost stays inside budget.
 
-Proposed budget, to confirm at review: median at most 2 CPU seconds per page
-for a document the rules resolve, and 95th percentile at most 20 CPU seconds
-per page for the full cascade.
+Provisional budget, since the throughput target is not known yet. OCR is
+excluded, because it runs in the other team's service; its latency is recorded
+separately. Everything after OCR: median at most 2 CPU seconds per page for a
+document the rules resolve, and 95th percentile at most 20 CPU seconds per page
+for the full cascade. Revisit once a pages per day target exists.
 
 ## Phases
 
 | Phase | Work | Exit condition |
 | --- | --- | --- |
-| 0. Measurement | Deduplication, frozen layout group splits, provenance and cost capture, weak token labels, 15 transcribed pages | Split file committed; baseline scored on both test views |
+| 0. Measurement | Deduplication, frozen layout group splits, provenance and cost capture, weak token labels | Split file committed; baseline scored on both test views |
 | 1. Experiments | 1a to 1d below, as throwaway code | A written keep or drop decision for each, with numbers |
 | 2. Skeleton | `cascade/` with the staged runner, grouper, provenance, calibration hooks, built only from baseline parts | Scores identical to the baseline on both test views |
 | 3. Add stages | Kept experiments become stages, one at a time | Each passes the gate |
@@ -304,10 +311,11 @@ per page for the full cascade.
 Each experiment is throwaway code with one question and a decision rule set
 before it runs.
 
-**1a. OCR engine.** Tesseract (current) against PaddleOCR and docTR, CPU
-builds, on the 15 transcribed pages and on field value F1.
-Keep a new engine if character error rate falls by at least a fifth relative
-to Tesseract and field value F1 does not drop, within the cost budget.
+**1a. OCR service.** The other team's OCR API against Tesseract, on field value
+F1 and classification coverage, per layout group, plus the service's latency.
+Use the service as the default if field value F1 does not drop on any layout
+group and rises overall. If the two are within 2 points, transcribe reference
+pages and decide on character error rate.
 
 **1b. Classifier.** TF-IDF plus linear SVM against a small encoder plus logistic
 regression, behind the same rules, plus class description matching for the
@@ -355,13 +363,22 @@ is made in `baseline` and must leave the baseline's own outputs identical.
 - **Graph poisoning.** Mitigated by the write rules, and tested directly: a
   deliberately wrong fact injected into the graph must be revoked by one human
   correction.
+- **OCR is outside our control.** Its quality, speed and availability belong to
+  another team. Mitigated by the Tesseract fallback and by recording OCR
+  latency and failures per document.
 - **Licences.** A model that is best on quality may be unusable commercially.
   Checked before any experiment adopts it.
 
-## Open questions for review
+## Decisions made at review
 
-1. Document grouping: one record per file sharing context (default), or one
-   record per group?
-2. The cost budget above.
-3. Who transcribes the 15 reference pages, and when.
-4. Which layout groups are held out whole for the unseen layout view.
+1. Split documents: one record per file, sharing context.
+2. Cost budget: provisional, OCR excluded, until a throughput target exists.
+3. OCR: the other team's service through its API, Tesseract as fallback.
+4. Unseen layouts: SIDBI whole, the NG L.L.C. batch whole, and about a third of
+   the Legal judgments. Yaumi and Jindal appear only in the seen layout view.
+
+## Open questions
+
+1. The OCR service's API: request format, whether it returns word boxes, rate
+   limits, and whether it can be called from the evaluation machine.
+2. A pages per day target, to fix the cost budget.
