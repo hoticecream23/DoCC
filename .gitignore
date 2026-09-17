@@ -53,3 +53,9 @@ What_We_Built.pdf
 # though the pipeline generated them.
 review*.xlsx
 *_review.xlsx
+
+# Gold imported from the reviewed workbook. Client file names in every row.
+gold_reviewed.jsonl
+gold_reviewed.md
+# The name HANDOFF recommends for gold imported from the client review.
+gold_client.jsonl

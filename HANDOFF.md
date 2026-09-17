@@ -9,39 +9,53 @@ knowledge graph v0 spike is done, and table extraction v0 is in.
 **The real documents have arrived, and the system has now been measured on
 them.** `PROJECT_STATE.md` now carries the real numbers too, but some of its
 older sections are still from the 10 document synthetic corpus and say so
-where they are. When the two files disagree, this one is newer.
+where they are. When the two files disagree, this one is newer. The code was
+reorganised into packages on 2026-09-11, and PROJECT_STATE, Code layout, has the
+map.
 
 ## Start here
 
 Steps 1 to 6 below are done and struck through; read them for the reasoning,
-not for work. **The live work is steps 7, 8 and 9**, and the one number that
-governs everything else is this:
+not for work. **The live work is steps 7, 8 and 9.** Step 7 is waiting on a
+human: the review workbook for all 227 client documents is with Karishma.
+
+The one number that governs everything else:
 
 > **Images score 0.525 against 0.972 for PDFs**, and 60.4% of the real corpus
 > sits below 0.6 extraction confidence. Extraction quality is the ceiling on
 > every other metric in the system.
 
-One correction to that, added after the first full run over `Client_Documents`:
-the ceiling is real, but **ID cards are not what causes it**. There are zero of
-them in the 227 client documents, and the four in the labelled set are
-specimens. Step 3 has the evidence. Do not build an ID route.
+Two corrections to that, both from the full run over `Client_Documents`:
 
-The corpus is **64.8% invoices and 24.7% abstentions**. Those 56 abstaining
-documents are the highest value thing a human can label right now.
+- **ID cards are not what causes it.** There are zero of them in the 227 client
+  documents, and the four in the labelled set are specimens. Step 3 has the
+  evidence. Do not build an ID route.
+- **One vendor is most of it.** 140 of the 208 distinct documents are scanned
+  invoices from a single Dubai bakery, Yaumi International Bakeries, and 133 of
+  those 140 sit below 0.6 extraction confidence. Fixing OCR on this corpus
+  largely means fixing it on one scan batch. Step 5 has the detail.
+
+The corpus is **64.8% invoices and 24.7% abstentions** by record. It holds 19
+byte identical duplicates, so the 56 abstaining records are 45 distinct
+documents, and those 45 are the highest value thing a human can label right now.
 
 The review loop is finished and closed in all three directions, which is what
 makes growing a real gold set possible now:
 
 ```bash
-# the run is already done; client_results.jsonl is a full pass over all 227
-python -m baseline export-workbook --input client_results.jsonl --output review.xlsx [--merge-from previous.xlsx]
-# a human corrects review.xlsx
-python -m baseline import-workbook --xlsx review.xlsx --root Client_Documents --output gold.jsonl
-python -m baseline eval            --gold gold.jsonl --pred client_results.jsonl
+# done: client_results.jsonl is a full pass over all 227, and review.xlsx was
+# exported from it, carrying the earlier reviewed sheet forward
+python -m baseline export-workbook --input client_results.jsonl --output review.xlsx --merge-from ML_Documents/ML_Documents/Classification_Doc/Classification_Sheets.xlsx
+# a human corrects review.xlsx   <- waiting here
+python -m baseline import-workbook --xlsx review.xlsx --root Client_Documents --output gold_client.jsonl
+python -m baseline eval            --gold gold_client.jsonl --pred client_results.jsonl
 
 # only if config changed since that run, which invalidates it:
 python -m baseline run --input Client_Documents --output client_results.jsonl --workers 4 --no-resume
 ```
+
+Write the client gold to its own file. `gold.jsonl` is the synthetic gold that
+the test suite and the README quick start read.
 
 Export and import round trip losslessly, and `--merge-from` carries an
 existing review onto a new run. See the index workbook section for the rules
@@ -353,15 +367,16 @@ running anything:
    - **60.4% of documents sit below 0.6 extraction confidence** even after the
      resolution fix in step 3. That is the same conclusion step 3 reached from
      the other end, and it is the number to move.
-   - **`invoice` at 147 of 227 (64.8%) has not been verified and looks high.**
-     The labelled set in `Classification_Doc/` is 41% court documents; this
-     corpus reads as two thirds invoices off the rule layer alone. It may be
-     true, since `Client_Documents/` is a different corpus, but the invoice
-     markers were widened for US commercial vocabulary and an over firing rule
-     would look exactly like this. **Check it before trusting any per class
-     number from this corpus**: run `baseline run` over `Client_Documents`,
-     then look at which marker fired on the documents classified `invoice` and
-     read twenty of them.
+   - ~~**`invoice` at 147 of 227 (64.8%) has not been verified and looks
+     high.**~~ **Checked. It holds, but it describes one vendor rather than a
+     corpus.** The marker is not over firing: 134 of the 147 fire `tax invoice`
+     on the first page, which is the document's own printed title, and no
+     record is labelled invoice without a marker firing. What the count hides
+     is that 140 of the 208 distinct documents come from one supplier, Yaumi
+     International Bakeries, all under `AIP images 12/AIP images 11`, and 126
+     of the 140 distinct documents labelled invoice are theirs. Read
+     PROJECT_STATE, "One vendor is most of the corpus", before quoting any per
+     class number from `Client_Documents`.
 
    **The profile earned its keep by exposing a real bug, now fixed.**
    `invoice_number` had a 69.2% hit rate against a **1.3%** validation rate.
@@ -387,9 +402,23 @@ running anything:
    The second is probably right: for a field that carries a checksum, failing
    it is strong evidence rather than weak.
 
-   Also open: **1 document produced no text at all and 1 extract error.**
-   Neither is identified in the profile output, which is a gap in the profile
-   itself. It should name them.
+   ~~Also open: 1 document produced no text at all and 1 extract error.~~
+   **Identified: they are the same file**, `~$rdness_Failure_minimization_plan.docx`,
+   a Word lock stub that python-docx cannot open. A `~$` prefix rule in
+   `scan.py` would clear it (see step 4). The profile still does not name the
+   files it failed on, which remains a gap in the profile itself.
+
+   **A third extraction gap, found checking the invoice count.** Yaumi prints
+   its reference as `TAX INVOICE ~ CASH # 13333469`. The `invoice_number`
+   pattern wants `invoice` directly beside `no`, `number` or `#`, so it finds a
+   number on 2 of the 140. 110 of them carry a readable `CASH # <digits>`, and
+   on 101 of those 110 the digits also appear in the file name, which is
+   independent evidence a fix can be measured against. Only 30 distinct
+   references appear across the 110, so several scans share one invoice.
+
+   By contrast, `invoice_date` taking only 2 distinct values across all 140 is
+   not a bug. `Date: 08/04/2021` is printed on 134 of them: it is one delivery
+   run.
 
 6. ~~**Score classification.**~~ **Done, and it is reproducible.**
 
@@ -399,8 +428,16 @@ running anything:
    python -m baseline eval --gold gold_classification.jsonl --pred results_classification.jsonl
    ```
 
-   Accuracy 0.786, macro F1 0.625, coverage 0.821, 0.956 when it answers.
-   PDFs 69/71, images 18/40.
+   Current, regenerated under today's config and after the image resolution
+   fix in step 3: accuracy **0.8125**, macro F1 0.664, coverage 0.857, 0.948
+   when it answers. PDFs 69/71 with none wrong; images 21/40, with 14
+   abstaining and 5 wrong. It was 0.786 when first measured, before that fix.
+
+   **Read every number from this folder as optimistic.** The rule markers were
+   written and checked against these same documents, the court markers against
+   its 72 PDFs in particular, so it is not a held out set. The `Client_Documents`
+   review in step 7 is the first gold on documents the rules were not tuned on,
+   and only 14 documents appear in both folders.
 
    **`model_min_confidence` has still not been retuned and the model has still
    never been retrained.** It has no `court_document` class, so it cannot
@@ -414,6 +451,21 @@ running anything:
 
    Today's gold is **21 reviewed documents**, of which 20 join. The corpus is
    227. That gap is the work.
+
+   **Where it stands.** `review.xlsx` was exported from `client_results.jsonl`,
+   merged forward from the earlier reviewed sheet, and sent to Karishma with a
+   reviewer guide: 227 documents, 590 metadata rows, 923 tag rows and 43
+   taxonomy rows. The merge carried 3 document confirmations, 8 field reviews,
+   1 field correction and 5 tag reviews. That is all it could carry, because
+   only 14 documents appear in both folders. The guide asks for the abstentions
+   first, never to overwrite a pipeline value, and for both `IS_GOLD` and a
+   verdict on every row that should count.
+
+   Two things to pass on if they come up. The 14 `aadhaar` and `card_number`
+   rows failed their checksums and are almost certainly misread text, so
+   `spurious` is the right verdict for them (step 5). And the 126 Yaumi
+   invoices share one layout, so a sample of about 20 validates it; the variety
+   is in the other 82 documents.
 
    **The run half of that loop is already done.** `client_results.jsonl` is a
    full pass over all 227 documents of `Client_Documents`, so start at
@@ -431,13 +483,13 @@ running anything:
    Two thirds of the corpus is invoices, which is worth knowing before
    annotating: the review effort is mostly one document type. **The 24%
    abstention rate is now the largest single number in the system**, and those
-   56 documents are where review pays for itself, because an abstention that a
+   56 records (45 distinct documents) are where review pays for itself, because an abstention that a
    human labels becomes training data for step 9 while a correct invoice
    mostly confirms what the rules already knew.
 
    Offsets are no longer a problem: the exporter carries `CHAR_START` and
    `CHAR_END`, the importer keeps them on confirmed rows, and **span scoring
-   has now run for the first time at micro F1 0.207 over 11 documents.** That
+   has run at micro F1 0.2105 over 11 documents, 0.207 when first measured.** That
    is the number a layout model has to beat.
 
 8. **Score the baseline for real.** Partly done, on 20 documents. The floor,
@@ -447,14 +499,28 @@ running anything:
    |---|---|
    | classification accuracy | 0.700 |
    | **accuracy when answered** | **1.000** |
-   | metadata value micro F1 | 0.476 |
-   | span micro F1 | 0.207 (11 docs) |
-   | tagging micro F1 | 0.533 |
+   | metadata value micro F1 | 0.4762 |
+   | span micro F1 | 0.2105 (11 docs) |
+   | tagging micro F1 | 0.5333 |
    | `validated_precision` | 1.0 |
 
    Every classification error is an abstention; the system is not yet wrong
    when it answers. Redo this on a larger gold set from step 7 and treat the
    above as provisional until then.
+
+   Reproducible now. The one bad cell in the reviewed sheet (`Metadata!D22`,
+   `Aadhar_card`) is corrected in a copy beside the original, which is left
+   untouched:
+
+   ```bash
+   python -m baseline import-workbook --xlsx ML_Documents/ML_Documents/Classification_Doc/Classification_Sheets_corrected.xlsx --root Classification_Doc --output gold_reviewed.jsonl --report gold_reviewed.md
+   python -m baseline eval --gold gold_reviewed.jsonl --pred results_classification.jsonl
+   ```
+
+   Span moved from 0.207 to 0.2105 because the predictions changed after it was
+   first measured, not the scoring: the scoring code from before the refactor
+   gives 0.2105 on the same two files. The same caveat as step 6 applies, since
+   these documents are not held out either.
 
 9. **Retrain and retune.** `train`, then `tune-thresholds`, once there is
    enough corrected data to train on.
@@ -617,7 +683,8 @@ Open items:
   the same way `import-labels` refuses an unmapped label. On this sheet that
   fires once, on `Aadhar_card`, which is not a name in `fields.yaml`. It is
   almost certainly `aadhaar`, but almost certainly is not good enough and the
-  fix is one cell.
+  fix is one cell. **Done in a copy**, `Classification_Sheets_corrected.xlsx`,
+  with the original left untouched; step 8 has the commands.
 
 - **First score against human reviewed gold.** With that one cell corrected in
   a scratch copy: classification accuracy 0.700 over 20 joinable documents,
@@ -625,7 +692,7 @@ Open items:
   micro F1 0.465, tagging micro F1 0.533. `validated_precision` is **1.0**, and
   this is the first time it has been measurable on real data rather than null.
 
-  **Span scoring has now run for the first time: micro F1 0.207 over the 11
+  **Span scoring has now run for the first time: micro F1 0.207 (0.2105 today) over the 11
   documents carrying offsets.** That number is the one the layout model has to
   beat, and it is low enough to be worth beating.
 
@@ -810,6 +877,14 @@ the proven edges distinguishable from the inferred ones.
   `rule_short_circuit` so it can never decide a class on its own.
 - `Client_Documents/` and `Classification_Doc/` are gitignored. They are real
   client material and must never be committed.
+- `scan_documents` raises on a root that does not exist. It used to walk
+  nothing and report a clean run of zero, so a mistyped `--input` passed.
+- `pyproject.toml` restricts package discovery to `baseline*`. Without it
+  setuptools finds `config/` beside `baseline/`, refuses the flat layout, and
+  `pip install -e .` fails on a fresh clone.
+- `tests/test_offsets.py` monkeypatches `_pattern_candidates` in
+  `baseline/metadata/fields.py`. The patch must target the module whose globals
+  `extract_fields` reads, or the test passes without testing anything.
 - `validated_precision` must stay 1.0. Anything less means a validator is
   claiming proof it does not have.
 

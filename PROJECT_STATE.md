@@ -1,7 +1,7 @@
 # Project state
 
-Last updated: 2026-09-10 (first full run over all 227 client documents; eight
-banking classes added from the POC 1 deck; ID card route cancelled on evidence)
+Last updated: 2026-09-17 (code split into packages; fresh clone install fixed;
+review workbook with the reviewer; one vendor found to be most of the client corpus)
 
 ## What this is
 
@@ -17,7 +17,7 @@ is in, plus a knowledge graph v0 spike and table extraction v0. The real
 corpus has arrived, the taxonomy is reconciled against it, and the system is
 measured end to end on it. **The whole of `Client_Documents` has now been
 processed in one run: 227 documents, 32 correctly excluded as not documents.**
-337 tests pass.
+338 tests pass.
 
 | Component | State | Notes |
 | --- | --- | --- |
@@ -29,6 +29,54 @@ processed in one run: 227 documents, 32 correctly excluded as not documents.**
 | Eval harness | Done | Schema driven, does not import the pipeline. Scores tables too. |
 | Knowledge graph | v0 spike | Verified identifiers only. Deliberately narrow. |
 | Table extraction | v0 | Two strategies over boxes and over text. Abstains rather than guess. |
+
+## Code layout
+
+Reorganised on 2026-09-11. Every move was pure: each moved function, class and
+constant is AST identical to what it was, and every command's output was
+checked identical before and after, including a full re-run over all 227
+client documents.
+
+```
+baseline/
+  schema.py        the output contract, plus read_jsonl
+  config.py        loads config/
+  logging_setup.py structured logs
+  extract.py       text extraction and page routing
+  scan.py          which files under a root are documents, and why the rest are not
+  ocr.py           OCR engine interface, Tesseract by default
+  textquality.py   text layer corruption score for the quality gate
+  rules.py         keyword and regex marker matching, shared
+  classify.py      document type
+  tagging.py       tags and threshold tuning
+  metadata/        validators.py, normalizers.py, fields.py
+  pipeline.py      ties it together, batch runs
+  profile.py       corpus measurement
+  labels.py        Classification.csv into gold
+  evaluate/        scoring.py, table_scores.py, report.py
+  graph.py         knowledge graph over a results file
+  tables/          geometry.py, text_grid.py, assemble.py, records.py
+  workbook/        columns.py, exporter.py, importer.py, merge.py
+  cli.py           commands
+```
+
+`evaluate/` imports nothing from the rest of `baseline` except `logging_setup`,
+and keeps its own JSONL reader on purpose, so it can score a competing
+implementation without importing this one. Every other JSONL reader uses
+`schema.read_jsonl`.
+
+The same round of work removed what nothing used: `numpy` (never imported, and
+`requirements.txt` with it, since it had drifted from `pyproject.toml`),
+`register_engine`, `_canonical_org`, three config keys no code read
+(`canonical_key`, `empty_confidence`, `max_blank_lines`) and eleven unused
+imports. The five longest functions, 135 to 191 lines each, became short
+sequences of named steps: `import_workbook`, `build_graph`,
+`profile.render_markdown`, `export_workbook` and `evaluate.render_report`.
+
+Testing everything from a fresh clone afterwards found two real bugs, both
+fixed. `pip install -e .` failed, because setuptools refused a flat layout with
+`config/` beside `baseline/`. And `run` or `profile` on a missing `--input`
+exited 0 having done nothing.
 
 ## Verified behaviour
 
@@ -565,6 +613,46 @@ Image extraction at 0.525 against 0.972 for PDFs is still the ceiling on
 everything. ID cards are simply not what causes it, so re-diagnose it against
 `client_results.jsonl` before spending on OCR again.
 
+### One vendor is most of the corpus
+
+Checked because a 64.8% invoice share looked like an over firing rule. It is
+not: 134 of the 147 invoice labels come from `tax invoice` on the first page,
+which is the document's own printed title, and no record is labelled invoice
+without a marker firing.
+
+What the share hides is the corpus itself. The 227 records are 208 distinct
+documents, with 19 byte identical duplicates, and **140 of the 208 are scanned
+invoices from one supplier, Yaumi International Bakeries** in Dubai, all under
+`AIP images 12/AIP images 11`. 126 of the 140 distinct documents labelled
+invoice are theirs.
+
+| folder | distinct docs | labels |
+| --- | --- | --- |
+| `AIP images 12/AIP images 11` | 158 | 133 invoice, 24 unknown, 1 purchase_order |
+| `Legal 2/Legal` | 17 | 17 court_document |
+| `SIDBI 2/SIDBI` | 14 | 7 unknown, 5 invoice, 2 purchase_order |
+| `Jindal 1 1/Jindal 1/Jindal` | 12 | 10 unknown, 1 invoice, 1 tax_form |
+| `AIP images 12/AIP images 11/AIP images` | 7 | 4 unknown, 2 purchase_order, 1 invoice |
+
+Three consequences:
+
+- **Per class numbers from this corpus describe one layout.** A model trained
+  on it would learn Yaumi.
+- **The extraction ceiling is largely one scan batch.** Median extraction
+  confidence across the 140 is 0.508, and 133 of them sit below 0.6.
+- **The 56 abstentions are 45 distinct documents**: 24 in the AIP folder, 10 in
+  Jindal, 7 in SIDBI and 4 in the nested AIP folder.
+
+It also exposed an extraction gap. Yaumi prints its reference as
+`TAX INVOICE ~ CASH # 13333469`, which the `invoice_number` pattern does not
+reach, so a number is extracted on 2 of the 140. 110 carry a readable
+`CASH # <digits>`, and on 101 of those the digits also appear in the file name.
+`invoice_date` taking only 2 values across the 140 is genuine: it is one
+delivery run, with `Date: 08/04/2021` on 134 of them.
+
+The one extraction error in the run, which is also the one document with no
+text, is `~$rdness_Failure_minimization_plan.docx`, a Word lock stub.
+
 ### Text layer corruption, and the quality gate
 
 The largest finding of this work, and it was not on anyone's list.
@@ -677,6 +765,12 @@ anyone can reproduce with three commands.
 
 The gate rescued **44 pages across 28 documents**.
 
+**Current**, after the image resolution fix and regenerated under today's
+config: accuracy 0.8125, macro F1 0.664, coverage 0.857, 0.948 when it answers.
+PDFs are unchanged at 69/71; images are 21/40, with 14 abstaining and 5 wrong.
+None of it is held out: the rule markers were written and checked against
+these same documents.
+
 Two things this says that the PDF only number could not.
 
 **The images are the whole remaining problem.** 0.450 against 0.972, and they
@@ -776,9 +870,9 @@ its own. Had they been fixed together, none of these numbers would exist.
    noise, and multi column layouts. Expect the 0.99 similarity to fall.
 10. **Only the `eng` language pack is installed.** Add more via the Tesseract
    installer if the corpus needs them, then set `extraction.ocr.lang`.
-11. **Span level scoring has never run.** Gold has no character offsets
-   because synthetic gold cannot honestly provide them. This matters: span
-   accuracy is what a layout model would be judged on.
+11. **Span scoring rests on 11 documents.** It runs against the reviewed
+   workbook gold at micro F1 0.2105, and that is the number a layout model has
+   to beat. Eleven documents is too few to trust the second decimal.
 12. **Table extraction is v0 and thin.** No spanning cells, no ruling line
    detection, no multi page stitching, and real `.docx` tables arrive tab
    joined where text_grid cannot see them. Table gold is 5 grids off 5
@@ -797,6 +891,15 @@ its own. Had they been fixed together, none of these numbers would exist.
     table in the corpus is refused. Real scans will be worse, and geometry is
     the only strategy that can work on them, because OCR text is assembled
     from word boxes with single spaces and carries no column alignment at all.
+16. **`invoice_number` misses the corpus's dominant layout.** It finds a number
+    on 2 of the 140 Yaumi invoices, whose reference reads `CASH # <digits>`.
+    See "One vendor is most of the corpus".
+17. **A Word lock stub is processed as a document.** It is the only extraction
+    error on the client corpus. A `~$` prefix rule in `scan.py` would remove
+    it, at the cost of every documented count moving from 227 to 226.
+18. **Checksummed fields still emit unvalidated candidates.** 8 `aadhaar` and
+    6 `card_number` hits on the client corpus, none passing its checksum, all
+    exported to the review sheet at 0.4 confidence.
 
 ## Config reference
 
@@ -823,7 +926,7 @@ is on.
 
 ## Repository state
 
-Five commits on `main`. Working tree clean. Generated artefacts are gitignored
+`main` tracks `origin/main` on GitHub. Generated artefacts are gitignored
 and rebuilt by:
 
 ```
@@ -833,4 +936,13 @@ python -m baseline run --input corpus --output results.jsonl --workers 4
 python -m baseline tables --input results.jsonl --output tables.jsonl --report tables.md
 python -m baseline eval --gold gold.jsonl --pred results.jsonl --pred-tables tables.jsonl
 python -m baseline graph --input results.jsonl --report graph.md
+```
+
+Real corpus artefacts, all gitignored because they carry client material:
+
+```
+python -m baseline run --input Client_Documents --output client_results.jsonl --workers 4 --no-resume
+python -m baseline import-labels --csv Classification_Doc/Classification.csv --root Classification_Doc --output gold_classification.jsonl
+python -m baseline run --input Classification_Doc --output results_classification.jsonl --workers 4 --no-resume
+python -m baseline import-workbook --xlsx ML_Documents/ML_Documents/Classification_Doc/Classification_Sheets_corrected.xlsx --root Classification_Doc --output gold_reviewed.jsonl --report gold_reviewed.md
 ```

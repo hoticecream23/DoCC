@@ -316,7 +316,7 @@ Logs are JSON on stderr, not print statements.
 python -m pytest tests -q
 ```
 
-337 tests. Every checksum is tested against known good and known bad values.
+338 tests. Every checksum is tested against known good and known bad values.
 Verhoeff and Luhn are also checked to catch every single digit error and
 every swapped pair of digits, which is what those algorithms promise. Offsets
 are tested across multi page documents and across documents where half the
