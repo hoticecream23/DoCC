@@ -13,6 +13,30 @@ where they are. When the two files disagree, this one is newer. The code was
 reorganised into packages on 2026-09-11, and PROJECT_STATE, Code layout, has the
 map.
 
+## Where things stand, 2026-09-20
+
+The baseline is finished work. What is live is the approach that replaces it,
+and one item waiting on a human.
+
+- **Waiting on a human.** `review.xlsx`, covering all 227 client documents, is
+  with Karishma. Step 7 cannot move until it comes back, and steps 8 and 9
+  depend on step 7. Do not re-run `client_results.jsonl` before then: the
+  workbook was exported from it, and re-running invalidates the merge.
+- **Done since the last handoff.** Court document fields (step 3 of the new
+  approach's list, and PROJECT_STATE, Known gaps, item 4) and the pink paper
+  OCR fix (step 3 below). 343 tests pass.
+- **Designed, not built.** `cascade`, our own approach, is specified in
+  `docs/superpowers/specs/2026-09-17-cascade-architecture-design.md`. No code
+  exists for it. The spec records the decisions already taken and the two
+  questions still open.
+- **Direction may change.** The team has been pointed at a different client
+  that has GPUs. Its hardware and documents were not available when this was
+  written, so the spec's CPU first constraint and its corpus specific choices
+  should be re-read, not assumed, when that data arrives.
+- **A public floor exists now.** The baseline is scored on the SROIE receipts,
+  data nobody here tuned against. `docs/public_datasets.md` has the numbers and
+  the licence review. Any new approach has to beat that table.
+
 ## Start here
 
 Steps 1 to 6 below are done and struck through; read them for the reasoning,
@@ -571,6 +595,12 @@ running anything:
 
 ## Then the new approach
 
+**This section is the evidence. The design that came out of it is
+`docs/superpowers/specs/2026-09-17-cascade-architecture-design.md`**, which
+adds an ingest router, a document grouper, calibration, and a knowledge graph
+consulted during the run rather than built after it. Read the spec for what to
+build; read this section for why each part is there.
+
 Do not upgrade everything uniformly. The error surface is lopsided:
 
 - **Leave the checksummed IDs alone.** PAN, GSTIN, Aadhaar, IFSC, cards. A
@@ -587,7 +617,10 @@ Do not upgrade everything uniformly. The error surface is lopsided:
   7 of the 11 remaining misses against reviewed gold, and they are not near
   misses: `4532321.00` wanted against `5.00` produced. Amounts, dates in roles
   and party names are brittle to layout and carry confidences near 0.95 that
-  mean nothing.
+  mean nothing. The public SROIE receipts put a number on it at
+  scale: `total_amount` F1 0.485 and `vendor_name` F1 0.000 on 361 documents,
+  even with OCR taken out of the measurement. See PROJECT_STATE, Measured on
+  public data.
 - **A checksummed field should probably not emit an unvalidated candidate.**
   On the real corpus `aadhaar` has 8 hits and 0 validated, `card_number` 6 and
   0. The checksums are doing their job; the pipeline emits the candidates

@@ -1,7 +1,8 @@
 # Project state
 
-Last updated: 2026-09-17 (code split into packages; fresh clone install fixed;
-review workbook with the reviewer; one vendor found to be most of the client corpus)
+Last updated: 2026-09-20 (court document fields added; pink paper OCR fixed;
+baseline scored on the public SROIE receipts; the cascade approach is specified
+but not built)
 
 ## What this is
 
@@ -18,6 +19,11 @@ corpus has arrived, the taxonomy is reconciled against it, and the system is
 measured end to end on it. **The whole of `Client_Documents` has now been
 processed in one run: 227 documents, 32 correctly excluded as not documents.**
 343 tests pass.
+
+Since then the baseline has also been measured on data nobody here tuned
+against, the public SROIE receipts, and the successor approach has been
+designed but not built. See "Measured on public data" below and
+`docs/superpowers/specs/2026-09-17-cascade-architecture-design.md`.
 
 | Component | State | Notes |
 | --- | --- | --- |
@@ -58,6 +64,15 @@ baseline/
   tables/          geometry.py, text_grid.py, assemble.py, records.py
   workbook/        columns.py, exporter.py, importer.py, merge.py
   cli.py           commands
+```
+
+Outside the package:
+
+```
+scripts/convert_sroie.py   public dataset into harness inputs and gold
+docs/public_datasets.md    dataset licences, and the baseline's SROIE scores
+docs/superpowers/specs/    design specs, currently the cascade architecture
+datasets/                  downloaded public data, gitignored
 ```
 
 `evaluate/` imports nothing from the rest of `baseline` except `logging_setup`,
@@ -825,11 +840,57 @@ its own. Had they been fixed together, none of these numbers would exist.
    `Net 30`, `Remit To`, `Make checks payable to`. Added and measured at zero
    false positives against the court set and every synthetic template.
 
+## Measured on public data
+
+The client corpus is the corpus the rules were written against, so it flatters
+them. SROIE, 361 scanned receipts from ICDAR 2019 under CC-BY-4.0, is data
+nobody here has ever tuned on. `docs/public_datasets.md` has the licence
+review of five public datasets, the conversion commands and the full table.
+
+Baseline field F1 on the 361 test receipts, scored twice: once on the
+organisers' own transcribed text, which takes OCR out of the measurement, and
+once on the images through our Tesseract route.
+
+| field | organisers' text | our OCR |
+| --- | --- | --- |
+| `vendor_name` | 0.000 | 0.000 |
+| `invoice_date` | 0.853 | 0.628 |
+| `total_amount` | 0.485 | 0.323 |
+
+Three things this says that the client corpus did not say as clearly:
+
+- **`vendor_name` cannot be found by anchors on a receipt.** Its labels are
+  "sold by", "supplier name", "vendor name". A receipt prints none of them:
+  the vendor is simply the first line. 0 of 361.
+- **`total_amount` is wrong about half the time even on clean text.** A receipt
+  prints subtotal, rounding, total including GST, cash and change, and the
+  anchor cannot tell which is the total. This is the anchor weakness this file
+  already recorded, now measured on 361 documents rather than 11.
+- **OCR costs about a third of both scores**, which matches what the client
+  corpus showed.
+
+Two smaller findings from the same run:
+
+- The date normalizer cannot read `27/MAR/2018`, `28-FEB-2018`, `22 MAR 18`,
+  `2018/03/27` or `23.03.18`. 15 of 361 gold dates had to be dropped from
+  scoring because of it. Worth fixing in `metadata/normalizers.py`.
+- Classification is not scored on SROIE. 310 of the 361 receipts print
+  "TAX INVOICE" as their own title, because Malaysian GST receipts do, so the
+  baseline calls them invoices against a gold label of `receipt`. The
+  document's own title is a fair argument for either.
+
 ## Known gaps
 
 1. **OCR on real scanned images is the critical path and it is measured now.**
-   0.450 on the 40 image files against 0.972 on the PDFs. 18 of the 40
-   abstain. Nothing else in the system will move the overall number as much.
+   Classification accuracy on the 40 labelled image files went 0.450, then
+   0.525 with the upscale, against 0.972 on the PDFs. Nothing else in the
+   system will move the overall number as much.
+
+   The pink paper fix (see HANDOFF step 3) moved the client corpus rather than
+   the labelled set: on the 183 records of the AIP folder mean extraction
+   confidence went 0.561 to 0.664, records below 0.6 went 135 to 23, and
+   documents classified `invoice` went 140 to 142. The labelled set scores
+   identically before and after, because none of its paper is pink.
 
 2. **Most numbers in this file are still from 10 synthetic documents.**
    Classification is now measured on the real labelled PDFs. Metadata,
@@ -877,8 +938,11 @@ its own. Had they been fixed together, none of these numbers would exist.
    pagination needs a renderer.
 8. **Anchor confidences cluster around 0.95.** Fine for ranking, not yet
    calibrated against real accuracy.
-9. **OCR is only verified on clean synthetic scans.** Real scans bring skew,
-   noise, and multi column layouts. Expect the 0.99 similarity to fall.
+9. **OCR quality on real scans is now measured, and it is the ceiling.** The
+   0.99 character similarity on synthetic scans does not survive real paper.
+   On the public SROIE receipts, running our OCR instead of the organisers'
+   transcription costs about a third of both field scores. See "Measured on
+   public data".
 10. **Only the `eng` language pack is installed.** Add more via the Tesseract
    installer if the corpus needs them, then set `extraction.ocr.lang`.
 11. **Span scoring rests on 11 documents.** It runs against the reviewed
@@ -904,13 +968,29 @@ its own. Had they been fixed together, none of these numbers would exist.
     from word boxes with single spaces and carries no column alignment at all.
 16. **`invoice_number` misses the corpus's dominant layout.** It finds a number
     on 2 of the 140 Yaumi invoices, whose reference reads `CASH # <digits>`.
-    See "One vendor is most of the corpus".
+    See "One vendor is most of the corpus". The pink paper fix did not change
+    this: the reference is read correctly, the pattern simply does not accept
+    that shape.
 17. **A Word lock stub is processed as a document.** It is the only extraction
     error on the client corpus. A `~$` prefix rule in `scan.py` would remove
     it, at the cost of every documented count moving from 227 to 226.
 18. **Checksummed fields still emit unvalidated candidates.** 8 `aadhaar` and
     6 `card_number` hits on the client corpus, none passing its checksum, all
-    exported to the review sheet at 0.4 confidence.
+    exported to the review sheet at 0.4 confidence. Cleaner OCR removed most of
+    them by accident: on the AIP folder re-run, `aadhaar` went 8 to 0 and
+    `card_number` 6 to 4. The rule that emits them at all is still there.
+
+19. **The date normalizer reads fewer formats than real documents use.**
+    `27/MAR/2018`, `28-FEB-2018`, `22 MAR 18`, `2018/03/27` and `23.03.18` all
+    return nothing. 15 of 361 SROIE gold dates had to be dropped from scoring.
+    A month name in the middle and a four digit year first are both cheap to
+    add in `metadata/normalizers.py`.
+
+20. **Anchor fields fail completely on documents that print no labels.**
+    `vendor_name` scores 0.000 on 361 receipts, because a receipt's vendor is
+    its first line and never carries a "sold by" style label. Layout position,
+    not vocabulary, is what identifies it. This is the clearest argument in the
+    repository for the layout model in the cascade spec.
 
 ## Config reference
 
@@ -948,6 +1028,17 @@ python -m baseline tables --input results.jsonl --output tables.jsonl --report t
 python -m baseline eval --gold gold.jsonl --pred results.jsonl --pred-tables tables.jsonl
 python -m baseline graph --input results.jsonl --report graph.md
 ```
+
+Public dataset artefacts, gitignored because of their size:
+
+```
+python scripts/convert_sroie.py --parquet datasets/sroie/test.parquet --split test
+python -m baseline run --input datasets/sroie/test/images --output datasets/sroie/test/pred_images.jsonl --workers 4 --no-resume
+python -m baseline eval --gold datasets/sroie/test/gold_images.jsonl --pred datasets/sroie/test/pred_images.jsonl
+```
+
+The converter needs `pyarrow`, which is a tool dependency and deliberately not
+in `pyproject.toml`: the pipeline itself does not read Parquet.
 
 Real corpus artefacts, all gitignored because they carry client material:
 

@@ -316,7 +316,7 @@ Logs are JSON on stderr, not print statements.
 python -m pytest tests -q
 ```
 
-338 tests. Every checksum is tested against known good and known bad values.
+343 tests. Every checksum is tested against known good and known bad values.
 Verhoeff and Luhn are also checked to catch every single digit error and
 every swapped pair of digits, which is what those algorithms promise. Offsets
 are tested across multi page documents and across documents where half the
@@ -346,7 +346,23 @@ baseline/
   cli.py         commands
 config/          all the vocabulary and settings
 tests/
+scripts/         converters for public datasets
+docs/            design notes that are not about the baseline itself
+datasets/        downloaded public datasets, gitignored
 ```
 
 `PROJECT_STATE.md` has the design decisions and current status.
 `HANDOFF.md` has what to do next.
+
+## Beyond the baseline
+
+The baseline is the floor, not the product. Two documents cover what comes
+next:
+
+- `docs/superpowers/specs/2026-09-17-cascade-architecture-design.md` is the
+  design for `cascade`, our own approach: the same output contract and the
+  same harness, with a staged pipeline and a knowledge graph used during the
+  run rather than after it. Nothing is built yet.
+- `docs/public_datasets.md` records which public datasets may be used for
+  commercial work, and the baseline's score on the SROIE receipts, which is
+  the floor any new approach has to beat on data nobody here tuned against.

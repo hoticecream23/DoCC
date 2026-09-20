@@ -3,6 +3,13 @@
 Date: 2026-09-17
 Status: reviewed 2026-09-17, open questions below
 
+Update 2026-09-20: not started. The team has since been pointed at a different
+client that has GPUs, whose hardware and documents were not yet available. The
+parts that transfer are the output contract, the evaluation protocol, the
+knowledge graph write rules and the staged shape. The CPU first budget, the
+choice of LiLT, and everything tied to the Yaumi corpus are to be re-decided
+against that client's data rather than assumed.
+
 ## What this is
 
 `cascade` is our own document processing approach, built beside `baseline/`.
