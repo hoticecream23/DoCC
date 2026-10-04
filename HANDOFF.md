@@ -30,6 +30,12 @@ and one item waiting on a human.
   the date normalizer reads the SROIE formats, and `.docx` tables are
   extracted. 365 tests pass. `client_results.jsonl` was deliberately not
   re-run, so it and `review.xlsx` still describe the code before all of this.
+- **Not merged yet.** Those fixes live on branch `small-fixes`, pushed to
+  `origin`. The pull request into `main` has not been opened, because the
+  GitHub CLI is not installed on this machine. Open it from
+  `https://github.com/hoticecream23/DoCC/compare/main...small-fixes` and
+  merge it before starting anything else, or new work will branch off a
+  `main` that lacks it.
 - **Designed, not built.** `cascade`, our own approach, is specified in
   `docs/superpowers/specs/2026-09-17-cascade-architecture-design.md`. No code
   exists for it. The spec records the decisions already taken and the two
