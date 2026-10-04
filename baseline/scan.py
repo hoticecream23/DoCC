@@ -36,8 +36,16 @@ from .extract import SUPPORTED_EXT
 #                      have yet. Extracting them as documents would classify a
 #                      test set as a legal document and pollute every corpus
 #                      level number with it.
+#
+#   ~$*                Word and Excel write an owner lock file beside a
+#                      document while it is open, named ~$ plus the tail of
+#                      the real name. It carries the real extension but is a
+#                      162 byte stub, not a package. One sat in the Jindal
+#                      folder and was the only extraction error on the whole
+#                      client corpus.
 IGNORED_DIR_NAMES = {"__MACOSX"}
 APPLEDOUBLE_PREFIX = "._"
+OFFICE_LOCK_PREFIX = "~$"
 EXCLUDED_EXT = {
     ".zip": "archive",
     ".xlsx": "evaluation_set",
@@ -55,6 +63,8 @@ def _exclusion_reason(path: Path) -> str | None:
         return "macos_resource_fork"
     if IGNORED_DIR_NAMES.intersection(part for part in path.parts):
         return "macos_resource_fork"
+    if path.name.startswith(OFFICE_LOCK_PREFIX):
+        return "office_lock_file"
     suffix = path.suffix.lower()
     if suffix in EXCLUDED_EXT:
         return EXCLUDED_EXT[suffix]

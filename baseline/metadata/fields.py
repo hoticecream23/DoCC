@@ -63,6 +63,11 @@ def _pattern_candidates(full: str, fdef: dict, limit: int) -> list[Candidate]:
     for m in _compile(rx, ignorecase).finditer(full):
         s, e, val = _span_of(m)
         ok = run_validator(validator, val, args)
+        if hard and not ok:
+            # A failed checksum is strong evidence, not weak. On the client
+            # corpus every Aadhaar and card candidate that failed one was OCR
+            # noise, and emitting it asserted PII the text does not hold.
+            continue
         out.append(
             Candidate(
                 value=val,

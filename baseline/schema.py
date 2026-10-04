@@ -232,7 +232,7 @@ def page_for_offset(spans: list[tuple[int, int]], offset: int) -> int:
 # stays frozen and tables can be rebuilt from any results file at any time.
 # --------------------------------------------------------------------------
 
-TABLES_SCHEMA_VERSION = "1.0.0"
+TABLES_SCHEMA_VERSION = "1.1.0"
 
 
 class TableMethod(str, Enum):
@@ -240,6 +240,8 @@ class TableMethod(str, Enum):
     GEOMETRY = "geometry"
     # Column structure recovered from whitespace columns in the canonical text.
     TEXT_GRID = "text_grid"
+    # Cells the extractor wrote tab separated, which is how .docx tables arrive.
+    TAB_DELIMITED = "tab_delimited"
 
 
 class TableCell(Strict):

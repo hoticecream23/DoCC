@@ -13,7 +13,7 @@ where they are. When the two files disagree, this one is newer. The code was
 reorganised into packages on 2026-09-11, and PROJECT_STATE, Code layout, has the
 map.
 
-## Where things stand, 2026-09-20
+## Where things stand, 2026-10-04
 
 The baseline is finished work. What is live is the approach that replaces it,
 and one item waiting on a human.
@@ -24,7 +24,12 @@ and one item waiting on a human.
   workbook was exported from it, and re-running invalidates the merge.
 - **Done since the last handoff.** Court document fields (step 3 of the new
   approach's list, and PROJECT_STATE, Known gaps, item 4) and the pink paper
-  OCR fix (step 3 below). 343 tests pass.
+  OCR fix (step 3 below). Then, on 2026-10-04, five small fixes, each struck
+  through where this file listed it: Office lock files are excluded, a failed
+  checksum emits nothing, Yaumi's `CASH #` and `CREDIT #` references are read,
+  the date normalizer reads the SROIE formats, and `.docx` tables are
+  extracted. 365 tests pass. `client_results.jsonl` was deliberately not
+  re-run, so it and `review.xlsx` still describe the code before all of this.
 - **Designed, not built.** `cascade`, our own approach, is specified in
   `docs/superpowers/specs/2026-09-17-cascade-architecture-design.md`. No code
   exists for it. The spec records the decisions already taken and the two
@@ -346,14 +351,13 @@ running anything:
    | `evaluation_set` | 19 | question answering gold, not documents |
    | `archive` | 1 | a zip that duplicates loose files |
 
-   **One category is still missing, found on the full run.** A Word lock stub,
-   `~$rdness_Failure_minimization_plan.docx`, is the only document in the whole
-   227 that records an error: `PackageNotFoundError`, because it is not a real
-   `.docx`. It behaves correctly - the error is recorded and the batch
-   completes - but it is the same kind of thing as an AppleDouble stub and
-   belongs beside it. A `~$` prefix rule in `scan.py` would take the count
-   to 226 documents and 33 exclusions, and take the error list to empty. Small,
-   and worth doing next time that file is open.
+   ~~**One category is still missing, found on the full run.**~~ **Done.** A
+   Word lock stub, `~$rdness_Failure_minimization_plan.docx`, was the only
+   document in the whole 227 that recorded an error: `PackageNotFoundError`,
+   because it is a 162 byte owner file, not a real `.docx`. `scan.py` now
+   excludes a `~$` prefix as `office_lock_file`. **The next run over
+   `Client_Documents` will report 226 documents and 33 exclusions**, and an
+   empty error list. Every 227 in this file describes the stored run.
 
    - **The macOS files were the real bug, and it is the opposite of the one
      this file predicted.** A macOS archive writes a `._name` stub beside every
@@ -451,8 +455,10 @@ running anything:
    one. Metadata micro F1 on the reviewed gold went 0.4651 to **0.4762** with
    no regression anywhere, gated through `compare --fail-on-regression`.
 
-   **Two similar gaps are still open, and both are PII.** `aadhaar` has 8 hits
-   and **0 validated**; `card_number` has 6 hits and **0 validated**. The
+   ~~**Two similar gaps are still open, and both are PII.**~~ **Done: a
+   checksummed field whose checksum fails is no longer emitted at all.** The
+   original note follows. `aadhaar` had 8 hits
+   and **0 validated**; `card_number` had 6 hits and **0 validated**. The
    checksums are rejecting every one, which is the validators working, but the
    fields are still emitted unvalidated at 0.4 confidence. So the system is
    currently asserting Aadhaar and card numbers that are almost certainly OCR
@@ -467,7 +473,12 @@ running anything:
    `scan.py` would clear it (see step 4). The profile still does not name the
    files it failed on, which remains a gap in the profile itself.
 
-   **A third extraction gap, found checking the invoice count.** Yaumi prints
+   ~~**A third extraction gap, found checking the invoice count.**~~ **Done.**
+   `cash #` and `credit #` are now `invoice_number` anchor labels. Re-extracted
+   from the stored text, a number is found on 126 of the 140, and on 115 of
+   those it matches the number in the file name. The other 11 are OCR digit
+   errors in text read before the pink paper fix, so the re-run should do
+   better. The original note follows. Yaumi prints
    its reference as `TAX INVOICE ~ CASH # 13333469`. The `invoice_number`
    pattern wants `invoice` directly beside `no`, `number` or `#`, so it finds a
    number on 2 of the 140. 110 of them carry a readable `CASH # <digits>`, and
@@ -567,6 +578,15 @@ running anything:
    when it answers. Redo this on a larger gold set from step 7 and treat the
    above as provisional until then.
 
+   After the 2026-10-04 fixes, gated against the code before them with
+   `compare --fail-on-regression` on both labelled golds and the synthetic
+   gold, no regression: metadata value micro F1 **0.4762 to 0.4884**, all else
+   equal. Span F1 moved 0.2105 to **0.1786**, and that is one field on one
+   document: the SIDBI purchase order's `invoice_date` is now read as the
+   correct `2025.10.24` from the signature stamp, where the gold span points
+   at the same date printed as `10/24/2025` lower down. Same value, other
+   location. Not tuned for.
+
    Reproducible now. The one bad cell in the reviewed sheet (`Metadata!D22`,
    `Aadhar_card`) is corrected in a copy beside the original, which is left
    untouched:
@@ -592,6 +612,30 @@ running anything:
    `test_a_quiet_model_does_not_veto_a_confident_rule` pins down. But do not
    retrain before step 7 has produced real volume: a model fitted on 21
    documents would be worse than the rules it would be overriding.
+
+## Next, after the 2026-10-04 fixes
+
+In order. Items 1 and 2 are the baseline's live work; the rest can start now.
+
+1. **Get the review back.** `review.xlsx` has been with Karishma since
+   2026-09-10 and blocks steps 7 to 9. Meanwhile the 45 distinct documents the
+   system abstains on are the most valuable thing anyone in house can label.
+2. **When it returns:** import it, score, then re-run `Client_Documents` with
+   `--merge-from` so the review carries onto a run that has the pink paper fix
+   and the 2026-10-04 fixes. Then retrain (step 9).
+3. **Decide the `validated` contract.** Either `validated_precision` counts
+   only `regex_checksum` fields, or soft validators such as `date_sane` stop
+   setting `validated`. It is a schema meaning, so decide it once.
+4. **`total_amount` and `vendor_name`.** The worst fields: total is wrong about
+   half the time, vendor is never found on a receipt, where it is the first
+   line. SROIE measures both with no client data.
+5. **Cascade phase 0.** Deduplication, frozen layout group splits and
+   provenance capture carry over to the GPU client whatever its data is.
+6. **Questions for the GPU client:** hardware, document types, pages per day,
+   languages, and whether the OCR service returns word boxes.
+7. **CI.** There is none. A GitHub Actions job running `pytest` and
+   `compare --fail-on-regression` against `gold.jsonl` would hold the gate.
+8. **`profile --workers`, and name the files it failed on.**
 
 ## Then the new approach
 
@@ -621,12 +665,11 @@ Do not upgrade everything uniformly. The error surface is lopsided:
   scale: `total_amount` F1 0.485 and `vendor_name` F1 0.000 on 361 documents,
   even with OCR taken out of the measurement. See PROJECT_STATE, Measured on
   public data.
-- **A checksummed field should probably not emit an unvalidated candidate.**
-  On the real corpus `aadhaar` has 8 hits and 0 validated, `card_number` 6 and
-  0. The checksums are doing their job; the pipeline emits the candidates
-  anyway at 0.4 confidence, so the system asserts PII that is almost certainly
-  OCR noise. `invoice_number` was the same shape and was fixed by tightening
-  its pattern. See step 5.
+- ~~**A checksummed field should probably not emit an unvalidated candidate.**~~
+  **Done.** A failed checksum now emits nothing. On SROIE that removed every
+  spurious `aadhaar` on the transcribed text and 19 of 20 on the images; the
+  survivors are noise that passed a checksum by chance, which a checksum can
+  never rule out.
 - **Tables exist now but only just.** v0 is precision first and refuses
   anything it cannot read cleanly. On real documents expect the abstention
   rate to be the number that moves, not the error rate.
@@ -651,7 +694,7 @@ table metrics sit the gate out.
 ## Tables, where v0 leaves off
 
 v0 is built and scored. `baseline tables`, then `baseline eval --pred-tables`.
-See PROJECT_STATE for the design, the two strategies, and the two abstentions.
+See PROJECT_STATE for the design, the three strategies, and the two abstentions.
 
 Precision is 1.0 on both cell content and adjacency. Recall is 0.8, and the
 whole deficit is one refused table. So the ceiling is recall, exactly as it is
@@ -659,11 +702,13 @@ for the graph, and for the same reason: v0 refuses what it cannot read.
 
 In rough order of value once there is real data:
 
-1. **A tab delimited strategy.** Real `.docx` tables come through
-   `_extract_docx` as tab joined rows. A single tab never forms a two
-   character separator, so text_grid cannot see them and geometry has no boxes
-   to work with. Nothing in the synthetic corpus hits this and every real
-   `.docx` with a table will. Cheapest real win available.
+1. ~~**A tab delimited strategy.**~~ **Done**, `baseline/tables/tab_delimited.py`,
+   first in the strategy order. Real `.docx` tables come through
+   `_extract_docx` as tab joined rows, which text_grid could not see. Over the
+   11 real `.docx` files it now finds tables in 10, every cell offset verified.
+   Its one structural check is that every row of a run carries the same tab
+   count. A cell holding several paragraphs breaks its row over two lines,
+   which ends the run there; that is a known limit, not a guess.
 2. **Ruling lines.** Columns currently come only from whitespace and
    coordinates. A densely ruled table with no gaps between its cells is
    invisible. PyMuPDF exposes the drawing operators, so the lines are there
@@ -953,8 +998,11 @@ the proven edges distinguishable from the inferred ones.
 - `tests/test_offsets.py` monkeypatches `_pattern_candidates` in
   `baseline/metadata/fields.py`. The patch must target the module whose globals
   `extract_fields` reads, or the test passes without testing anything.
-- `validated_precision` must stay 1.0. Anything less means a validator is
-  claiming proof it does not have.
+- `validated_precision` must stay 1.0 on checksummed fields. Anything less
+  there means a validator is claiming proof it does not have. It is already
+  below 1.0 on SROIE because `date_sane`, a format check, also sets
+  `validated`; see PROJECT_STATE, Measured on public data. Until that is
+  decided, read a miss there as a date, not a lying checksum.
 
 ## Machine specific setting
 

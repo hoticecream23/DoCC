@@ -11,7 +11,7 @@ import pytest
 
 from baseline.pipeline import dumps, process_document
 from baseline.schema import TableMethod
-from baseline.tables import build_record, detect_text_grid
+from baseline.tables import build_record, detect_tab_delimited, detect_text_grid
 from baseline.tables.assemble import _is_header_row
 from baseline.tables.geometry import _build_columns, _Cell, _Line, _segment_cells
 from baseline.tables.text_grid import _blank_runs
@@ -215,7 +215,7 @@ def test_an_abstention_is_recorded_with_its_reason(corpus, cfg):
 def test_geometry_declining_hands_over_to_text_grid(corpus, cfg):
     """First hit wins, so a strategy that abstains does not block the next."""
     _, rec = _tables_for(corpus / "bank_statement.pdf", cfg)
-    assert rec.diagnostics.strategies_tried == ["geometry", "text_grid"]
+    assert rec.diagnostics.strategies_tried == ["tab_delimited", "geometry", "text_grid"]
     assert rec.tables and rec.tables[0].method == TableMethod.TEXT_GRID
 
 
@@ -278,3 +278,53 @@ def test_v0_never_claims_a_merged_cell(corpus, cfg):
         _, rec = _tables_for(corpus / name, cfg)
         for t in rec.tables:
             assert all(c.row_span == 1 and c.col_span == 1 for c in t.cells), name
+
+
+# ------------------------------------------------------------- .docx tables
+
+def test_a_word_table_comes_out_cell_for_cell(tmp_path, cfg):
+    """A .docx table reaches the text tab joined, which text_grid cannot see."""
+    import docx
+
+    d = docx.Document()
+    d.add_paragraph("Annealing cycles, revised")
+    t = d.add_table(rows=3, cols=3)
+    for r, row in enumerate([["Work Center", "Thk", "Cycle"],
+                             ["SPD-Bell", "<=6mm", "600C/2hrs"],
+                             ["HRD-Bell", "6-10 mm", "680C/1hr"]]):
+        for c, text in enumerate(row):
+            t.cell(r, c).text = text
+    path = tmp_path / "plan.docx"
+    d.save(path)
+
+    row, rec = _tables_for(path, cfg)
+    assert [tb.method for tb in rec.tables] == [TableMethod.TAB_DELIMITED]
+    table = rec.tables[0]
+    assert _grid(table) == [["Work Center", "Thk", "Cycle"],
+                            ["SPD-Bell", "<=6mm", "600C/2hrs"],
+                            ["HRD-Bell", "6-10 mm", "680C/1hr"]]
+    assert table.header == ["Work Center", "Thk", "Cycle"]
+    full = row["text"]["full"]
+    assert all(full[c.char_start:c.char_end] == c.text for c in table.cells)
+    assert rec.diagnostics.errors == []
+
+
+def test_a_change_in_tab_count_ends_the_table(tcfg):
+    """Rows of one table share a column count. A line that differs is not in it."""
+    body = "\n".join([
+        "Name\tQty\tRate",
+        "Bolt\t2\t10.00",
+        "Nut\t4\t2.50",
+        "Signed:\tA. Person",
+        "Prepared by the stores team",
+    ])
+    tables, _ = detect_tab_delimited(0, body, 0, tcfg)
+    assert [_grid(t) for t in tables] == [[["Name", "Qty", "Rate"],
+                                           ["Bolt", "2", "10.00"],
+                                           ["Nut", "4", "2.50"]]]
+
+
+def test_one_tabbed_line_is_not_a_table(tcfg):
+    body = "HOD QA\t\t\tHOD Operations\t\t\tHOD R&D\nPlain prose follows here."
+    tables, _ = detect_tab_delimited(0, body, 0, tcfg)
+    assert tables == []

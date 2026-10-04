@@ -10,6 +10,7 @@ from pathlib import Path
 from ..logging_setup import get_logger
 from ..schema import Table, TableDiagnostics, TableRecord, page_spans, read_jsonl
 from .geometry import detect_geometry
+from .tab_delimited import detect_tab_delimited
 from .text_grid import detect_text_grid
 
 log = get_logger(__name__)
@@ -70,10 +71,11 @@ def build_record(
                     got, abst = detect_geometry(pno, page_words, full, tcfg)
                     found.extend(got)
                     diag.abstained.extend(abst)
-            elif name == "text_grid":
+            elif name in ("text_grid", "tab_delimited"):
+                detect = detect_text_grid if name == "text_grid" else detect_tab_delimited
                 for pno, body in enumerate(pages):
                     start = spans[pno][0] if pno < len(spans) else 0
-                    got, abst = detect_text_grid(pno, body, start, tcfg)
+                    got, abst = detect(pno, body, start, tcfg)
                     found.extend(got)
                     diag.abstained.extend(abst)
                 _attach_boxes(found, words)

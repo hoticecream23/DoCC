@@ -1,8 +1,9 @@
 # Project state
 
-Last updated: 2026-09-20 (court document fields added; pink paper OCR fixed;
-baseline scored on the public SROIE receipts; the cascade approach is specified
-but not built)
+Last updated: 2026-10-04 (five small fixes: Office lock files excluded, failed
+checksums no longer emitted, Yaumi `CASH #` references read, more date formats,
+`.docx` tables. Before that: court document fields, pink paper OCR, SROIE, and
+the cascade spec, which is still not built)
 
 ## What this is
 
@@ -18,7 +19,7 @@ is in, plus a knowledge graph v0 spike and table extraction v0. The real
 corpus has arrived, the taxonomy is reconciled against it, and the system is
 measured end to end on it. **The whole of `Client_Documents` has now been
 processed in one run: 227 documents, 32 correctly excluded as not documents.**
-343 tests pass.
+365 tests pass.
 
 Since then the baseline has also been measured on data nobody here tuned
 against, the public SROIE receipts, and the successor approach has been
@@ -34,7 +35,7 @@ designed but not built. See "Measured on public data" below and
 | CLI | Done | run, train, tune-thresholds, profile, import-labels, export-workbook, import-workbook, eval, compare, graph, tables all exercised. |
 | Eval harness | Done | Schema driven, does not import the pipeline. Scores tables too. |
 | Knowledge graph | v0 spike | Verified identifiers only. Deliberately narrow. |
-| Table extraction | v0 | Two strategies over boxes and over text. Abstains rather than guess. |
+| Table extraction | v0 | Three strategies: tab delimited rows, word boxes, whitespace. Abstains rather than guess. |
 
 ## Code layout
 
@@ -61,7 +62,7 @@ baseline/
   labels.py        Classification.csv into gold
   evaluate/        scoring.py, table_scores.py, report.py
   graph.py         knowledge graph over a results file
-  tables/          geometry.py, text_grid.py, assemble.py, records.py
+  tables/          tab_delimited.py, geometry.py, text_grid.py, assemble.py, records.py
   workbook/        columns.py, exporter.py, importer.py, merge.py
   cli.py           commands
 ```
@@ -284,9 +285,16 @@ This closes what was the largest functional gap in the system. It is also the
 first thing in the repo that reads the word boxes: the sidecar has been
 captured since the first commit and until now nothing consumed it.
 
-### Two strategies, config ordered, first hit wins
+### Three strategies, config ordered, first hit wins
 
 Same pattern as the metadata field strategies.
+
+**tab_delimited** runs first. `_extract_docx` writes each Word table row as
+one tab joined line, so a tab is a declared cell boundary rather than an
+inferred one. A table is a run of at least two lines carrying the same tab
+count; the first line whose count differs ends it. Columns nothing lands in are
+dropped, as text_grid drops margins. Added 2026-10-04: it finds tables in 10 of
+the 11 real `.docx` files, where before nothing could.
 
 **geometry** groups words into lines by vertical overlap, splits each line
 into cells wherever the horizontal gap exceeds about 1.6 space widths, then
@@ -303,7 +311,7 @@ straddles both, which is precisely the failure this has to avoid.
 
 **text_grid** finds the character columns that are blank on every line of a
 band and treats runs of two or more as separators. It is the only signal
-available for `.txt` and `.docx`, which carry no geometry whatsoever, and it
+available for `.txt`, which carries no geometry whatsoever, and it
 rescues documents whose alignment survived into the text but not into the
 coordinates.
 
@@ -392,10 +400,10 @@ given a tables file, so a run without one is not read as a collapse to zero.
 - Header detection is a heuristic: a full first row carrying almost no digits.
   When it fails the table is emitted with an empty header rather than a wrong
   one, which is what happens on the salary slip, correctly.
-- Real `.docx` tables come through `_extract_docx` as tab joined rows. A
-  single tab is one character, so it never forms a two character separator and
-  text_grid cannot see it. Nothing in the corpus exercises this, but real
-  documents will hit it immediately. This is the first thing to fix.
+- ~~Real `.docx` tables were invisible.~~ Fixed by the `tab_delimited`
+  strategy, which reads the tab joined rows `_extract_docx` writes. It finds
+  tables in 10 of the 11 real `.docx` files. A cell holding several paragraphs
+  splits its row over two lines and ends the run there.
 
 ## Schema decisions
 
@@ -857,6 +865,11 @@ once on the images through our Tesseract route.
 | `invoice_date` | 0.853 | 0.628 |
 | `total_amount` | 0.485 | 0.323 |
 
+Those are the numbers as first measured, with 15 unparseable gold dates left
+out. After the date fix all 361 gold dates are scored, and `invoice_date` is
+**0.908** on the organisers' text and **0.697** on our OCR. On that same full
+gold the code before the fix scores 0.833 and 0.612.
+
 Three things this says that the client corpus did not say as clearly:
 
 - **`vendor_name` cannot be found by anchors on a receipt.** Its labels are
@@ -871,9 +884,19 @@ Three things this says that the client corpus did not say as clearly:
 
 Two smaller findings from the same run:
 
-- The date normalizer cannot read `27/MAR/2018`, `28-FEB-2018`, `22 MAR 18`,
-  `2018/03/27` or `23.03.18`. 15 of 361 gold dates had to be dropped from
-  scoring because of it. Worth fixing in `metadata/normalizers.py`.
+- ~~The date normalizer cannot read `27/MAR/2018`, `28-FEB-2018`, `22 MAR 18`,
+  `2018/03/27` or `23.03.18`.~~ Fixed, in the normalizer and in the
+  `invoice_date` and `due_date` regexes, which also had to reach them.
+  `normalizer_version` is now 1.1.0.
+- **`validated_precision` is below 1.0 on SROIE**, and was before any of the
+  2026-10-04 work: 0.988 on the transcribed text, one wrong. The wrong values
+  are dates. `date_sane` is a format check, not a checksum, yet a passing
+  date is marked `validated` and so counts towards the alarm. A receipt
+  printing an event range (`25 AUG - 3 SEPT 2017`) or an OCR'd year is a
+  sane date and the wrong one. The new date formats add one such case on the
+  text and more on the images. Either the metric should count only
+  `regex_checksum` fields, or soft validators should stop setting
+  `validated`. That is a decision about the contract, so it is left open.
 - Classification is not scored on SROIE. 310 of the 361 receipts print
   "TAX INVOICE" as their own title, because Malaysian GST receipts do, so the
   baseline calls them invoices against a gold label of `receipt`. The
@@ -949,8 +972,8 @@ Two smaller findings from the same run:
    workbook gold at micro F1 0.2105, and that is the number a layout model has
    to beat. Eleven documents is too few to trust the second decimal.
 12. **Table extraction is v0 and thin.** No spanning cells, no ruling line
-   detection, no multi page stitching, and real `.docx` tables arrive tab
-   joined where text_grid cannot see them. Table gold is 5 grids off 5
+   detection, no multi page stitching. Real `.docx` tables are now read by the
+   `tab_delimited` strategy. Table gold is 5 grids off 5
    synthetic templates, so 1.0 precision means the checks hold on documents
    whose layout was written by the same person who wrote the checks.
 13. **The graph only sees organisations that carry a verified tax ID.**
@@ -966,21 +989,26 @@ Two smaller findings from the same run:
     table in the corpus is refused. Real scans will be worse, and geometry is
     the only strategy that can work on them, because OCR text is assembled
     from word boxes with single spaces and carries no column alignment at all.
-16. **`invoice_number` misses the corpus's dominant layout.** It finds a number
+16. ~~**`invoice_number` misses the corpus's dominant layout.**~~ **Fixed** with
+    `cash #` and `credit #` anchor labels: 126 of 140 found from the stored
+    text, 115 matching the file name. Original note: it found a number
     on 2 of the 140 Yaumi invoices, whose reference reads `CASH # <digits>`.
     See "One vendor is most of the corpus". The pink paper fix did not change
     this: the reference is read correctly, the pattern simply does not accept
     that shape.
-17. **A Word lock stub is processed as a document.** It is the only extraction
-    error on the client corpus. A `~$` prefix rule in `scan.py` would remove
-    it, at the cost of every documented count moving from 227 to 226.
-18. **Checksummed fields still emit unvalidated candidates.** 8 `aadhaar` and
+17. ~~**A Word lock stub is processed as a document.**~~ **Fixed.** `scan.py`
+    excludes `~$` files as `office_lock_file`. The next client run reports 226
+    documents and 33 exclusions; every 227 in this file describes the stored
+    run.
+18. ~~**Checksummed fields still emit unvalidated candidates.**~~ **Fixed**: a
+    failed checksum now emits nothing. Original note: 8 `aadhaar` and
     6 `card_number` hits on the client corpus, none passing its checksum, all
     exported to the review sheet at 0.4 confidence. Cleaner OCR removed most of
     them by accident: on the AIP folder re-run, `aadhaar` went 8 to 0 and
     `card_number` 6 to 4. The rule that emits them at all is still there.
 
-19. **The date normalizer reads fewer formats than real documents use.**
+19. ~~**The date normalizer reads fewer formats than real documents use.**~~
+    **Fixed**, see "Measured on public data". Original note:
     `27/MAR/2018`, `28-FEB-2018`, `22 MAR 18`, `2018/03/27` and `23.03.18` all
     return nothing. 15 of 361 SROIE gold dates had to be dropped from scoring.
     A month name in the middle and a four digit year first are both cheap to

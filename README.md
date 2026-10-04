@@ -126,7 +126,8 @@ If neither is confident, the label is `unknown`. It will not guess.
 **Metadata.** Each field is found by regex, or by looking near a label word
 like "Invoice No", or by reading a fixed spot on a known template. IDs are
 checked with real checksums, so a PAN, Aadhaar, GSTIN, IFSC or card number
-that does not add up is marked `validated: false` instead of being trusted.
+that does not add up is not emitted at all. On real scans a failed checksum
+was always misread text, never a real identifier.
 
 **Tags.** Separate from classification. A document has one type but can have
 many tags. Tags come from keywords, a model, or from the metadata itself. A
@@ -247,13 +248,16 @@ file, so a run without one is not read as a collapse to zero.
 touches the document record, so tables can be rebuilt from an old run without
 re-extracting anything.
 
-Two strategies run in the order set in `config/tables.yaml`, first hit wins:
+Three strategies run in the order set in `config/tables.yaml`, first hit wins:
 
+- **tab_delimited** reads rows the extractor wrote with tabs between cells,
+  which is how every `.docx` table arrives. A tab is a declared cell boundary,
+  so this runs first. A run of lines ends where the tab count changes.
 - **geometry** reads the word boxes in the bbox sidecar. Columns come out of
   where the words actually sit on the page. This is the right signal for real
   PDFs and scans.
 - **text_grid** reads runs of whitespace that are blank on every line of a
-  band. It is the only signal available for `.txt` and `.docx`, which carry no
+  band. It is the only signal available for `.txt`, which carries no
   geometry at all, and it rescues text whose alignment survived into the text
   layer but not into the coordinates.
 
@@ -316,7 +320,7 @@ Logs are JSON on stderr, not print statements.
 python -m pytest tests -q
 ```
 
-343 tests. Every checksum is tested against known good and known bad values.
+365 tests. Every checksum is tested against known good and known bad values.
 Verhoeff and Luhn are also checked to catch every single digit error and
 every swapped pair of digits, which is what those algorithms promise. Offsets
 are tested across multi page documents and across documents where half the

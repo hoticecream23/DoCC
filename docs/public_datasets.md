@@ -30,9 +30,10 @@ text lines, which removes OCR from the measurement.
 
 Mapping: `company` to `vendor_name`, `date` to `invoice_date`, `total` to
 `total_amount`, class `receipt`. `address` has no field in our schema and is
-not scored. 15 of 361 gold dates are skipped because the baseline's date
-parser cannot read them (`27/MAR/2018`, `22 MAR 18`, `2018/03/27`,
-`23.03.18`), which is a gap in the baseline worth fixing separately.
+not scored. When first converted, 15 of 361 gold dates were skipped because the
+baseline's date parser could not read them (`27/MAR/2018`, `22 MAR 18`,
+`2018/03/27`, `23.03.18`). The parser now reads all of them, so a fresh
+conversion skips none.
 
 ### Baseline on the 361 test receipts
 
@@ -44,6 +45,16 @@ parser cannot read them (`27/MAR/2018`, `22 MAR 18`, `2018/03/27`,
 | images, Tesseract | `vendor_name` | 0.000 | 0.000 | 0.000 |
 | images, Tesseract | `invoice_date` | 0.829 | 0.506 | 0.628 |
 | images, Tesseract | `total_amount` | 0.339 | 0.307 | 0.323 |
+
+After the 2026-10-04 date fix, on a fresh conversion with all 361 gold dates:
+
+| Input | Field | Precision | Recall | F1 |
+| --- | --- | --- | --- | --- |
+| organisers' text | `invoice_date` | 0.993 | 0.837 | 0.908 |
+| images, Tesseract | `invoice_date` | 0.852 | 0.590 | 0.697 |
+
+The code before the fix scores 0.833 and 0.612 against the same full gold.
+`vendor_name` and `total_amount` are unchanged.
 
 What the numbers say:
 

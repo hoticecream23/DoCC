@@ -208,6 +208,44 @@ def test_date_sane_bad(v):
     assert date_sane_check(v) is False
 
 
+# Every one of these is printed on a SROIE receipt, and none of them used to
+# parse, so 15 of 361 gold dates had to be dropped from scoring.
+@pytest.mark.parametrize("v, iso", [
+    ("27/MAR/2018", "2018-03-27"),
+    ("28-FEB-2018", "2018-02-28"),
+    ("22 MAR 18", "2018-03-22"),
+    ("2018/03/27", "2018-03-27"),
+    ("23.03.18", "2018-03-23"),
+    ("5 Sept. 2020", "2020-09-05"),
+])
+def test_receipt_date_formats_parse(v, iso):
+    from baseline.metadata.normalizers import _parse_date
+
+    assert str(_parse_date(v)) == iso
+
+
+@pytest.mark.parametrize("v", ["1/2/345", "12.50.00", "999/12/2020", "12 items 2020"])
+def test_near_dates_still_do_not_parse(v):
+    from baseline.metadata.normalizers import _parse_date
+
+    assert _parse_date(v) is None
+
+
+@pytest.mark.parametrize("line, iso", [
+    ("Date: 27/MAR/2018 12:01", "2018-03-27"),
+    ("Date : 22 MAR 18", "2018-03-22"),
+    ("DATE 23.03.18", "2018-03-23"),
+    ("Date: 2018/03/27", "2018-03-27"),
+])
+def test_receipt_dates_are_extracted(line, iso, cfg):
+    """Parsing them is not enough. The field regexes have to reach them too."""
+    from baseline.metadata import extract_fields
+
+    text = f"SOME SHOP SDN BHD\n{line}\nTOTAL 9.00"
+    fields, _ = extract_fields(text, [text], cfg, doc_class="receipt")
+    assert [f.normalized_value for f in fields if f.field == "invoice_date"] == [iso]
+
+
 def test_date_range_is_configurable():
     assert date_sane_check("14/03/1985") is False
     assert date_sane_check("14/03/1985", {"min_year": 1900}) is True
@@ -280,3 +318,41 @@ def _invoice_number_regex(cfg):
         if f["name"] == "invoice_number":
             return re.compile(f["pattern"]["regex"])
     raise AssertionError("invoice_number is not in fields.yaml")
+
+
+# ------------------------------------- a failed checksum emits nothing
+
+def test_a_failed_checksum_emits_no_candidate(cfg):
+    """On the client corpus every failing Aadhaar and card was OCR noise.
+
+    Emitting them at low confidence still asserted PII the document does not
+    hold, and sent each one to a reviewer to mark spurious by hand.
+    """
+    from baseline.metadata import extract_fields
+
+    text = "Aadhaar 2698 3765 4321 and card 4111 1111 1111 1112"
+    fields, _ = extract_fields(text, [text], cfg)
+    assert not [f for f in fields if f.field in ("aadhaar", "card_number")]
+
+
+def test_a_passing_checksum_is_still_emitted(cfg):
+    from baseline.metadata import extract_fields
+
+    text = "Aadhaar 2698 3765 4322 and card 4111 1111 1111 1111"
+    fields, _ = extract_fields(text, [text], cfg)
+    got = {f.field: f for f in fields if f.field in ("aadhaar", "card_number")}
+    assert set(got) == {"aadhaar", "card_number"}
+    assert all(f.validated and f.method.value == "regex_checksum" for f in got.values())
+
+
+@pytest.mark.parametrize("line, ref", [
+    ("TAX INVOICE ~ CASH # 13333469", "13333469"),
+    ("TAX INVOICE - CREDIT # 13333481", "13333481"),
+])
+def test_yaumi_cash_and_credit_references_are_read(line, ref, cfg):
+    """The corpus's dominant layout. Before these labels 2 of 140 were read."""
+    from baseline.metadata import extract_fields
+
+    text = f"YAUMI INTERNATIONAL BAKERIES\n{line}\nDate: 08/04/2021"
+    fields, _ = extract_fields(text, [text], cfg, doc_class="invoice")
+    assert [f.normalized_value for f in fields if f.field == "invoice_number"] == [ref]

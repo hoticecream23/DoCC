@@ -26,6 +26,9 @@ def _corpus(tmp_path):
     (root / "__MACOSX" / "Jindal" / "._invoice.pdf").write_bytes(b"\x00\x05\x16\x07stub")
     (root / "real" / "._scan.jpg").write_bytes(b"\x00\x05\x16\x07stub")
 
+    # An Office owner lock file, written while the real document is open.
+    (root / "real" / "~$notes.docx").write_bytes(b"\x0bowner")
+
     (root / "real" / "questions.xlsx").write_bytes(b"PK pretend")
     (root / "real" / "bundle.zip").write_bytes(b"PK pretend")
     (root / "real" / "readme.rtf").write_bytes(b"unsupported")
@@ -48,6 +51,14 @@ def test_macos_stubs_are_not_documents(tmp_path):
     assert not any(n.startswith("._") for n in names)
     assert "__MACOSX" not in {part for p in kept for part in p.parts}
     assert len(excluded["macos_resource_fork"]) == 2
+
+
+def test_office_lock_files_are_not_documents(tmp_path):
+    """A ~$ stub carries .docx too, and python-docx fails on it as a package."""
+    root = _corpus(tmp_path)
+    kept, excluded = scan_documents(root)
+    assert "~$notes.docx" not in {p.name for p in kept}
+    assert [p.endswith("~$notes.docx") for p in excluded["office_lock_file"]] == [True]
 
 
 def test_spreadsheets_and_archives_are_excluded_with_a_reason(tmp_path):

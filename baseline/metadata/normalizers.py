@@ -22,34 +22,40 @@ _MONTHS = {
 }
 
 
+def _full_year(y: int) -> int:
+    if y < 100:
+        return y + (2000 if y < 70 else 1900)
+    return y
+
+
 def _parse_date(value: str, dayfirst: bool = True):
     """Deterministic date parsing. No fuzzy guessing, no locale surprises."""
     v = value.strip().replace(",", " ")
     v = re.sub(r"\s+", " ", v)
 
-    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", v)
+    # Year first is unambiguous: 2018-03-27, 2018/03/27, 2018.03.27.
+    m = re.fullmatch(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", v)
     if m:
         y, mo, d = (int(x) for x in m.groups())
         return _safe_date(y, mo, d)
 
-    m = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})", v)
+    m = re.fullmatch(r"(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})", v)
     if m:
         a, b, y = (int(x) for x in m.groups())
-        if y < 100:
-            y += 2000 if y < 70 else 1900
         d, mo = (a, b) if dayfirst else (b, a)
         # Fall back to the other order when the first reading is impossible.
         if mo > 12 and d <= 12:
             d, mo = mo, d
-        return _safe_date(y, mo, d)
+        return _safe_date(_full_year(y), mo, d)
 
-    m = re.fullmatch(r"(\d{1,2}) ([A-Za-z]{3,9}) (\d{4})", v)
+    # A month name in the middle: 27 MAR 2018, 27/MAR/2018, 28-FEB-18.
+    m = re.fullmatch(r"(\d{1,2})[ /.-]?([A-Za-z]{3,9})\.?[ /.-]?(\d{2}|\d{4})", v)
     if m:
         d, name, y = int(m.group(1)), m.group(2).lower()[:3], int(m.group(3))
         if name in _MONTHS:
-            return _safe_date(y, _MONTHS[name], d)
+            return _safe_date(_full_year(y), _MONTHS[name], d)
 
-    m = re.fullmatch(r"([A-Za-z]{3,9}) (\d{1,2}) (\d{4})", v)
+    m = re.fullmatch(r"([A-Za-z]{3,9})\.? (\d{1,2}) (\d{4})", v)
     if m:
         name, d, y = m.group(1).lower()[:3], int(m.group(2)), int(m.group(3))
         if name in _MONTHS:
