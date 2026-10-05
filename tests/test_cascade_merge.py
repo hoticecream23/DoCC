@@ -165,3 +165,30 @@ def test_a_proven_id_is_kept_even_when_its_field_is_out_of_scope(cfg):
     assert [(m.value, m.method, m.validated) for m in pan] == [
         ("AAPFU0939F", MetadataMethod.REGEX_CHECKSUM, True)
     ]
+
+
+def test_an_out_of_scope_field_leaves_no_rule_only_record(cfg):
+    import dataclasses
+
+    # Scope the invoice_number field to invoice only
+    scoped_fields = [
+        dict(f, classes=["invoice"]) if f["name"] == "invoice_number" else f
+        for f in cfg.field_defs
+    ]
+    scoped_cfg = dataclasses.replace(cfg, fields={**cfg.fields, "fields": scoped_fields})
+
+    pages = [TEXT]
+    # Extract baseline with "invoice" label so invoice_number is found
+    base, _ = extract_fields(TEXT, pages, cfg, "invoice")
+    # Decide with "court_document" label (so invoice_number is out of scope)
+    rules = {"court_document": 0.95}
+
+    from cascade.merge import decide
+    from cascade.prompt import VLMAnswer
+
+    d = decide(TEXT, pages, scoped_cfg, _tiers(), rules, VLMAnswer(label="court_document", fields={}), base)
+
+    # invoice_number should not be in metadata (out of scope)
+    assert "invoice_number" not in _by_field(d)
+    # invoice_number should have no provenance record (out of scope produces no record)
+    assert [p for p in d.field_provenance if p["field"] == "invoice_number"] == []

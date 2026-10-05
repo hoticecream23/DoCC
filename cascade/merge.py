@@ -121,11 +121,8 @@ def decide_fields(
         # (proven checksummed values are already in kept).
         in_scope = _in_scope(fdef, doc_class, cfg)
         if not in_scope:
-            # For non-checksummed fields, record rule_only if there are baseline values
-            if not checksummed and from_baseline[name]:
-                prov.append({"field": name, "outcome": "rule_only",
-                             "baseline_values": [m.value for m in from_baseline[name]], "emitted": False})
-            # Proven checksummed values go to output regardless of scope
+            # Out-of-scope fields produce no provenance record. Proven checksummed values
+            # go to output regardless of scope.
             out.extend(kept)
             continue
 
