@@ -45,6 +45,19 @@ def check_local(url: str, allowed_hosts: list[str]) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"VLM url must be http or https, got {url!r}")
+
+    # Check for userinfo in URL (username:password)
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"VLM url must not contain userinfo: {url!r}")
+
+    # Check for suspicious characters in netloc (%, \, @)
+    if any(c in parsed.netloc for c in ['%', '\\', '@']):
+        raise ValueError(f"VLM url contains suspicious characters in netloc: {url!r}")
+
+    # Check for query or fragment
+    if parsed.query or parsed.fragment:
+        raise ValueError(f"VLM url must not contain query or fragment: {url!r}")
+
     host = parsed.hostname
     if not host:
         raise ValueError(f"VLM url has no host: {url!r}")
@@ -88,6 +101,8 @@ class VLMClient:
         self._s = settings
         self._sleep = sleep
         self._url = settings.base_url.rstrip("/") + "/chat/completions"
+        # Validate the final URL that will be requested
+        check_local(self._url, settings.allowed_hosts)
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
     def complete(self, messages: list[dict], schema: dict) -> VLMReply:

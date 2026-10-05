@@ -60,11 +60,18 @@ def test_a_400_is_not_retried():
 def test_a_redirect_is_never_followed():
     from cascade.vlm import VLMError
 
-    redirect = (302, "{}", 0, {"Location": "http://example.com/v1/chat/completions"})
-    with serve([redirect]) as (url, reqs):
-        with pytest.raises(VLMError, match="HTTP 302"):
-            _client(url).complete(MESSAGES, SCHEMA)
-    assert len(reqs) == 1
+    # Create a stub that should not be reached (the redirect target)
+    with serve([(200, chat("{}"), 0, None)]) as (target_url, target_reqs):
+        # Create a stub that redirects to target_url
+        redirect_location = target_url + "/chat/completions"
+        redirect = (302, "{}", 0, {"Location": redirect_location})
+        with serve([redirect]) as (url, reqs):
+            with pytest.raises(VLMError, match="HTTP 302"):
+                _client(url).complete(MESSAGES, SCHEMA)
+            # Verify redirect source got the request
+            assert len(reqs) == 1
+            # Verify redirect target was NOT reached (redirect was not followed)
+            assert len(target_reqs) == 0
 
 
 def test_a_timeout_is_retried_then_reported():
@@ -95,6 +102,8 @@ def test_loopback_hosts_are_accepted(url):
 
 @pytest.mark.parametrize("url", [
     "http://10.0.0.5:8000/v1", "https://api.example.com/v1", "file:///etc/passwd", "http:///v1",
+    "http://evil.com@127.0.0.1/v1", "http://evil.com%2F@127.0.0.1/v1", "http://user:pw@127.0.0.1/v1",
+    "http://127.0.0.1:8000/v1?x=1",
 ])
 def test_non_local_hosts_are_refused(url):
     from cascade.vlm import check_local
@@ -116,6 +125,31 @@ def test_client_refuses_to_start_without_a_model_or_on_a_remote_host():
         VLMClient(_settings("http://127.0.0.1:1/v1", model=None))
     with pytest.raises(ValueError, match="not loopback"):
         VLMClient(_settings("http://10.0.0.5:8000/v1"))
+
+
+def test_proxy_environment_variables_are_ignored(monkeypatch):
+    # Create a target server that returns a valid response
+    with serve([(200, chat("{}"), 0, None)]) as (target_url, target_reqs):
+        # Create a proxy server (shouldn't receive any requests)
+        with serve([(200, chat("{}"), 0, None)]) as (proxy_url, proxy_reqs):
+            # Extract just the origin (scheme://host:port) without /v1
+            proxy_origin = proxy_url.rsplit("/", 1)[0]
+
+            # Set proxy environment variables
+            monkeypatch.setenv("HTTP_PROXY", proxy_origin)
+            monkeypatch.setenv("http_proxy", proxy_origin)
+            monkeypatch.delenv("NO_PROXY", raising=False)
+            monkeypatch.delenv("no_proxy", raising=False)
+
+            # Make request to target
+            client = _client(target_url)
+            reply = client.complete(MESSAGES, SCHEMA)
+
+            # Verify response is valid
+            assert reply.content == "{}"
+            # Verify target got the request and proxy didn't
+            assert len(target_reqs) == 1
+            assert len(proxy_reqs) == 0
 
 
 def test_api_key_is_read_from_the_named_environment_variable(monkeypatch):
