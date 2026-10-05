@@ -67,6 +67,26 @@ Build a knowledge graph across the documents:
 python -m baseline graph --input results.jsonl --report graph.md --dot graph.dot
 ```
 
+## Cascade v2
+
+A local vision language model reads each page, and every value it returns is
+located in the canonical text before it is emitted. Design:
+`docs/superpowers/specs/2026-10-05-cascade-v2-vlm-grounding-design.md`.
+
+Serve a model on an OpenAI compatible endpoint on this machine (vLLM or
+Ollama), then:
+
+```bash
+python -m cascade run --input corpus --output cascade.jsonl --model <model-name> --base-url http://127.0.0.1:8000/v1
+python -m baseline compare --gold gold.jsonl --a results.jsonl --b cascade.jsonl
+```
+
+`cascade.jsonl.provenance` records, per document, the model's raw answer and
+what happened to every value: grounded exactly, loosely or through its
+normalizer, ungrounded, failed checksum, or dropped as rule only. It holds
+document values, so on client data it is client material, and `*.provenance`
+is gitignored.
+
 ## What comes out
 
 One JSON object per document, one per line. Trimmed for readability:

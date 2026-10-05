@@ -40,6 +40,13 @@ and one item waiting on a human.
   `docs/superpowers/specs/2026-09-17-cascade-architecture-design.md`. No code
   exists for it. The spec records the decisions already taken and the two
   questions still open.
+- **Cascade v2 is built, unscored on a real model.** On 2026-10-05 the
+  cascade design was replaced for the GPU client by VLM extraction with
+  grounding: `docs/superpowers/specs/2026-10-05-cascade-v2-vlm-grounding-design.md`,
+  plan in `docs/superpowers/plans/2026-10-05-cascade-v2-vlm-grounding.md`,
+  code in `cascade/`, on branch `cascade-v2`. Every test runs against a fake
+  backend. Next: serve a permissively licensed VLM locally, run it over the
+  synthetic corpus and the labelled set, and gate it with `baseline compare`.
 - **Direction may change.** The team has been pointed at a different client
   that has GPUs. Its hardware and documents were not available when this was
   written, so the spec's CPU first constraint and its corpus specific choices

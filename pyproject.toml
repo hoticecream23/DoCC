@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 baseline = "baseline.cli:main"
+cascade = "cascade.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

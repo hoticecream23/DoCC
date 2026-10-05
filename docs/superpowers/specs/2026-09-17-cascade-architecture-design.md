@@ -1,7 +1,7 @@
 # Cascade: architecture design
 
 Date: 2026-09-17
-Status: reviewed 2026-09-17, open questions below
+Status: superseded in part on 2026-10-05 by 2026-10-05-cascade-v2-vlm-grounding-design.md
 
 Update 2026-09-20: not started. The team has since been pointed at a different
 client that has GPUs, whose hardware and documents were not yet available. The
