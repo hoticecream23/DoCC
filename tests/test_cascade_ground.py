@@ -137,3 +137,17 @@ def test_a_value_followed_by_sentence_punctuation_still_grounds(cfg):
     full, g = _ground(cfg, "vendor_name", "Acme Ltd", ["Sold by Acme Ltd. Thank you\n"])
     assert g.outcome == "exact"
     assert full[g.start : g.end] == "Acme Ltd"
+
+
+def test_a_value_after_an_abbreviations_full_stop_grounds(cfg):
+    # A full stop after a letter (abbreviation) is not a joiner, so value grounds
+    full, g = _ground(cfg, "invoice_number", "12345", ["Invoice No.12345\n"])
+    assert g.outcome == "exact"
+    assert full[g.start : g.end] == "12345"
+
+
+def test_normalised_amount_after_abbreviation_grounds(cfg):
+    # "11800" grounds to "11,800.00" even though preceded by "Rs." abbreviation
+    full, g = _ground(cfg, "total_amount", "11800", ["Grand Total: Rs.11,800.00\n"])
+    assert g.outcome == "normalised"
+    assert full[g.start : g.end] == "11,800.00"

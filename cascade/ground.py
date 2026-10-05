@@ -29,7 +29,7 @@ EXACT = "exact"
 LOOSE = "loose"
 NORMALISED = "normalised"
 UNGROUNDED = "ungrounded"
-JOINERS = "-/,."  # Characters that join tokens (e.g. INV-2024, 14/03/2024)
+JOINERS = "-/,."  # Separators: -, /, , always join; . joins only between digits
 
 
 @dataclass(frozen=True)
@@ -73,6 +73,19 @@ def _folded(text: str) -> str:
     return _fold(text.strip())[0]
 
 
+def _joins(left: str, sep: str, right: str) -> bool:
+    """Check if sep joins left and right into a single token.
+
+    - and / and , always join alphanumerics.
+    - . only joins digits (decimal point).
+    """
+    if sep not in JOINERS:
+        return False
+    if sep == ".":
+        return left.isdigit() and right.isdigit()
+    return left.isalnum() and right.isalnum()
+
+
 class TextIndex:
     """Per document lookups, built once and shared by every value."""
 
@@ -92,11 +105,11 @@ class TextIndex:
             return False
         if last.isalnum() and e < len(full) and full[e].isalnum():
             return False
-        # Reject if starting inside a joined token: joiner before, alnum before that
-        if s >= 2 and full[s - 1] in JOINERS and full[s - 2].isalnum() and first.isalnum():
+        # Reject if starting inside a joined token
+        if s >= 2 and first.isalnum() and _joins(full[s - 2], full[s - 1], first):
             return False
-        # Reject if ending inside a joined token: joiner after, alnum after that
-        if e + 1 < len(full) and full[e] in JOINERS and full[e + 1].isalnum() and last.isalnum():
+        # Reject if ending inside a joined token
+        if e + 1 < len(full) and last.isalnum() and _joins(last, full[e], full[e + 1]):
             return False
         return True
 
