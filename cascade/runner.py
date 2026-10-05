@@ -113,18 +113,20 @@ def process_document(
             full, pages, cfg, ccfg.confidence, rule_scores(full, pages, cfg), answer,
             base.metadata, sidecar.words, sidecar.page_sizes,
         ))
+        meta, problems = _drop_bad_offsets(decision.metadata, full)
+        facts = baseline_pipeline.tag_facts(base.text, base.diagnostics.page_count, base.diagnostics.is_scanned)
+        tags = apply_tags(full, pages, cfg, meta, facts, models.tagger if models else None)
     except Exception as exc:
         msg = f"cascade: {type(exc).__name__}: {exc}"
-        log.error("cascade fell back to the baseline", extra={"doc_id": base.doc_id, "error": msg})
+        log.error("cascade fell back to the baseline", extra={"doc_id": base.doc_id, "error": msg}, exc_info=True)
         prov["fallback"] = True
         prov["errors"].append(msg)
-        record = _record(base, base.classification, base.metadata, base.tags,
-                         _diagnostics(base, timings, [msg]))
+        meta, problems = _drop_bad_offsets(base.metadata, full)
+        prov["errors"].extend(problems)
+        record = _record(base, base.classification, meta, base.tags,
+                         _diagnostics(base, timings, [msg, *problems]))
         return Result(record, sidecar, prov)
 
-    meta, problems = _drop_bad_offsets(decision.metadata, full)
-    facts = baseline_pipeline.tag_facts(base.text, base.diagnostics.page_count, base.diagnostics.is_scanned)
-    tags = apply_tags(full, pages, cfg, meta, facts, models.tagger if models else None)
     prov["class"], prov["fields"] = decision.class_provenance, decision.field_provenance
     prov["errors"].extend(problems)
     record = _record(base, decision.classification, meta, tags, _diagnostics(base, timings, problems))

@@ -111,6 +111,7 @@ def test_a_document_with_no_image_is_sent_as_text_only(corpus, cfg, ccfg):
     backend = FakeBackend(lambda text: NOTHING)
     r = process_document(corpus / "contract.txt", cfg, ccfg, backend)
     assert backend.calls == 1
+    assert r.provenance["fallback"] is False
     assert r.provenance["images_sent"] == 0 and r.provenance["pages_sent"] == 1
 
 
@@ -120,6 +121,8 @@ def test_batch_writes_one_record_and_one_provenance_line_per_document(corpus, cf
     out = tmp_path / "cascade.jsonl"
     stats = run_batch(corpus, out, cfg, ccfg, FakeBackend(_invoice_or_nothing))
     assert stats["written"] + stats["failed"] == stats["found"]
+    assert stats["failed"] == 0
+    assert stats["fallback"] >= 1  # broken.pdf cannot be rendered
     records = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
     provs = [json.loads(l) for l in (tmp_path / "cascade.jsonl.provenance").read_text(encoding="utf-8").splitlines()]
     assert len(records) == stats["written"] == len(provs)
@@ -131,3 +134,38 @@ def test_batch_writes_one_record_and_one_provenance_line_per_document(corpus, cf
 
     again = run_batch(corpus, out, cfg, ccfg, FakeBackend(_invoice_or_nothing))
     assert again["written"] == 0 and again["skipped"] == stats["written"]
+
+
+def test_a_tagging_failure_falls_back_instead_of_losing_the_document(corpus, cfg, ccfg, monkeypatch):
+    from cascade import runner
+
+    def boom(*a, **k):
+        raise RuntimeError("tagger broke")
+
+    monkeypatch.setattr(runner, "apply_tags", boom)
+    r = runner.process_document(corpus / "invoice_native.pdf", cfg, ccfg, FakeBackend(_invoice_or_nothing))
+    base, _ = baseline_process(corpus / "invoice_native.pdf", cfg)
+    assert r.provenance["fallback"] is True
+    assert r.record.classification == base.classification
+    assert r.record.metadata == base.metadata
+    assert r.record.tags == base.tags
+    assert any("RuntimeError: tagger broke" in e for e in r.record.diagnostics.errors)
+
+
+def test_the_fallback_also_drops_a_bad_offset(corpus, cfg, ccfg, monkeypatch):
+    from cascade import runner
+
+    real = baseline_process
+
+    def shifted(path, cfg, models=None):
+        rec, side = real(path, cfg, models)
+        first = rec.metadata[0]
+        bad = first.model_copy(update={"char_start": first.char_start + 1, "char_end": first.char_end + 1})
+        return rec.model_copy(update={"metadata": [bad, *rec.metadata[1:]]}), side
+
+    monkeypatch.setattr(runner.baseline_pipeline, "process_document", shifted)
+    r = runner.process_document(corpus / "invoice_native.pdf", cfg, ccfg, DownBackend())
+    bad_field = shifted(corpus / "invoice_native.pdf", cfg)[0].metadata[0]
+    assert bad_field not in r.record.metadata
+    assert r.record.verify_offsets() == []
+    assert any("dropped" in e for e in r.record.diagnostics.errors)
