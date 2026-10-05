@@ -12,6 +12,7 @@ normalizer_version: "1.1.0"
 
 fields:
   - name: pan
+    description: "Indian Permanent Account Number: five letters, four digits, one letter."
     type: id
     normalizer: id_upper
     multi: true
@@ -22,6 +23,7 @@ fields:
       confidence_validated: 1.0
 
   - name: aadhaar
+    description: "Indian Aadhaar number: 12 digits, often printed in groups of four."
     type: id
     normalizer: digits_only
     strategies: [pattern]
@@ -31,6 +33,7 @@ fields:
       confidence_validated: 1.0
 
   - name: gstin
+    description: "Indian GST identification number, 15 characters."
     type: id
     normalizer: id_upper
     multi: true
@@ -41,6 +44,7 @@ fields:
       confidence_validated: 1.0
 
   - name: ifsc
+    description: "Indian bank branch IFSC code, 11 characters."
     type: id
     normalizer: id_upper
     strategies: [pattern]
@@ -50,6 +54,7 @@ fields:
       confidence_validated: 1.0
 
   - name: card_number
+    description: "Payment card number, 16 digits."
     type: id
     normalizer: digits_only
     strategies: [pattern]
@@ -59,6 +64,7 @@ fields:
       confidence_validated: 1.0
 
   - name: email
+    description: "An email address printed on the document."
     type: text
     normalizer: lower_strip
     strategies: [pattern]
@@ -69,6 +75,7 @@ fields:
       confidence_unvalidated: 0.4
 
   - name: phone
+    description: "A phone number printed on the document."
     type: text
     normalizer: digits_only
     strategies: [pattern]
@@ -79,6 +86,7 @@ fields:
       confidence_unvalidated: 0.35
 
   - name: invoice_number
+    description: "The document's own invoice, bill, receipt or order reference number."
     classes: [invoice, receipt, purchase_order]   # only run on these document classes
     type: text
     normalizer: upper_strip
@@ -117,6 +125,7 @@ fields:
       confidence_unvalidated: 0.4
 
   - name: invoice_date
+    description: "The date the invoice, receipt or order was issued."
     classes: [invoice, receipt, purchase_order, bank_statement]   # only run on these document classes
     type: date
     normalizer: date_iso
@@ -144,6 +153,7 @@ fields:
       confidence_unvalidated: 0.3
 
   - name: due_date
+    description: "The date payment is due."
     classes: [invoice, purchase_order]   # only run on these document classes
     type: date
     normalizer: date_iso
@@ -158,6 +168,7 @@ fields:
         - {text: "payable by", specificity: 0.85}
 
   - name: total_amount
+    description: "The final amount payable, including tax."
     classes: [invoice, receipt, purchase_order, salary_slip]   # only run on these document classes
     type: amount
     normalizer: currency
@@ -178,6 +189,7 @@ fields:
         - {text: "total", specificity: 0.6}
 
   - name: tax_amount
+    description: "The total tax charged."
     classes: [invoice, receipt, purchase_order]   # only run on these document classes
     type: amount
     normalizer: currency
@@ -195,6 +207,7 @@ fields:
         - {text: "igst", specificity: 0.8}
 
   - name: account_number
+    description: "A bank account number."
     type: id
     normalizer: digits_only
     strategies: [anchor]
@@ -209,6 +222,7 @@ fields:
         - {text: "bank account", specificity: 0.85}
 
   - name: vendor_name
+    description: "The business that issued the document and is to be paid."
     classes: [invoice, receipt, purchase_order]   # only run on these document classes
     type: text
     normalizer: text_norm
@@ -225,6 +239,7 @@ fields:
         - {text: "seller", specificity: 0.8}
 
   - name: buyer_name
+    description: "The customer the document is addressed to or billed to."
     classes: [invoice, receipt, purchase_order]   # only run on these document classes
     type: text
     normalizer: text_norm
@@ -247,6 +262,7 @@ fields:
   # ponytail: title patterns are indiankanoon only. A judgment from another
   # source falls through to the header patterns below or returns nothing.
   - name: petitioner
+    description: "The first named party bringing the case."
     classes: [court_document]
     type: text
     normalizer: text_norm
@@ -256,6 +272,7 @@ fields:
       confidence_unvalidated: 0.9
 
   - name: respondent
+    description: "The first named party the case is brought against."
     classes: [court_document]
     type: text
     normalizer: text_norm
@@ -265,6 +282,7 @@ fields:
       confidence_unvalidated: 0.9
 
   - name: judgment_date
+    description: "The date the judgment was delivered."
     classes: [court_document]
     type: date
     normalizer: date_iso
@@ -278,6 +296,7 @@ fields:
       confidence_unvalidated: 0.3
 
   - name: bench
+    description: "The judges who heard the case."
     classes: [court_document]
     type: text
     normalizer: text_norm
@@ -290,6 +309,7 @@ fields:
       confidence_unvalidated: 0.9
 
   - name: court
+    description: "The court that delivered the judgment."
     classes: [court_document]
     type: text
     normalizer: upper_strip
@@ -306,6 +326,7 @@ fields:
       confidence_unvalidated: 0.8
 
   - name: citation
+    description: "The law report citation of the judgment."
     classes: [court_document]
     type: text
     normalizer: upper_strip
@@ -323,6 +344,7 @@ fields:
       confidence_unvalidated: 0.9
 
   - name: case_number
+    description: "The court's own case, appeal or petition number."
     classes: [court_document]
     type: text
     normalizer: upper_strip
