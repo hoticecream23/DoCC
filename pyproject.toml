@@ -28,4 +28,4 @@ testpaths = ["tests"]
 [tool.setuptools.packages.find]
 # config/ sits beside baseline/ and holds yaml, not code. Without this,
 # setuptools refuses the flat layout and `pip install -e .` fails.
-include = ["baseline*"]
+include = ["baseline*", "cascade*"]

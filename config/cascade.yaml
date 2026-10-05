@@ -1,0 +1,36 @@
+# Cascade v2 settings. See
+# docs/superpowers/specs/2026-10-05-cascade-v2-vlm-grounding-design.md.
+# Class and field vocabulary lives in classes.yaml and fields.yaml, not here.
+version: 1
+
+vlm:
+  # An OpenAI compatible server: vLLM on a GPU box, Ollama on a laptop.
+  # Only loopback hosts are accepted unless listed in allowed_hosts.
+  base_url: http://127.0.0.1:8000/v1
+  # Chosen by experiment on the client's hardware, after a licence check.
+  # Null refuses to run: set it here or pass --model.
+  model: null
+  # Name of an environment variable holding the server's API key, if it wants one.
+  api_key_env: null
+  timeout_s: 180
+  retries: 2
+  backoff_s: 2.0
+  max_tokens: 2048
+  allowed_hosts: []
+
+render:
+  dpi: 150
+  # Caps one oversized scan so it cannot exhaust GPU memory.
+  max_long_edge: 1600
+  # Only the first pages are sent to the model.
+  max_pages: 4
+  # Page text sent beside the images, in total across the pages sent.
+  max_text_chars: 12000
+
+# Starting points, not measured. Replaced by fitted calibration once there is
+# reviewed gold to fit on. Every report built on these must say so.
+confidence:
+  agree: 0.9
+  grounded: 0.75
+  ambiguous: 0.5
+  vlm_class: 0.8
