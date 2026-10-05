@@ -5,10 +5,12 @@ from vlm_stub import chat, serve
 
 
 def test_run_against_a_local_server_writes_records_and_provenance(corpus, tmp_path):
+    from baseline.config import load_config
     from cascade.cli import main
 
     out = tmp_path / "out.jsonl"
-    answer = chat(json.dumps({"class": "unknown", "fields": {}}))
+    names = [f["name"] for f in load_config(ROOT / "config").field_defs]
+    answer = chat(json.dumps({"class": "unknown", "fields": {n: [] for n in names}}))
     with serve([(200, answer, 0, None)]) as (url, reqs):
         rc = main(["--config", str(ROOT / "config"), "run", "--input", str(corpus),
                    "--output", str(out), "--model", "m", "--base-url", url])

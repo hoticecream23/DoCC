@@ -29,7 +29,11 @@ class FakeBackend:
 
         self.calls += 1
         text = "".join(p.get("text", "") for p in messages[1]["content"])
-        return VLMReply(content=json.dumps(self.answer_for(text)), model="fake", finish_reason="stop")
+        answer = self.answer_for(text)
+        # the schema requires every declared field, so a real server always sends them all
+        names = schema["properties"]["fields"]["required"]
+        answer = {**answer, "fields": {n: answer["fields"].get(n, []) for n in names}}
+        return VLMReply(content=json.dumps(answer), model="fake", finish_reason="stop")
 
 
 class DownBackend:

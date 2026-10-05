@@ -36,10 +36,11 @@ and one item waiting on a human.
   `https://github.com/hoticecream23/DoCC/compare/main...small-fixes` and
   merge it before starting anything else, or new work will branch off a
   `main` that lacks it.
-- **Designed, not built.** `cascade`, our own approach, is specified in
-  `docs/superpowers/specs/2026-09-17-cascade-architecture-design.md`. No code
-  exists for it. The spec records the decisions already taken and the two
-  questions still open.
+- **The 2026-09-17 cascade design is superseded.** `cascade`, our own approach,
+  was specified in
+  `docs/superpowers/specs/2026-09-17-cascade-architecture-design.md`. Cascade v2
+  replaced its stages 4 and 5 and is built (see the next bullet). The spec still
+  records the decisions already taken and the two questions still open.
 - **Cascade v2 is built, unscored on a real model.** On 2026-10-05 the
   cascade design was replaced for the GPU client by VLM extraction with
   grounding: `docs/superpowers/specs/2026-10-05-cascade-v2-vlm-grounding-design.md`,

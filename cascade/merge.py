@@ -117,8 +117,8 @@ def decide_fields(
                     kept.append(m)
                     seen.add(_key(m.normalized_value, m.value))
 
-        # Skip model value processing if field is out of scope, unless checksummed
-        # (proven checksummed values are already in kept).
+        # Model values are skipped for every out-of-scope field; only proven
+        # baseline values (already in kept) survive.
         in_scope = _in_scope(fdef, doc_class, cfg)
         if not in_scope:
             # Out-of-scope fields produce no provenance record. Proven checksummed values

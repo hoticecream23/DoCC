@@ -42,6 +42,8 @@ class Backend(Protocol):
 
 
 def check_local(url: str, allowed_hosts: list[str]) -> None:
+    if any(ord(c) <= 32 or ord(c) == 127 for c in url):
+        raise ValueError(f"VLM url must not contain whitespace or control characters: {url!r}")
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"VLM url must be http or https, got {url!r}")
@@ -130,6 +132,7 @@ class VLMClient:
                 with self._opener.open(req, timeout=self._s.timeout_s) as resp:
                     raw = resp.read()
             except urllib.error.HTTPError as exc:
+                exc.close()  # the error wraps the open response
                 last = f"HTTP {exc.code}"
                 if exc.code in _RETRY_STATUS:
                     continue

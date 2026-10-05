@@ -20,12 +20,12 @@ def _tiers():
     return ConfidenceTiers(agree=0.9, grounded=0.75, ambiguous=0.5, vlm_class=0.8)
 
 
-def _decide(cfg, fields, label="invoice", text=TEXT, rules=None):
+def _decide(cfg, fields, label="invoice", text=TEXT, rules=None, baseline_meta=None):
     from cascade.merge import decide
     from cascade.prompt import VLMAnswer
 
     pages = [text]
-    base, _ = extract_fields(text, pages, cfg, label)
+    base = extract_fields(text, pages, cfg, label)[0] if baseline_meta is None else baseline_meta
     rules = rule_scores(text, pages, cfg) if rules is None else rules
     return decide(text, pages, cfg, _tiers(), rules, VLMAnswer(label=label, fields=fields), base)
 
@@ -47,6 +47,14 @@ def test_a_proven_id_survives_a_model_that_omits_it(cfg):
     assert [(m.value, m.method, m.validated) for m in pan] == [
         ("AAPFU0939F", MetadataMethod.REGEX_CHECKSUM, True)
     ]
+
+
+def test_a_model_id_proven_by_its_own_pattern_is_emitted_as_validated(cfg):
+    d = _decide(cfg, {"pan": ["AAPFU0939F"]}, baseline_meta=[])  # nothing pre-proven
+    (pan,) = _by_field(d)["pan"]
+    assert (pan.value, pan.method, pan.validated, pan.confidence) == (
+        "AAPFU0939F", MetadataMethod.REGEX_CHECKSUM, True, 1.0)
+    assert [p["emitted"] for p in _prov(d, "pan")] == [True]
 
 
 def test_a_model_id_that_fails_its_checksum_is_dropped(cfg):

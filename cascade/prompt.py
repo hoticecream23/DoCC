@@ -123,7 +123,9 @@ def parse_answer(content: str, cfg: Config) -> VLMAnswer:
     if not isinstance(label, str) or label not in allowed:
         raise VLMOutputError(f"class {label!r} is not a declared class")
 
-    raw = data.get("fields", {})
+    if "fields" not in data:
+        raise VLMOutputError("answer has no fields")
+    raw = data["fields"]
     if not isinstance(raw, dict):
         raise VLMOutputError("fields is not an object")
     undeclared = set(raw) - set(_field_names(cfg))
@@ -137,4 +139,7 @@ def parse_answer(content: str, cfg: Config) -> VLMAnswer:
         kept = list(dict.fromkeys(v.strip() for v in values if v.strip()))
         if kept:
             fields[name] = kept
+    missing = set(_field_names(cfg)) - set(raw)
+    if missing:
+        raise VLMOutputError(f"missing fields: {sorted(missing)}")
     return VLMAnswer(label=label, fields=fields)

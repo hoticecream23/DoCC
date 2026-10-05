@@ -9,6 +9,11 @@ def _names(cfg):
     return [f["name"] for f in cfg.field_defs]
 
 
+def _answer(cfg, label="invoice", **fields):
+    """A schema-valid answer: every declared field present, [] when not given."""
+    return json.dumps({"class": label, "fields": {n: fields.get(n, []) for n in _names(cfg)}})
+
+
 def test_every_class_and_field_in_the_repo_config_has_a_description(cfg):
     from cascade.prompt import check_descriptions
 
@@ -70,9 +75,7 @@ def test_no_text_part_when_the_budget_is_zero(cfg):
 def test_parse_answer_strips_drops_empties_and_deduplicates(cfg):
     from cascade.prompt import parse_answer
 
-    content = json.dumps({"class": "invoice", "fields": {
-        "invoice_number": [" INV-1 ", "INV-1", ""], "total_amount": [], "pan": ["  "],
-    }})
+    content = _answer(cfg, invoice_number=[" INV-1 ", "INV-1", ""], total_amount=[], pan=["  "])
     a = parse_answer(content, cfg)
     assert a.label == "invoice"
     assert a.fields == {"invoice_number": ["INV-1"]}
@@ -89,6 +92,8 @@ def test_parse_answer_strips_drops_empties_and_deduplicates(cfg):
     (json.dumps({"class": "invoice", "fields": {"pan": "ABCDE1234F"}}), "list of strings"),
     (json.dumps({"class": "invoice", "fields": {"pan": [1]}}), "list of strings"),
     (json.dumps({"class": "invoice", "fields": []}), "fields is not an object"),
+    (json.dumps({"class": "invoice"}), "answer has no fields"),
+    (json.dumps({"class": "invoice", "fields": {"pan": []}}), "missing fields: .*'invoice_number'"),
 ])
 def test_parse_answer_rejects_anything_off_schema(cfg, content, message):
     from cascade.prompt import VLMOutputError, parse_answer
