@@ -61,3 +61,8 @@ gold_reviewed.md
 gold_client.jsonl
 Document_Review_Guide.docx
 datasets/
+
+# Cascade: local verification output, and provenance sidecars, which carry the
+# model's raw answer and so the document's values. Client material on a real run.
+.check/
+*.provenance

@@ -14,7 +14,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 
 # The one and only page joiner. Every char offset in the record is measured
 # against pages joined by this. Changing it invalidates every stored offset.
@@ -45,6 +45,8 @@ class ClassifyMethod(str, Enum):
     TFIDF_SVM = "tfidf_svm"
     RULE = "rule"
     FALLBACK = "fallback"
+    # Decided by a vision language model in cascade. Added in schema 1.2.0.
+    VLM = "vlm"
 
 
 class MetadataMethod(str, Enum):
@@ -52,6 +54,11 @@ class MetadataMethod(str, Enum):
     REGEX_FORMAT = "regex_format"
     ANCHOR = "anchor"
     POSITIONAL = "positional"
+    # Cascade: a model value located in the canonical text. VLM_RULE_AGREE
+    # when a rule candidate produced the same value at the same place.
+    # Added in schema 1.2.0.
+    VLM = "vlm"
+    VLM_RULE_AGREE = "vlm_rule_agree"
 
 
 class TagMethod(str, Enum):

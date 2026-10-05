@@ -83,6 +83,21 @@ def _text_record(res: ExtractionResult) -> TextRecord:
     )
 
 
+def tag_facts(text: TextRecord, page_count: int, is_scanned: bool) -> dict:
+    """Document level facts the derived tag rules read.
+
+    Cascade builds its tags from the same function, so the two pipelines
+    cannot drift on what a tag rule sees.
+    """
+    return {
+        "page_count": page_count,
+        "char_count": text.char_count,
+        "extraction_confidence": text.extraction_confidence,
+        "is_scanned": is_scanned,
+        "method": text.method.value,
+    }
+
+
 def process_document(
     path: str | Path, cfg: Config, models: Models | None = None
 ) -> tuple[DocumentRecord, BBoxSidecar]:
@@ -126,13 +141,7 @@ def process_document(
 
     meta = st.run("metadata", _meta, [])
 
-    facts = {
-        "page_count": res.page_count,
-        "char_count": text.char_count,
-        "extraction_confidence": text.extraction_confidence,
-        "is_scanned": res.is_scanned,
-        "method": text.method.value,
-    }
+    facts = tag_facts(text, res.page_count, res.is_scanned)
     tags = st.run(
         "tag",
         lambda: tagging_mod.apply_tags(
@@ -196,7 +205,7 @@ def existing_doc_ids(output: str | Path) -> set[str]:
     return seen
 
 
-def _write_sidecar(sidecar: BBoxSidecar, bbox_dir: Path) -> None:
+def write_sidecar(sidecar: BBoxSidecar, bbox_dir: Path) -> None:
     if not sidecar.words:
         return
     bbox_dir.mkdir(parents=True, exist_ok=True)
@@ -225,7 +234,7 @@ def _run_one(args: tuple) -> str:
     try:
         record, sidecar = process_document(path, cfg, models)
         if bbox_dir:
-            _write_sidecar(sidecar, Path(bbox_dir))
+            write_sidecar(sidecar, Path(bbox_dir))
         return dumps(record)
     except Exception as exc:
         # Unreadable file. Emit nothing but say so loudly.
