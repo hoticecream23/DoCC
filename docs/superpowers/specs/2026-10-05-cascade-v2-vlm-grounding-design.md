@@ -110,8 +110,9 @@ the same file.
 ### Page images
 
 - PDF pages are rendered with PyMuPDF at a configured DPI.
-- Image files are read directly. Multi frame TIFFs yield one image per frame,
-  in the same order the extractor reads them.
+- Image files are read directly, frame 0 only. That is the only frame the
+  baseline extractor reads, and the model must see the page the text came
+  from. Multi frame TIFFs need an extractor change first.
 - Formats with no page image (`.docx`, `.txt`) send text only.
 - Long edges are capped at a configured pixel size, so one oversized scan
   cannot exhaust GPU memory.
