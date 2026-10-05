@@ -112,3 +112,28 @@ def test_every_grounded_span_slices_back_to_the_document_text(cfg):
         assert g.grounded
         assert 0 <= g.start < g.end <= len(full)
         assert PAGE_SEP not in full[g.start : g.end]
+
+
+def test_reject_a_span_that_cuts_through_a_hyphen_joined_token_at_the_start(cfg):
+    # "0042" is part of "INV-2024-0042", joined by hyphens
+    _, g = _ground(cfg, "invoice_number", "0042", ["Invoice No: INV-2024-0042\n"])
+    assert g.outcome == "ungrounded"
+
+
+def test_reject_a_span_that_cuts_through_a_hyphen_joined_token_at_the_end(cfg):
+    # "INV-2024" is part of "INV-2024-0042", joined by hyphens
+    _, g = _ground(cfg, "invoice_number", "INV-2024", ["Invoice No: INV-2024-0042\n"])
+    assert g.outcome == "ungrounded"
+
+
+def test_reject_a_span_that_cuts_through_a_slash_joined_token(cfg):
+    # "03/2024" is part of "14/03/2024", joined by slashes
+    _, g = _ground(cfg, "invoice_date", "03/2024", ["Invoice Date: 14/03/2024\n"])
+    assert g.outcome == "ungrounded"
+
+
+def test_a_value_followed_by_sentence_punctuation_still_grounds(cfg):
+    # Sentence-ending punctuation (not a joiner) does not prevent grounding
+    full, g = _ground(cfg, "vendor_name", "Acme Ltd", ["Sold by Acme Ltd. Thank you\n"])
+    assert g.outcome == "exact"
+    assert full[g.start : g.end] == "Acme Ltd"

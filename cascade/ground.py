@@ -29,6 +29,7 @@ EXACT = "exact"
 LOOSE = "loose"
 NORMALISED = "normalised"
 UNGROUNDED = "ungrounded"
+JOINERS = "-/,."  # Characters that join tokens (e.g. INV-2024, 14/03/2024)
 
 
 @dataclass(frozen=True)
@@ -86,15 +87,16 @@ class TextIndex:
     def _on_boundary(self, s: int, e: int) -> bool:
         full = self.full
         first, last = full[s], full[e - 1]
+        # Reject if starting or ending adjacent to an alphanumeric
         if first.isalnum() and s > 0 and full[s - 1].isalnum():
             return False
         if last.isalnum() and e < len(full) and full[e].isalnum():
             return False
-        # A number continues through a separator followed by a digit:
-        # "11,800" is not a value inside "11,800.00", nor "800.00" inside it.
-        if last.isdigit() and e + 1 < len(full) and full[e] in ".," and full[e + 1].isdigit():
+        # Reject if starting inside a joined token: joiner before, alnum before that
+        if s >= 2 and full[s - 1] in JOINERS and full[s - 2].isalnum() and first.isalnum():
             return False
-        if first.isdigit() and s >= 2 and full[s - 1] in ".," and full[s - 2].isdigit():
+        # Reject if ending inside a joined token: joiner after, alnum after that
+        if e + 1 < len(full) and full[e] in JOINERS and full[e + 1].isalnum() and last.isalnum():
             return False
         return True
 
