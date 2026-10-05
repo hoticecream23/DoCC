@@ -220,6 +220,62 @@ def _rank(c: Candidate) -> tuple:
     return (0 if c.validated else 1, -c.confidence, c.start, c.end)
 
 
+def candidates_for(
+    full: str,
+    pages: list[str],
+    fdef: dict,
+    cfg: Config,
+    doc_class: str = "",
+    words: list[WordBox] | None = None,
+    page_sizes: list[tuple[float, float]] | None = None,
+) -> list[Candidate]:
+    """Every strategy's candidates for one field, ranked.
+
+    extract_fields stops at the first strategy that hits. Cascade asks a
+    different question, whether any rule would have produced a given span,
+    and that needs all of them. extract_fields does not call this, so the
+    baseline's own output cannot change because of it.
+    """
+    opts = cfg.metadata_opts()
+    limit = int(opts.get("max_candidates_per_field", 25))
+    default_window = int(opts.get("default_anchor_window", 120))
+    out: list[Candidate] = []
+    for strategy in fdef.get("strategies", []):
+        if strategy == "pattern":
+            out.extend(_pattern_candidates(full, fdef, limit))
+        elif strategy == "anchor":
+            out.extend(_anchor_candidates(full, fdef, default_window, limit))
+        elif strategy == "positional":
+            out.extend(
+                _positional_candidates(
+                    full, fdef, cfg.templates, doc_class, words or [],
+                    page_spans(pages), page_sizes or [],
+                )
+            )
+    out.sort(key=_rank)
+    return out
+
+
+def scan_spans(full: str, fdef: dict) -> list[tuple[int, int, str]]:
+    """Every place a value of this field's shape is printed, label or not.
+
+    Runs the field's own `pattern.regex` and `anchor.value_regex` over the
+    whole text, with no anchor label and no validator. These are not claims
+    that a match is this field. Cascade uses them only to locate a value the
+    model has already chosen, when the model wrote it in another format.
+    """
+    out: set[tuple[int, int, str]] = set()
+    for spec, key in ((fdef.get("pattern") or {}, "regex"), (fdef.get("anchor") or {}, "value_regex")):
+        rx = spec.get(key)
+        if not rx:
+            continue
+        for m in _compile(rx, bool(spec.get("ignorecase", False))).finditer(full):
+            s, e, val = _span_of(m)
+            if 0 <= s < e:
+                out.add((s, e, val))
+    return sorted(out)
+
+
 def extract_fields(
     full: str,
     pages: list[str],
