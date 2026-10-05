@@ -130,3 +130,38 @@ def test_metadata_is_sorted_and_every_offset_slices_back(cfg):
     assert keys == sorted(keys)
     for m in d.metadata:
         assert TEXT[m.char_start : m.char_end] == m.value
+
+
+def test_a_model_id_that_passes_its_checksum_but_not_its_pattern_is_dropped(cfg):
+    text = "TAX INVOICE\nAccount No: 4222222222222\n"
+    d = _decide(cfg, {"card_number": ["4222222222222"]}, text=text)
+    assert "card_number" not in _by_field(d)
+    assert [p["outcome"] for p in _prov(d, "card_number")] == ["checksum_failed"]
+
+
+def test_a_proven_id_is_kept_even_when_its_field_is_out_of_scope(cfg):
+    import dataclasses
+
+    # Scope the PAN field to court_document only
+    scoped_fields = [
+        dict(f, classes=["court_document"]) if f["name"] == "pan" else f
+        for f in cfg.field_defs
+    ]
+    scoped_cfg = dataclasses.replace(cfg, fields={**cfg.fields, "fields": scoped_fields})
+
+    pages = [TEXT]
+    # Extract baseline with "unknown" label so PAN is found
+    base, _ = extract_fields(TEXT, pages, cfg, "unknown")
+    rules = rule_scores(TEXT, pages, scoped_cfg)
+
+    from cascade.merge import decide
+    from cascade.prompt import VLMAnswer
+
+    # Decide with "invoice" label (so PAN is out of scope), no model answer
+    d = decide(TEXT, pages, scoped_cfg, _tiers(), rules, VLMAnswer(label="invoice", fields={}), base)
+
+    # PAN should still be in metadata as REGEX_CHECKSUM, validated
+    pan = _by_field(d)["pan"]
+    assert [(m.value, m.method, m.validated) for m in pan] == [
+        ("AAPFU0939F", MetadataMethod.REGEX_CHECKSUM, True)
+    ]

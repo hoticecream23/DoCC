@@ -18,7 +18,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from baseline.config import Config
-from baseline.metadata import CHECKSUM_VALIDATORS, NormCtx, normalize, run_validator
+from baseline.metadata import CHECKSUM_VALIDATORS, NormCtx, normalize
 from baseline.metadata.fields import candidates_for
 from baseline.schema import (
     Classification,
@@ -100,7 +100,7 @@ def decide_fields(
     prov: list[dict] = []
     for fdef in cfg.field_defs:
         name = fdef.get("name")
-        if not name or not _in_scope(fdef, doc_class, cfg):
+        if not name:
             continue
         pattern = fdef.get("pattern") or {}
         checksummed = pattern.get("validator") in CHECKSUM_VALIDATORS
@@ -108,11 +108,26 @@ def decide_fields(
 
         kept: list[MetadataField] = []
         seen: set[str] = set()
+
+        # For checksummed fields, keep proven baseline values unconditionally,
+        # before the scope check.
         if checksummed:
             for m in from_baseline[name]:
                 if m.method is MetadataMethod.REGEX_CHECKSUM:
                     kept.append(m)
                     seen.add(_key(m.normalized_value, m.value))
+
+        # Skip model value processing if field is out of scope, unless checksummed
+        # (proven checksummed values are already in kept).
+        in_scope = _in_scope(fdef, doc_class, cfg)
+        if not in_scope:
+            # For non-checksummed fields, record rule_only if there are baseline values
+            if not checksummed and from_baseline[name]:
+                prov.append({"field": name, "outcome": "rule_only",
+                             "baseline_values": [m.value for m in from_baseline[name]], "emitted": False})
+            # Proven checksummed values go to output regardless of scope
+            out.extend(kept)
+            continue
 
         rule_cands = candidates_for(full, pages, fdef, cfg, doc_class, words, page_sizes)
         model_emitted = False
@@ -128,7 +143,14 @@ def decide_fields(
                 continue
             raw = full[g.start : g.end]
             if checksummed:
-                if not run_validator(pattern.get("validator"), raw, pattern.get("validator_args") or {}):
+                # A model value for a checksummed field is proven only if its span
+                # matches a rule candidate with REGEX_CHECKSUM method (which is the
+                # baseline's definition of proven).
+                matches_proven = any(
+                    c.start == g.start and c.end == g.end and c.method is MetadataMethod.REGEX_CHECKSUM
+                    for c in rule_cands
+                )
+                if not matches_proven:
                     item["outcome"] = "checksum_failed"
                     continue
                 method, confidence, validated = MetadataMethod.REGEX_CHECKSUM, 1.0, True
