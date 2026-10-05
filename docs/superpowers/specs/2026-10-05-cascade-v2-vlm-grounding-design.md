@@ -246,9 +246,10 @@ Every report produced from these says the confidences are uncalibrated.
   fails has the failing fields removed and the problem written to
   `diagnostics.errors`; it is never written with a bad offset.
 - **Provenance sidecar**, `<output>.provenance`, one JSON line per document:
-  model and server, pages sent, raw VLM output, per value grounding outcome
-  (`exact`, `loose`, `normalised`, `ambiguous`, `ungrounded`, `checksum_failed`,
-  `rule_only`), class decision and source, and timings per step.
+  the model the server reports, pages and images sent, raw VLM output, per
+  value grounding outcome (`exact`, `loose`, `normalised`, `ungrounded`,
+  `checksum_failed`, `rule_only`) with the number of matching spans, class
+  decision and source, and timings per step. The run log names the server.
 - Word boxes go to the same `.bboxes` sidecar the baseline writes.
 
 ## Package layout
@@ -308,8 +309,8 @@ heavy work and batches across requests itself.
   first occurrence unless a rule candidate says otherwise. Word box grounding
   from the VLM's own coordinates is a possible later improvement.
 - **Model drift.** A server upgrade can change outputs. The provenance records
-  model and server for every document, so two runs that differ can be
-  explained.
+  the model for every document and the run log names the server, so two runs
+  that differ can be explained.
 
 ## Open questions
 
