@@ -340,7 +340,9 @@ Logs are JSON on stderr, not print statements.
 python -m pytest tests -q
 ```
 
-365 tests. Every checksum is tested against known good and known bad values.
+470 tests, 105 of them for cascade v2. The cascade tests use a fake model or a
+stub server on 127.0.0.1, so none needs a GPU or the network. Every checksum is
+tested against known good and known bad values.
 Verhoeff and Luhn are also checked to catch every single digit error and
 every swapped pair of digits, which is what those algorithms promise. Offsets
 are tested across multi page documents and across documents where half the
@@ -380,13 +382,17 @@ datasets/        downloaded public datasets, gitignored
 
 ## Beyond the baseline
 
-The baseline is the floor, not the product. Two documents cover what comes
+The baseline is the floor, not the product. These documents cover what comes
 next:
 
+- `docs/superpowers/specs/2026-10-05-cascade-v2-vlm-grounding-design.md` is
+  the design for cascade v2, our own approach, which is built in `cascade/`
+  (see "Cascade v2" above). It has not run on a real model yet.
+  `docs/Cascade_v2_Approach.docx` explains it for a non-specialist reader.
 - `docs/superpowers/specs/2026-09-17-cascade-architecture-design.md` is the
-  design for `cascade`, our own approach: the same output contract and the
-  same harness, with a staged pipeline and a knowledge graph used during the
-  run rather than after it. Nothing is built yet.
+  earlier cascade design. Cascade v2 replaced its classification and field
+  extraction stages and its CPU first budget; its document grouper, knowledge
+  graph in the run and calibration are not built yet.
 - `docs/public_datasets.md` records which public datasets may be used for
   commercial work, and the baseline's score on the SROIE receipts, which is
   the floor any new approach has to beat on data nobody here tuned against.

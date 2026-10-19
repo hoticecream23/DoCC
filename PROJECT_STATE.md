@@ -1,9 +1,10 @@
 # Project state
 
-Last updated: 2026-10-04 (five small fixes: Office lock files excluded, failed
-checksums no longer emitted, Yaumi `CASH #` references read, more date formats,
-`.docx` tables. Before that: court document fields, pink paper OCR, SROIE, and
-the cascade spec, which is still not built)
+Last updated: 2026-10-19 (cascade v2 built: a local vision model reads each
+page and every value is grounded back into the canonical text; schema 1.2.0.
+Before that, on 2026-10-04: Office lock files excluded, failed checksums no
+longer emitted, Yaumi `CASH #` references read, more date formats, `.docx`
+tables)
 
 ## What this is
 
@@ -19,12 +20,19 @@ is in, plus a knowledge graph v0 spike and table extraction v0. The real
 corpus has arrived, the taxonomy is reconciled against it, and the system is
 measured end to end on it. **The whole of `Client_Documents` has now been
 processed in one run: 227 documents, 32 correctly excluded as not documents.**
-365 tests pass.
+470 tests pass.
 
 Since then the baseline has also been measured on data nobody here tuned
-against, the public SROIE receipts, and the successor approach has been
-designed but not built. See "Measured on public data" below and
-`docs/superpowers/specs/2026-09-17-cascade-architecture-design.md`.
+against, the public SROIE receipts. See "Measured on public data" below.
+
+**The successor approach, cascade v2, is built but has not run on a real
+model.** It lives in `cascade/` beside `baseline/`, writes the same
+`DocumentRecord` JSONL, and is scored by the same harness. Every test uses a
+fake model or a stub server. See "Cascade v2" below, the design in
+`docs/superpowers/specs/2026-10-05-cascade-v2-vlm-grounding-design.md`, and
+the manager-facing summary in `docs/Cascade_v2_Approach.docx`. It supersedes
+`docs/superpowers/specs/2026-09-17-cascade-architecture-design.md` for
+classification, field extraction and the CPU-first budget.
 
 | Component | State | Notes |
 | --- | --- | --- |
@@ -36,6 +44,7 @@ designed but not built. See "Measured on public data" below and
 | Eval harness | Done | Schema driven, does not import the pipeline. Scores tables too. |
 | Knowledge graph | v0 spike | Verified identifiers only. Deliberately narrow. |
 | Table extraction | v0 | Three strategies: tab delimited rows, word boxes, whitespace. Abstains rather than guess. |
+| Cascade v2 | Built, unscored | VLM reads each page, values grounded in the canonical text, rules and checksums as a hard prior. No real model run yet. |
 
 ## Code layout
 
@@ -67,12 +76,30 @@ baseline/
   cli.py           commands
 ```
 
-Outside the package:
+Cascade v2, added 2026-10-08. It imports from `baseline` and never modifies
+its behaviour:
+
+```
+cascade/
+  config.py        loads and validates config/cascade.yaml
+  render.py        page images for the model
+  prompt.py        JSON schema and prompt from config, strict answer parsing
+  vlm.py           local only client for an OpenAI compatible model server
+  ground.py        model value to a span in the canonical text, or refusal
+  merge.py         checksum prior, class decision, scoping, confidence tiers
+  runner.py        one document and batch, baseline fallback, provenance sidecar
+  cli.py           cascade run
+```
+
+Outside the packages:
 
 ```
 scripts/convert_sroie.py   public dataset into harness inputs and gold
 docs/public_datasets.md    dataset licences, and the baseline's SROIE scores
-docs/superpowers/specs/    design specs, currently the cascade architecture
+docs/superpowers/specs/    design specs: the 2026-09-17 cascade architecture,
+                           and cascade v2 (2026-10-05), which supersedes it in part
+docs/superpowers/plans/    the cascade v2 implementation plan
+docs/Cascade_v2_Approach.docx  cascade v2 explained for a non-specialist reader
 datasets/                  downloaded public data, gitignored
 ```
 
@@ -425,7 +452,53 @@ Two enums were widened for the same reason:
   different things"), and one enum value could not express both.
 - `ExtractionMethod` gained `none`, for documents that produced no text at all.
 
+Schema 1.1.0 added `ExtractionMethod.ocr_rescued`. Schema 1.2.0, for cascade
+v2, added `ClassifyMethod.vlm`, `MetadataMethod.vlm` and
+`MetadataMethod.vlm_rule_agree`. Both changes are additive, and the harness
+does not read method values, so scoring did not change.
+
 Models are `extra="forbid"`, so an unexpected key fails validation loudly.
+
+## Cascade v2
+
+Built 2026-10-05 to 2026-10-08 for the GPU client, to compete with teammates'
+pipelines on this harness. Design:
+`docs/superpowers/specs/2026-10-05-cascade-v2-vlm-grounding-design.md`.
+
+Per document: the baseline runs first and its record is the fallback. Cascade
+renders page images (150 DPI, long edge 1600 px, first 4 pages), asks a local
+OpenAI compatible server (vLLM or Ollama) for `{class, fields}` under a JSON
+schema built from `classes.yaml` and `fields.yaml`, grounds every value, merges
+under the rule and checksum layer, recomputes tags, and writes the record plus
+`<output>.provenance`.
+
+Decisions worth knowing before changing it:
+
+- **Grounding is the guard against invented values.** A value is emitted only
+  if it is found in the canonical text: exactly, then ignoring whitespace and
+  case, then through the field's own normalizer. A match never crosses a page
+  and never starts or ends inside a token joined by `-`, `/`, `,`, or a `.`
+  between two digits. The emitted value is always the document's own text.
+- **`validated` means a checksum passed, and nothing else.** A model ID counts
+  as proven only if its span is one the field's own regex matched and its
+  checksum passed. A 13 digit number passes Luhn, which is why the validator
+  alone is not enough.
+- **A checksum proven value is never removed**, even if the model's class puts
+  that field out of scope.
+- **A rule value the model did not confirm is dropped** and recorded as
+  `rule_only`, so the effect can be measured.
+- **A rule at `rule_short_circuit` decides the class**; otherwise the model
+  does.
+- **Any failure after the baseline record falls back to the baseline answer**,
+  including an answer missing a declared field key. No document is lost.
+- **The client refuses any server that is not loopback** or listed in
+  `vlm.allowed_hosts`, never follows redirects, and ignores proxy variables.
+- Confidence tiers in `config/cascade.yaml` are uncalibrated starting points.
+
+Verified: 470 tests pass, the cascade tests also pass with warnings as errors,
+and the baseline's records over the synthetic corpus are identical to before
+the change. Not verified: anything about a real model. `vlm.model` is null and
+must be chosen on the client's hardware after a licence check.
 
 ## Component notes
 
@@ -1018,7 +1091,8 @@ Two smaller findings from the same run:
     `vendor_name` scores 0.000 on 361 receipts, because a receipt's vendor is
     its first line and never carries a "sold by" style label. Layout position,
     not vocabulary, is what identifies it. This is the clearest argument in the
-    repository for the layout model in the cascade spec.
+    repository for a layout aware reader, which cascade v2 now provides
+    through the vision model. It is not yet measured on SROIE.
 
 ## Config reference
 
@@ -1038,6 +1112,7 @@ for every module in `baseline/tables/`.
 | `graph.yaml` | which fields may key an entity, role and duplicate rules |
 | `tables.yaml` | strategy order, geometry tolerances, text grid thresholds |
 | `taxonomy.yaml` | client folder labels to our class names, and what that mapping loses |
+| `cascade.yaml` | cascade v2 only: model server, page rendering, confidence tiers |
 
 `pipeline.yaml` also carries `extraction.quality_gate`, which is engine
 settings rather than vocabulary: the corruption threshold and whether the gate
@@ -1045,8 +1120,10 @@ is on.
 
 ## Repository state
 
-`main` tracks `origin/main` on GitHub. Generated artefacts are gitignored
-and rebuilt by:
+`main` tracks `origin/main` on GitHub. As of 2026-10-19, branch `small-fixes`
+holds the 2026-10-04 fixes and all of cascade v2, is ahead of `origin`, and
+has no pull request into `main` yet. Generated artefacts are gitignored and
+rebuilt by:
 
 ```
 python tests/make_corpus.py corpus

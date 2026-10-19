@@ -13,10 +13,10 @@ where they are. When the two files disagree, this one is newer. The code was
 reorganised into packages on 2026-09-11, and PROJECT_STATE, Code layout, has the
 map.
 
-## Where things stand, 2026-10-04
+## Where things stand, 2026-10-19
 
-The baseline is finished work. What is live is the approach that replaces it,
-and one item waiting on a human.
+The baseline is finished work. Cascade v2, the approach that replaces it, is
+built and waits on its first real model run. One item waits on a human.
 
 - **Waiting on a human.** `review.xlsx`, covering all 227 client documents, is
   with Karishma. Step 7 cannot move until it comes back, and steps 8 and 9
@@ -30,12 +30,13 @@ and one item waiting on a human.
   the date normalizer reads the SROIE formats, and `.docx` tables are
   extracted. 365 tests pass. `client_results.jsonl` was deliberately not
   re-run, so it and `review.xlsx` still describe the code before all of this.
-- **Not merged yet.** Those fixes live on branch `small-fixes`, pushed to
-  `origin`. The pull request into `main` has not been opened, because the
-  GitHub CLI is not installed on this machine. Open it from
-  `https://github.com/hoticecream23/DoCC/compare/main...small-fixes` and
-  merge it before starting anything else, or new work will branch off a
-  `main` that lacks it.
+- **Not pushed, not merged.** The 2026-10-04 fixes and all of cascade v2 live
+  on branch `small-fixes`. Only the 2026-10-04 fixes are on `origin`; the
+  cascade v2 commits are local. Push with `git push origin small-fixes`, then
+  open the pull request into `main` from
+  `https://github.com/hoticecream23/DoCC/compare/main...small-fixes` (the
+  GitHub CLI is not installed on this machine). Merge it before starting
+  anything else, or new work will branch off a `main` that lacks it.
 - **The 2026-09-17 cascade design is superseded.** `cascade`, our own approach,
   was specified in
   `docs/superpowers/specs/2026-09-17-cascade-architecture-design.md`. Cascade v2
@@ -45,13 +46,18 @@ and one item waiting on a human.
   cascade design was replaced for the GPU client by VLM extraction with
   grounding: `docs/superpowers/specs/2026-10-05-cascade-v2-vlm-grounding-design.md`,
   plan in `docs/superpowers/plans/2026-10-05-cascade-v2-vlm-grounding.md`,
-  code in `cascade/`, on branch `cascade-v2`. Every test runs against a fake
-  backend. Next: serve a permissively licensed VLM locally, run it over the
+  code in `cascade/`, merged into branch `small-fixes`. 470 tests pass, and
+  every test runs against a fake backend. PROJECT_STATE, "Cascade v2", lists
+  the decisions not to undo; `docs/Cascade_v2_Approach.docx` explains it for a
+  manager. Next: serve a permissively licensed VLM locally, run it over the
   synthetic corpus and the labelled set, and gate it with `baseline compare`.
-- **Direction may change.** The team has been pointed at a different client
-  that has GPUs. Its hardware and documents were not available when this was
-  written, so the spec's CPU first constraint and its corpus specific choices
-  should be re-read, not assumed, when that data arrives.
+  Check the fallback count on the first run: if the server ignores the JSON
+  schema, every document falls back to the baseline.
+- **The GPU client is still unknown.** Its hardware and documents were not
+  available as of 2026-10-19. Cascade v2 was designed for that: no CPU first
+  budget, and a new document type is a YAML edit. The model size is chosen on
+  its hardware: 7 to 8B parameters first, 32B only if a measured gain pays for
+  it.
 - **A public floor exists now.** The baseline is scored on the SROIE receipts,
   data nobody here tuned against. `docs/public_datasets.md` has the numbers and
   the licence review. Any new approach has to beat that table.
@@ -627,9 +633,13 @@ running anything:
    retrain before step 7 has produced real volume: a model fitted on 21
    documents would be worse than the rules it would be overriding.
 
-## Next, after the 2026-10-04 fixes
+## Next, as of 2026-10-19
 
 In order. Items 1 and 2 are the baseline's live work; the rest can start now.
+Item 0 comes first of all.
+
+0. **Push `small-fixes` and open its pull request into `main`.** See "Where
+   things stand".
 
 1. **Get the review back.** `review.xlsx` has been with Karishma since
    2026-09-10 and blocks steps 7 to 9. Meanwhile the 45 distinct documents the
@@ -637,14 +647,19 @@ In order. Items 1 and 2 are the baseline's live work; the rest can start now.
 2. **When it returns:** import it, score, then re-run `Client_Documents` with
    `--merge-from` so the review carries onto a run that has the pink paper fix
    and the 2026-10-04 fixes. Then retrain (step 9).
-3. **Decide the `validated` contract.** Either `validated_precision` counts
-   only `regex_checksum` fields, or soft validators such as `date_sane` stop
-   setting `validated`. It is a schema meaning, so decide it once.
+3. **Decide the `validated` contract for the baseline.** Either
+   `validated_precision` counts only `regex_checksum` fields, or soft
+   validators such as `date_sane` stop setting `validated`. Cascade v2 already
+   took the second option for its own output; the baseline still sets it on
+   format checks.
 4. **`total_amount` and `vendor_name`.** The worst fields: total is wrong about
    half the time, vendor is never found on a receipt, where it is the first
-   line. SROIE measures both with no client data.
-5. **Cascade phase 0.** Deduplication, frozen layout group splits and
-   provenance capture carry over to the GPU client whatever its data is.
+   line. SROIE measures both with no client data, and it is the first public
+   test cascade v2 should take.
+5. **Cascade v2's first real run.** Serve a 7 to 8B open weight VLM (check its
+   licence), run `python -m cascade run`, compare against the baseline on
+   `gold.jsonl`, the labelled set and SROIE, and read the provenance counts:
+   `ungrounded`, `rule_only`, `checksum_failed` and fallbacks.
 6. **Questions for the GPU client:** hardware, document types, pages per day,
    languages, and whether the OCR service returns word boxes.
 7. **CI.** There is none. A GitHub Actions job running `pytest` and
@@ -653,11 +668,16 @@ In order. Items 1 and 2 are the baseline's live work; the rest can start now.
 
 ## Then the new approach
 
-**This section is the evidence. The design that came out of it is
+**This section is the evidence. The first design that came out of it is
 `docs/superpowers/specs/2026-09-17-cascade-architecture-design.md`**, which
 adds an ingest router, a document grouper, calibration, and a knowledge graph
-consulted during the run rather than built after it. Read the spec for what to
-build; read this section for why each part is there.
+consulted during the run rather than built after it. **Its classification and
+field extraction stages, and its CPU first budget, were replaced on
+2026-10-05 by cascade v2**
+(`docs/superpowers/specs/2026-10-05-cascade-v2-vlm-grounding-design.md`),
+which is built. The grouper, the knowledge graph in the run and calibration
+are still to come. Read the specs for what to build; read this section for why
+each part is there.
 
 Do not upgrade everything uniformly. The error surface is lopsided:
 
