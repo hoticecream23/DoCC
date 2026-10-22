@@ -356,3 +356,23 @@ def test_yaumi_cash_and_credit_references_are_read(line, ref, cfg):
     text = f"YAUMI INTERNATIONAL BAKERIES\n{line}\nDate: 08/04/2021"
     fields, _ = extract_fields(text, [text], cfg, doc_class="invoice")
     assert [f.normalized_value for f in fields if f.field == "invoice_number"] == [ref]
+
+
+@pytest.mark.parametrize("v, want", [
+    ("11800.00", "11800.00"),
+    ("1,18,000.50", "118000.50"),
+    ("Rs. 11,800.00", "11800.00"),
+    ("Rs.11800", "11800"),
+    ("AED 2,500.75", "2500.75"),
+    ("11,800/-", "11800"),
+    ("-500.00", "-500.00"),
+    ("11 800.00", "11800.00"),
+    ("500 2024", "500"),
+    ("Rs.", None),
+])
+def test_amounts_parse_past_a_currency_prefix(v, want):
+    """A VLM answers with the printed amount, symbol and all."""
+    from baseline.metadata.normalizers import _to_decimal
+
+    got = _to_decimal(v)
+    assert (str(got) if got is not None else None) == want

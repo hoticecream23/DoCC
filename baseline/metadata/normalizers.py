@@ -73,11 +73,14 @@ def _safe_date(y: int, mo: int, d: int):
 
 
 def _to_decimal(value: str) -> Decimal | None:
-    v = re.sub(r"[^\d.\-]", "", value.replace(",", ""))
-    if not v or v in {"-", "."}:
+    # The first number in the value, so the dot in "Rs." and the "/-" in
+    # "11,800/-" are not read as part of it. A space before three digits is
+    # a thousands separator, as OCR often prints "11 800.00".
+    m = re.search(r"-?\d[\d,]*(?: \d{3}(?!\d))*(?:\.\d+)?", value)
+    if not m:
         return None
     try:
-        return Decimal(v)
+        return Decimal(re.sub(r"[, ]", "", m.group()))
     except InvalidOperation:
         return None
 
