@@ -7,6 +7,7 @@ document, not halfway through a batch.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import Field, model_validator
@@ -25,6 +26,9 @@ class VLMSettings(Strict):
     backoff_s: float = Field(ge=0)
     max_tokens: int = Field(gt=0)
     allowed_hosts: list[str] = Field(default_factory=list)
+    # Server specific request fields, such as the switch that turns off a
+    # model's thinking. Never overrides the fields VLMClient sets itself.
+    extra_body: dict[str, Any] = Field(default_factory=dict)
 
 
 class RenderSettings(Strict):

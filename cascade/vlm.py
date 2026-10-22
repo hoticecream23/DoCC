@@ -109,6 +109,7 @@ class VLMClient:
 
     def complete(self, messages: list[dict], schema: dict) -> VLMReply:
         body = json.dumps({
+            **self._s.extra_body,
             "model": self._s.model,
             "messages": messages,
             "temperature": 0,

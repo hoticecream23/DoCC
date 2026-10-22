@@ -17,6 +17,13 @@ vlm:
   backoff_s: 2.0
   max_tokens: 2048
   allowed_hosts: []
+  # Extra request fields for the server. Thinking models spend the whole
+  # max_tokens budget thinking and return no answer, so thinking is turned
+  # off: reasoning_effort for Ollama, chat_template_kwargs for vLLM.
+  extra_body:
+    reasoning_effort: none
+    chat_template_kwargs:
+      enable_thinking: false
 
 render:
   dpi: 150

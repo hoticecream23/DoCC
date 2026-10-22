@@ -30,6 +30,15 @@ def test_returns_content_and_sends_a_deterministic_schema_bound_request():
     assert body["response_format"]["json_schema"]["schema"] == SCHEMA
 
 
+def test_extra_body_is_sent_but_cannot_override_the_core_request():
+    extra = {"reasoning_effort": "none", "temperature": 1, "model": "other"}
+    with serve([(200, chat("{}"), 0, None)]) as (url, reqs):
+        _client(url, extra_body=extra).complete(MESSAGES, SCHEMA)
+    body = reqs[0]["body"]
+    assert body["reasoning_effort"] == "none"
+    assert body["temperature"] == 0 and body["model"] == "m"
+
+
 def test_retries_a_503_with_backoff_then_succeeds():
     slept = []
     with serve([(503, "{}", 0, None), (503, "{}", 0, None), (200, chat("{}"), 0, None)]) as (url, reqs):
