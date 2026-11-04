@@ -298,3 +298,20 @@ def test_an_invoice_citing_purchase_order_no_is_not_a_purchase_order(cfg):
     result = classify(text, [text], cfg, model=None)
     assert result.label != "purchase_order"
     assert result.all_scores.get("purchase_order", 0.0) < 0.7
+
+
+def test_a_sales_receipt_title_classifies_as_receipt(cfg):
+    text = "SALES RECEIPT\nEast Repair Inc.\nSUBTOTAL 145.00\nSales Tax 6.25% 8.08\nTOTAL $154.06\n"
+    result = classify(text, [text], cfg, model=None)
+    assert result.label == "receipt"
+
+
+def test_an_invoice_mentioning_a_service_receipt_is_not_a_receipt(cfg):
+    text = (
+        "INVOICE\nInvoice No. 4471\nTerms: Due upon receipt\n"
+        "Consulting 10 hrs $500.00\nTOTAL $500.00\n"
+        "A service receipt will follow payment.\n"
+    )
+    result = classify(text, [text], cfg, model=None)
+    assert result.label != "receipt"
+    assert result.all_scores.get("receipt", 0.0) < 0.7

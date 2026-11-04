@@ -46,6 +46,14 @@ classes:
       # receipt on "UPON RECEIPT" plus "AMOUNT PAID".
       - {kind: regex, pattern: '(?<!upon\s)(?<!upon\sthe\s)\breceipt\b[\s\S]{0,3000}?\b(?:amount\s+paid|received\s+from|received\s+with\s+thanks)\b', scope: anywhere, specificity: 0.87}
       - {kind: keywords, any: [receipt, "thank you for your payment"], scope: header, specificity: 0.55}
+      # A title line naming the kind of receipt. The phrase must end its line:
+      # a title stands alone, a sentence on an invoice ("service receipt will
+      # follow payment") goes on. 3/7 client receipts, 0/105 other documents.
+      - {kind: regex, pattern: '(?m)\b(?:sales|service|transaction)[ \t]+receipt[ \t]*$', scope: header, specificity: 0.94}
+      # OCR breaks the receipt-number label ("Receiet No"). Alone that is not
+      # enough: a credit union invoice prints "CHECK RECEIPT No." on a later
+      # page. So the word receipt must open the first page. 1/7 receipts, 0/105.
+      - {kind: regex, pattern: '\A[\s\S]{0,600}?(?<!upon\s)\breceipt\b[\s\S]{0,1500}?\brece[il1e]{1,2}[pt]{1,2}\s*(?:no|number|#)', scope: first_page, specificity: 0.85}
 
   - name: bank_statement
     description: Periodic account transaction listing.
