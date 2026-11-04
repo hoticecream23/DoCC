@@ -100,6 +100,10 @@ def _anchor_candidates(full: str, fdef: dict, default_window: int, limit: int) -
     validator = spec.get("validator")
     args = spec.get("validator_args") or {}
     vrx = _compile(value_rx, bool(spec.get("ignorecase", False)))
+    # A label hit is refused when its own line says it is a different
+    # quantity: "sub" before "total", "qty" after it.
+    rej_before = spec.get("reject_before")
+    rej_after = spec.get("reject_after")
     low = full.lower()
 
     out: list[Candidate] = []
@@ -112,6 +116,15 @@ def _anchor_candidates(full: str, fdef: dict, default_window: int, limit: int) -
         pos = low.find(text)
         while pos >= 0:
             label_end = pos + len(text)
+            line_start = full.rfind("\n", 0, pos) + 1
+            line_end = full.find("\n", label_end)
+            if line_end < 0:
+                line_end = len(full)
+            if (rej_before and _compile(rej_before).search(low[line_start:pos])) or (
+                rej_after and _compile(rej_after).match(low[label_end:line_end])
+            ):
+                pos = low.find(text, pos + 1)
+                continue
             hits = []
             if direction in ("after", "both"):
                 seg = full[label_end : label_end + window]
