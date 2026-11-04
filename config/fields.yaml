@@ -271,7 +271,7 @@ fields:
       # the class is unknown.
       # ponytail: one header line only; a name that wraps onto line two
       # ("SECURE PARKING / CORPORATION S/B") comes out truncated.
-      regex: '(?im)\A(?:[ \t]*(?:[^a-z\n]*|[^\n]*\b(?:tax[ \t]*invoice|invoice|receipt|copy)\b[^\n]*|[0-9]{1,2}[ /.-](?:[0-9]{1,2}|[a-z]{3,9})[ /.-][0-9]{2,4}\b[^\n]*|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[ \t]+[0-9]{4}[ \t]*)\n){0,3}[ \t]*(?![^\n]*\b(?:invoice|receipt|copy)\b)(?!(?:tel|fax|gst|no|lot|jalan)\b)(?-i:([A-Z0-9&][^\na-z(]*?[A-Z][^\na-z(]*?))[ \t]*(?:\(|$)(?=[\s\S]*\b(?:total|amount|invoice|receipt)\b)'
+      regex: '(?im)\A(?:[ \t]*(?:[^a-z\n]*|(?:(?!\b(?:tax[ \t]*invoice|invoice|receipt|copy)\b)[^\n])*\b(?:tax[ \t]*invoice|invoice|receipt|copy)\b[^\n]*|[0-9]{1,2}[ /.-](?:[0-9]{1,2}|[a-z]{3,9})[ /.-][0-9]{2,4}\b[^\n]*|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[ \t]+[0-9]{4}[ \t]*)\n){0,3}[ \t]*(?![^\n]*\b(?:invoice|receipt|copy)\b)(?!(?:tel|fax|gst|no|lot|jalan)\b)(?-i:([A-Z0-9&][^\na-z(]{0,80}?[A-Z][^\na-z(]{0,80}?))[ \t]*(?:\(|$)(?=[\s\S]*\b(?:total|amount|invoice|receipt)\b)'
       confidence_unvalidated: 0.5
     anchor:
       window: 90

@@ -19,3 +19,13 @@ def test_header_after_a_tax_invoice_banner(cfg):
 def test_a_date_on_line_one_is_skipped(cfg):
     text = "07/03/2018 18:22\nPASAR MINI JIN SENG\nTEL : 07-3874904\nTOTAL 4.20\n"
     assert _vendor(cfg, text) == ["PASAR MINI JIN SENG"]
+
+
+def test_vendor_regex_is_linear_on_repeated_keywords(cfg):
+    """Three skipped lines full of "invoice" used to backtrack for minutes."""
+    import time
+
+    text = ("invoice " * 700 + chr(10)) * 3 + "SHOP" + chr(10)
+    t = time.perf_counter()
+    _vendor(cfg, text)
+    assert time.perf_counter() - t < 1.0
