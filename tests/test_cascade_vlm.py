@@ -185,23 +185,29 @@ def test_a_truncated_body_is_retried_on_the_same_budget_then_reported():
     assert len(reqs) == 2
 
 
-def test_api_key_is_refused_over_plain_http_to_a_non_loopback_host(monkeypatch):
-    from cascade.vlm import VLMClient, VLMError
+def test_api_key_over_plain_http_to_a_non_loopback_host_warns_and_constructs(monkeypatch, caplog):
+    from cascade.vlm import VLMClient
 
     monkeypatch.setenv("CASCADE_TEST_KEY", "secret")
-    with pytest.raises(VLMError, match="plain http"):
+    with caplog.at_level("WARNING"):
         VLMClient(_settings("http://gpu-box.internal:8000/v1", api_key_env="CASCADE_TEST_KEY",
                             allowed_hosts=["gpu-box.internal"]))
-    VLMClient(_settings("https://gpu-box.internal/v1", api_key_env="CASCADE_TEST_KEY",
-                        allowed_hosts=["gpu-box.internal"]))
+    assert "API key sent over plain http to gpu-box.internal" in caplog.text
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        VLMClient(_settings("https://gpu-box.internal/v1", api_key_env="CASCADE_TEST_KEY",
+                            allowed_hosts=["gpu-box.internal"]))
+    assert "plain http" not in caplog.text
 
 
-def test_api_key_is_allowed_over_plain_http_to_loopback(monkeypatch):
+def test_api_key_is_allowed_over_plain_http_to_loopback(monkeypatch, caplog):
     monkeypatch.setenv("CASCADE_TEST_KEY", "secret")
     with serve([(200, chat("{}"), 0, None)]) as (url, reqs):
         assert url.startswith("http://127.0.0.1:")
-        _client(url, api_key_env="CASCADE_TEST_KEY").complete(MESSAGES, SCHEMA)
+        with caplog.at_level("WARNING"):
+            _client(url, api_key_env="CASCADE_TEST_KEY").complete(MESSAGES, SCHEMA)
     assert reqs[0]["headers"]["Authorization"] == "Bearer secret"
+    assert "plain http" not in caplog.text
 
 
 def test_an_oversized_response_is_refused():

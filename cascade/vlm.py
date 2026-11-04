@@ -13,6 +13,7 @@ from __future__ import annotations
 import http.client
 import ipaddress
 import json
+import logging
 import os
 import time
 import urllib.error
@@ -22,6 +23,8 @@ from typing import Callable, Protocol
 from urllib.parse import urlparse
 
 from .config import VLMSettings
+
+log = logging.getLogger(__name__)
 
 _RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 
@@ -106,7 +109,7 @@ class VLMClient:
                 raise ValueError(f"environment variable {settings.api_key_env} is not set")
             parsed = urlparse(settings.base_url)
             if parsed.scheme != "https" and not _is_loopback(parsed.hostname or ""):
-                raise VLMError(f"refusing to send the API key over plain http to {parsed.hostname!r}: use https")
+                log.warning("API key sent over plain http to %s; use https off the LAN", parsed.hostname)
         self._s = settings
         self._sleep = sleep
         self._url = settings.base_url.rstrip("/") + "/chat/completions"
