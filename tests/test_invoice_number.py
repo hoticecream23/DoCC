@@ -31,3 +31,18 @@ def test_a_payment_receipt_carries_the_invoice_it_settles(cfg):
     # outranks the receipt's own number.
     text = "PAYMENT RECEIPT\nReceipt No: RCP-2024-118\nPaid in full against Invoice INV-2024-0042\n"
     assert _inv(cfg, text) == ["INV-2024-0042"]
+
+
+def test_stacked_labels_read_the_first_value_under_them(cfg):
+    # Flattened text puts the labels in a column and their values after it;
+    # the first value belongs to the first label.
+    assert _inv(cfg, "DOC NO.\nCASHIER\nSALESPERSON :\n: CS00013065\n: USER\n") == ["CS00013065"]
+    assert _inv(cfg, "DOC NO. :\nCASHIER :\nSALESPERSON:\nSO00050251\nUSER\n") == ["SO00050251"]
+    # No colon to pair label and value: a barcode under the labels is not it.
+    assert _inv(cfg, "INVOICE NO\nDATE\nCOUNTER\n6928835430158 HOOK-3015\n") == []
+
+
+def test_stacked_labels_never_take_a_date_as_the_number(cfg):
+    # The number was left blank, so the first value in the block is the date.
+    assert _inv(cfg, "INV NO:\nDATE :\n16/12/2017\nTOTAL QTY:\n") == []
+    assert _inv(cfg, "BILL NO:\nCASHIER:\nBILL DT:\n12/01/2017 08:44:46 PM\n") == []

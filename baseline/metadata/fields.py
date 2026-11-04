@@ -104,6 +104,9 @@ def _anchor_candidates(full: str, fdef: dict, default_window: int, limit: int) -
     # quantity: "sub" before "total", "qty" after it.
     rej_before = spec.get("reject_before")
     rej_after = spec.get("reject_after")
+    # A value that is wholly another field's value (a date under a blank
+    # invoice number) is refused.
+    rej_value = spec.get("reject_value")
     low = full.lower()
 
     out: list[Candidate] = []
@@ -142,6 +145,8 @@ def _anchor_candidates(full: str, fdef: dict, default_window: int, limit: int) -
                     hits.append((seg_start + s, seg_start + e, val, pos - (seg_start + e)))
 
             for start, end, val, dist in hits:
+                if rej_value and _compile(rej_value, False).fullmatch(val):
+                    continue
                 ok = run_validator(validator, val, args) if validator else False
                 # Specificity sets the ceiling, distance erodes it.
                 decay = 1.0 - 0.4 * min(1.0, dist / max(1, window))
