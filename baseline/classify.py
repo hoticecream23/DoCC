@@ -6,6 +6,7 @@ any document class, that all lives in classes.yaml.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,53 @@ log = get_logger(__name__)
 
 MODEL_FILE = "model.joblib"
 META_FILE = "meta.json"
+MANIFEST = "MANIFEST.sha256"
+
+
+def _manifest_for(path: Path) -> tuple[Path, str]:
+    """Manifest sits one level above the model dir: models/MANIFEST.sha256."""
+    root = path.parent.parent
+    return root / MANIFEST, path.relative_to(root).as_posix()
+
+
+def _read_manifest(mf: Path) -> dict[str, str]:
+    if not mf.exists():
+        return {}
+    out = {}
+    for line in mf.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            digest, name = line.split(None, 1)
+            out[name.lstrip("*").strip()] = digest.lower()
+    return out
+
+
+def record_hash(path: str | Path) -> None:
+    """Add or update path's sha256 in the manifest (sha256sum format)."""
+    path = Path(path)
+    mf, name = _manifest_for(path)
+    entries = _read_manifest(mf)
+    entries[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    lines = "".join(f"{h}  {n}\n" for n, h in sorted(entries.items()))
+    mf.write_text(lines, encoding="utf-8", newline="\n")
+
+
+class ModelIntegrityError(ValueError):
+    """Model file missing from, or not matching, MANIFEST.sha256."""
+
+
+def load_verified(path: str | Path):
+    """joblib.load only if path's sha256 matches the manifest. Unpickling runs code."""
+    import joblib
+
+    path = Path(path)
+    mf, name = _manifest_for(path)
+    want = _read_manifest(mf).get(name)
+    if want is None:
+        raise ModelIntegrityError(f"model file {path} has no entry in {mf}, refusing to load")
+    got = hashlib.sha256(path.read_bytes()).hexdigest()
+    if got != want:
+        raise ModelIntegrityError(f"model file {path} sha256 does not match {mf}, refusing to load")
+    return joblib.load(path)
 
 
 def rule_scores(full: str, pages: list[str], cfg: Config) -> dict[str, float]:
@@ -109,6 +157,7 @@ def train(texts: list[str], labels: list[str], out_dir: str | Path) -> dict:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     joblib.dump(pipe, out / MODEL_FILE)
+    record_hash(out / MODEL_FILE)
     meta = {
         "kind": "classifier",
         "labels": sorted(counts),
@@ -127,11 +176,11 @@ def load_model(model_dir: str | Path) -> ClassifierModel | None:
     if not (d / MODEL_FILE).exists():
         return None
     try:
-        import joblib
-
-        pipe = joblib.load(d / MODEL_FILE)
+        pipe = load_verified(d / MODEL_FILE)
         # sklearn hands back numpy strings, force plain str for clean JSON keys
         return ClassifierModel(pipeline=pipe, labels=[str(c) for c in pipe.classes_])
+    except ModelIntegrityError:
+        raise
     except Exception as exc:
         log.error("classifier load failed", extra={"dir": str(d), "error": str(exc)})
         return None

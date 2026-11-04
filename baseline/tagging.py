@@ -10,6 +10,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .classify import ModelIntegrityError, load_verified, record_hash
 from .config import Config
 from .logging_setup import get_logger
 from .rules import best_marker_score
@@ -185,6 +186,7 @@ def train(texts: list[str], tag_lists: list[list[str]], out_dir: str | Path) -> 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     joblib.dump({"pipeline": pipe, "tags": usable}, out / MODEL_FILE)
+    record_hash(out / MODEL_FILE)
     meta = {
         "kind": "tagger",
         "tags": usable,
@@ -203,10 +205,10 @@ def load_model(model_dir: str | Path) -> TaggerModel | None:
     if not (d / MODEL_FILE).exists():
         return None
     try:
-        import joblib
-
-        blob = joblib.load(d / MODEL_FILE)
+        blob = load_verified(d / MODEL_FILE)
         return TaggerModel(pipeline=blob["pipeline"], tags=[str(t) for t in blob["tags"]])
+    except ModelIntegrityError:
+        raise
     except Exception as exc:
         log.error("tagger load failed", extra={"dir": str(d), "error": str(exc)})
         return None
