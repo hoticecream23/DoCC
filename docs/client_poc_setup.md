@@ -89,6 +89,7 @@ Ask the client before installing anything. Some environments forbid it.
    repository. Then, in the code folder:
 
    ```powershell
+   pip install -r requirements.lock
    pip install -e . pytest
    ```
 
