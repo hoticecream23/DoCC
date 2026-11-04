@@ -328,3 +328,47 @@ def test_one_tabbed_line_is_not_a_table(tcfg):
     body = "HOD QA\t\t\tHOD Operations\t\t\tHOD R&D\nPlain prose follows here."
     tables, _ = detect_tab_delimited(0, body, 0, tcfg)
     assert tables == []
+
+
+# ------------------------------------------------------------- failure paths
+
+def test_a_strategy_that_raises_is_recorded_not_raised(corpus, cfg, tcfg, monkeypatch):
+    import baseline.tables.records as records
+
+    def boom(*a, **k):
+        raise ValueError("bad page")
+
+    monkeypatch.setattr(records, "detect_text_grid", boom)
+    row, _ = _tables_for(corpus / "bank_statement.pdf", cfg)
+    rec = build_record(row, [], {**tcfg, "strategies": ["text_grid", "nonsense"]})
+    assert rec.tables == []
+    assert rec.diagnostics.errors == ["text_grid: ValueError: bad page",
+                                      "unknown strategy 'nonsense'"]
+    assert rec.diagnostics.strategies_tried == ["text_grid"]
+
+
+def test_a_corrupt_sidecar_reads_as_no_words(tmp_path):
+    from baseline.tables import load_words
+
+    (tmp_path / "abc.json.gz").write_bytes(b"not gzip")
+    assert load_words(tmp_path, "abc") == []
+    assert load_words(tmp_path, "missing") == []
+
+
+def test_the_whole_pass_writes_records_and_a_report(corpus, cfg, tmp_path):
+    from baseline.tables import build
+
+    row, _ = _tables_for(corpus / "bank_statement.pdf", cfg)
+    inp = tmp_path / "results.jsonl"
+    inp.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    bdir = tmp_path / "results.jsonl.bboxes"
+    bdir.mkdir()
+    (bdir / f"{row['doc_id']}.json.gz").write_bytes(b"corrupt")  # falls back to no boxes
+    res = build(inp, tmp_path / "tables.jsonl", cfg.tables,
+                report_path=tmp_path / "tables.md", deterministic_timings=True)
+    st = res["stats"]
+    assert (st["documents"], st["documents_with_tables"], st["tables"], st["errors"]) == (1, 1, 1, 0)
+    assert sum(st["by_method"].values()) == 1
+    lines = (tmp_path / "tables.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0])["doc_id"] == row["doc_id"]
+    assert (tmp_path / "tables.md").read_text(encoding="utf-8").startswith("# Tables")
