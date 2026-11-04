@@ -6,7 +6,8 @@ hybrid, and we record which pages went which way.
 
 from __future__ import annotations
 
-import io
+import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -203,6 +204,29 @@ def _ocr_words(words: list, pno: int, scale: float = 1.0) -> list[WordBox]:
     ]
 
 
+# ponytail: fixed pool per document; with --workers N this is N x threads
+# tesseract processes. Set extraction.ocr.threads if that oversubscribes.
+OCR_THREADS = min(4, os.cpu_count() or 1)
+
+
+def _render(page, dpi: int):
+    """Page to an RGB PIL image, straight from the pixmap buffer."""
+    from PIL import Image
+
+    pix = page.get_pixmap(dpi=dpi, alpha=False)
+    return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+
+def _submit_ocr(pool, page, dpi: int, opts: dict) -> Future:
+    try:
+        img = _render(page, dpi)
+    except Exception as exc:
+        failed: Future = Future()
+        failed.set_exception(exc)
+        return failed
+    return pool.submit(_ocr_image, img, opts)
+
+
 def _extract_pdf(path: Path, cfg: Config, res: ExtractionResult) -> None:
     import fitz
 
@@ -213,14 +237,21 @@ def _extract_pdf(path: Path, cfg: Config, res: ExtractionResult) -> None:
     native_conf = float(opts.get("native_confidence", 0.98))
     gate = dict(opts.get("quality_gate", {}))
 
-    with fitz.open(path) as doc:
+    dpi = int(ocr_opts.get("dpi", 300))
+    threads = int(ocr_opts.get("threads", OCR_THREADS))
+    strip = opts.get("strip_before_count", True)
+
+    with fitz.open(path) as doc, ThreadPoolExecutor(threads) as pool:
+        natives = [_sanitize(doc.load_page(p).get_text("text") or "") for p in range(doc.page_count)]
+        scanned = iter([p for p, t in enumerate(natives) if len(t.strip() if strip else t) < threshold])
+        pending: dict[int, Future] = {}
+
         for pno in range(doc.page_count):
             page = doc.load_page(pno)
             res.page_sizes.append((float(page.rect.width), float(page.rect.height)))
-            native = _sanitize(page.get_text("text") or "")
-            probe = native.strip() if opts.get("strip_before_count", True) else native
+            native = natives[pno]
 
-            if len(probe) >= threshold:
+            if len(native.strip() if strip else native) >= threshold:
                 # The text layer may itself be somebody else's bad OCR. When it
                 # scores as substituted, re-read the page properly and keep
                 # whichever reading is cleaner. See textquality.py.
@@ -255,13 +286,13 @@ def _extract_pdf(path: Path, cfg: Config, res: ExtractionResult) -> None:
                 continue
 
             # Thin or empty text layer, so treat the page as scanned.
+            # Keep up to `threads` scanned pages in flight. Rendering stays on
+            # this thread because PyMuPDF is not thread safe; Tesseract runs
+            # as a subprocess, so the pool threads overlap for real.
+            while len(pending) < threads and (nxt := next(scanned, None)) is not None:
+                pending[nxt] = _submit_ocr(pool, doc.load_page(nxt), dpi, ocr_opts)
             try:
-                from PIL import Image
-
-                dpi = int(ocr_opts.get("dpi", 300))
-                pix = page.get_pixmap(dpi=dpi)
-                img = Image.open(io.BytesIO(pix.tobytes("png")))
-                ocr = _ocr_image(img, ocr_opts)
+                ocr = pending.pop(pno).result()
                 res.pages.append(_sanitize_fixed_width(ocr.text))
                 res.page_methods.append(ExtractionMethod.OCR)
                 res.page_confidences.append(ocr_confidence(ocr.words))
@@ -301,12 +332,8 @@ def _rescue_page(page, native, ocr_opts, gate, pno, capture):
         return None
 
     try:
-        from PIL import Image
-
         dpi = int(ocr_opts.get("dpi", 300))
-        pix = page.get_pixmap(dpi=dpi)
-        img = Image.open(io.BytesIO(pix.tobytes("png")))
-        ocr = _ocr_image(img, ocr_opts)
+        ocr = _ocr_image(_render(page, dpi), ocr_opts)
     except Exception as exc:
         # A failed rescue is not a failed page. Keep the native text and say so.
         log.warning("quality gate could not re-read page",
