@@ -29,7 +29,7 @@ Twelve commits on `small-fixes`, 5b54c58 through ddaa015. Nothing pushed. Suite 
 - `models/MANIFEST.sha256` is committed; `models/*.joblib` are gitignored. A client who copies or retrains models needs the matching manifest, or `baseline run` refuses to load them. `baseline train` writes it.
 - The documented LAN vLLM setup (http + `DOCC_VLM_KEY`) now logs one warning per run instead of failing. Use https off the LAN.
 - `requirements.lock` was produced on Python 3.14. Python 3.10 may need `tomli` and `exceptiongroup`, which are not in it.
-- The vendor_name rule emits with .60 precision on receipts. On the client corpus it runs on invoice / receipt / purchase_order only; names that wrap to two lines come out truncated. The regex is anchored at `\A` so it runs once per document; the automated ReDoS flag on it was reviewed and is not exploitable.
+- The vendor_name rule emits with .60 precision on receipts. On the client corpus it runs on invoice / receipt / purchase_order only; names that wrap to two lines come out truncated. The first version of its regex backtracked catastrophically (three skipped header lines of repeated "invoice" hung the matcher); it was rewritten so the skipped-line keyword match is unambiguous and the captured header is capped at 160 characters. Worst measured case is now 63 ms on a 200k-character document, with a guard test.
 - `report.md` (gitignored) was overwritten by an eval run during A5. Regenerate with `baseline eval` if it is needed.
 - `client_results.jsonl` and `review.xlsx` were not touched. All measurement runs wrote to the scratchpad.
 
