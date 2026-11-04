@@ -16,6 +16,8 @@ vlm:
   retries: 2
   backoff_s: 2.0
   max_tokens: 2048
+  # Bigger responses are refused, so a bad server cannot exhaust memory.
+  max_response_bytes: 8388608
   allowed_hosts: []
   # Extra request fields for the server. Thinking models spend the whole
   # max_tokens budget thinking and return no answer, so thinking is turned

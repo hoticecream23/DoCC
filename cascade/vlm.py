@@ -63,14 +63,18 @@ def check_local(url: str, allowed_hosts: list[str]) -> None:
     host = parsed.hostname
     if not host:
         raise ValueError(f"VLM url has no host: {url!r}")
-    if host == "localhost" or host in allowed_hosts:
+    if host in allowed_hosts or _is_loopback(host):
         return
-    try:
-        if ipaddress.ip_address(host).is_loopback:
-            return
-    except ValueError:
-        pass
     raise ValueError(f"VLM host {host!r} is not loopback and not in vlm.allowed_hosts")
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -100,6 +104,9 @@ class VLMClient:
             self._key = os.environ.get(settings.api_key_env)
             if not self._key:
                 raise ValueError(f"environment variable {settings.api_key_env} is not set")
+            parsed = urlparse(settings.base_url)
+            if parsed.scheme != "https" and not _is_loopback(parsed.hostname or ""):
+                raise VLMError(f"refusing to send the API key over plain http to {parsed.hostname!r}: use https")
         self._s = settings
         self._sleep = sleep
         self._url = settings.base_url.rstrip("/") + "/chat/completions"
@@ -131,7 +138,7 @@ class VLMClient:
             req = urllib.request.Request(self._url, data=body, headers=headers, method="POST")
             try:
                 with self._opener.open(req, timeout=self._s.timeout_s) as resp:
-                    raw = resp.read()
+                    raw = resp.read(self._s.max_response_bytes + 1)
             except urllib.error.HTTPError as exc:
                 exc.close()  # the error wraps the open response
                 last = f"HTTP {exc.code}"
@@ -141,6 +148,8 @@ class VLMClient:
             except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as exc:
                 last = f"{type(exc).__name__}: {exc}"
                 continue
+            if len(raw) > self._s.max_response_bytes:
+                raise VLMError(f"response is larger than vlm.max_response_bytes ({self._s.max_response_bytes})")
             try:
                 payload = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:

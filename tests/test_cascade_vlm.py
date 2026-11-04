@@ -183,3 +183,31 @@ def test_a_truncated_body_is_retried_on_the_same_budget_then_reported():
         with pytest.raises(VLMError, match="gave up after 2 attempts: server returned non JSON"):
             _client(url, retries=1).complete(MESSAGES, SCHEMA)
     assert len(reqs) == 2
+
+
+def test_api_key_is_refused_over_plain_http_to_a_non_loopback_host(monkeypatch):
+    from cascade.vlm import VLMClient, VLMError
+
+    monkeypatch.setenv("CASCADE_TEST_KEY", "secret")
+    with pytest.raises(VLMError, match="plain http"):
+        VLMClient(_settings("http://gpu-box.internal:8000/v1", api_key_env="CASCADE_TEST_KEY",
+                            allowed_hosts=["gpu-box.internal"]))
+    VLMClient(_settings("https://gpu-box.internal/v1", api_key_env="CASCADE_TEST_KEY",
+                        allowed_hosts=["gpu-box.internal"]))
+
+
+def test_api_key_is_allowed_over_plain_http_to_loopback(monkeypatch):
+    monkeypatch.setenv("CASCADE_TEST_KEY", "secret")
+    with serve([(200, chat("{}"), 0, None)]) as (url, reqs):
+        assert url.startswith("http://127.0.0.1:")
+        _client(url, api_key_env="CASCADE_TEST_KEY").complete(MESSAGES, SCHEMA)
+    assert reqs[0]["headers"]["Authorization"] == "Bearer secret"
+
+
+def test_an_oversized_response_is_refused():
+    from cascade.vlm import VLMError
+
+    with serve([(200, chat("x" * 200), 0, None)]) as (url, reqs):
+        with pytest.raises(VLMError, match=r"max_response_bytes \(100\)"):
+            _client(url, max_response_bytes=100).complete(MESSAGES, SCHEMA)
+    assert len(reqs) == 1

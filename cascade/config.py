@@ -25,6 +25,7 @@ class VLMSettings(Strict):
     retries: int = Field(ge=0, le=10)
     backoff_s: float = Field(ge=0)
     max_tokens: int = Field(gt=0)
+    max_response_bytes: int = Field(default=8 * 1024 * 1024, gt=0)
     allowed_hosts: list[str] = Field(default_factory=list)
     # Server specific request fields, such as the switch that turns off a
     # model's thinking. Never overrides the fields VLMClient sets itself.
