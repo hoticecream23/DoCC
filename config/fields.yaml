@@ -258,7 +258,21 @@ fields:
     classes: [invoice, receipt, purchase_order]   # only run on these document classes
     type: text
     normalizer: text_norm
-    strategies: [anchor]
+    # Receipts carry no "sold by" label: the vendor is the header line.
+    # The pattern runs only when no label hits.
+    strategies: [anchor, pattern]
+    pattern:
+      # The first line with letters, after at most three lines that are
+      # numbers only, a date, or a "tax invoice" / "receipt" / "copy" banner.
+      # Never a tel/fax/gst/address line. Stops before a "(reg no)" suffix.
+      # The line must be all capitals, as a printed shop header is, and the
+      # document must say total, amount, invoice or receipt somewhere. That
+      # keeps it off OCR noise and off ID cards, which run every field when
+      # the class is unknown.
+      # ponytail: one header line only; a name that wraps onto line two
+      # ("SECURE PARKING / CORPORATION S/B") comes out truncated.
+      regex: '(?im)\A(?:[ \t]*(?:[^a-z\n]*|[^\n]*\b(?:tax[ \t]*invoice|invoice|receipt|copy)\b[^\n]*|[0-9]{1,2}[ /.-](?:[0-9]{1,2}|[a-z]{3,9})[ /.-][0-9]{2,4}\b[^\n]*|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[ \t]+[0-9]{4}[ \t]*)\n){0,3}+[ \t]*(?![^\n]*\b(?:invoice|receipt|copy)\b)(?!(?:tel|fax|gst|no|lot|jalan)\b)(?-i:([A-Z0-9&][^\na-z(]*?[A-Z][^\na-z(]*?))[ \t]*(?:\(|$)(?=[\s\S]*\b(?:total|amount|invoice|receipt)\b)'
+      confidence_unvalidated: 0.5
     anchor:
       window: 90
       direction: after
