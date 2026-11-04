@@ -24,6 +24,17 @@ Twelve commits on `small-fixes`, 5b54c58 through ddaa015. Nothing pushed. Suite 
 | VLM client | key over http silently; unbounded body | warns on key over http to non-loopback; 8 MiB body cap (`vlm.max_response_bytes`) | 6027d39, 9737dd3 |
 | Dependencies | lower bounds only | `requirements.lock`, 26 pins, referenced in the client guide | 72de4df |
 
+## Second pass (same day)
+
+| Metric | Before | After | Commit |
+| --- | --- | --- | --- |
+| receipt recall (7 docs) | .14 | .71, precision 1.0 | ab1952d |
+| Classification macro F1 / coverage | .690 / .884 | .765 / .911 | ab1952d |
+| invoice_number, SROIE reads | 219 | 233; 0 changed or lost, all 14 new reads are the receipt's own number | 50b5c92 |
+| Suite | 512 | 516 |  |
+
+Receipt markers: a title line ending in "sales / service / transaction receipt", and an OCR-broken receipt-number label when the word receipt opens the first page. Both hit 0 of 105 non-receipt documents. The invoice_number anchor now reads a value block under stacked labels and refuses a value that is wholly a date (`reject_value`). Both new regexes were timed on adversarial input: under 5 ms.
+
 ## Things to know
 
 - `models/MANIFEST.sha256` is committed; `models/*.joblib` are gitignored. A client who copies or retrains models needs the matching manifest, or `baseline run` refuses to load them. `baseline train` writes it.
