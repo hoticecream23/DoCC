@@ -144,6 +144,8 @@ class VLMClient:
             try:
                 payload = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise VLMError(f"server returned non JSON: {exc}") from exc
+                # A truncated body is often transient, so it shares the retry budget.
+                last = f"server returned non JSON: {exc}"
+                continue
             return _reply(payload)
         raise VLMError(f"gave up after {attempts} attempts: {last}")

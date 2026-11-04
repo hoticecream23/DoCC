@@ -200,7 +200,10 @@ def existing_doc_ids(output: str | Path) -> set[str]:
                 continue
             try:
                 seen.add(json.loads(line)["doc_id"])
-            except Exception:
+            except Exception as exc:
+                # The doc is re-run, but a bad line here means the output file is damaged.
+                log.warning("unreadable line in output, doc will be re-run",
+                            extra={"output": str(p), "error": repr(exc)})
                 continue
     return seen
 

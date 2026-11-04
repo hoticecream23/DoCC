@@ -32,16 +32,20 @@ class JsonFormatter(logging.Formatter):
 def setup_logging(level: str = "INFO") -> None:
     # Windows consoles default to cp1252 and would blow up on rupee signs.
     stream = sys.stderr
+    reconfigure_error = None
     if hasattr(stream, "reconfigure"):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+        except Exception as exc:
+            reconfigure_error = exc  # logged once the handler exists
     handler = logging.StreamHandler(stream)
     handler.setFormatter(JsonFormatter())
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
+    if reconfigure_error is not None:
+        logging.getLogger(__name__).debug(
+            "stderr not reconfigured to utf-8", extra={"error": repr(reconfigure_error)})
 
 
 def get_logger(name: str) -> logging.Logger:

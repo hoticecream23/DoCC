@@ -128,16 +128,24 @@ def cmd_tune_thresholds(args: argparse.Namespace) -> int:
 
     # Predictions file supplies the canonical text, keyed by doc_id or path.
     texts: dict[str, str] = {}
+    skipped = 0
     with open(args.predictions, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if not line:
                 continue
-            rec = json.loads(line)
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                skipped += 1
+                continue
             body = rec.get("text", {}).get("full", "")
             for key in (rec.get("doc_id"), rec.get("source_path")):
                 if key:
                     texts[str(key)] = body
+    if skipped:
+        log.warning(f"skipped {skipped} malformed prediction lines",
+                    extra={"predictions": str(args.predictions), "skipped": skipped})
 
     # Annotations that carry their own text can be tuned without a join.
     inline = {

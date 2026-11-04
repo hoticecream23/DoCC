@@ -352,3 +352,25 @@ def test_empty_cells_do_not_break_adjacency():
     sparse = [["Date", "Debit", "Credit"], ["01/03", "", "50.00"]]
     res = eval_tables([(_gold_table(sparse), _pred_table(sparse))])
     assert res["adjacency"]["f1"] == 1.0
+
+
+def test_tune_thresholds_skips_and_counts_a_malformed_prediction_line(tmp_path, monkeypatch, caplog):
+    from baseline import cli
+
+    class FakeTagger:
+        tags = ["t"]
+
+        def predict_scores(self, body):
+            return {"t": 0.9}
+
+    monkeypatch.setattr(cli.tagging_mod, "load_model", lambda d: FakeTagger())
+    ann = tmp_path / "ann.jsonl"
+    ann.write_text(json.dumps({"doc_id": "a", "tags": ["t"]}) + "\n", encoding="utf-8")
+    pred = tmp_path / "pred.jsonl"
+    pred.write_text('{"doc_id": "a", "text": {"full": "x"}}\n{"doc_id": "b", "te\n',
+                    encoding="utf-8")
+    args = cli.build_parser().parse_args(
+        ["tune-thresholds", "--annotations", str(ann), "--predictions", str(pred), "--dry-run"])
+    with caplog.at_level("WARNING"):
+        assert cli.cmd_tune_thresholds(args) == 0
+    assert "skipped 1 malformed prediction lines" in caplog.text

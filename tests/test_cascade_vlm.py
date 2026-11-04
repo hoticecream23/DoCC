@@ -171,3 +171,15 @@ def test_api_key_is_read_from_the_named_environment_variable(monkeypatch):
     with serve([(200, chat("{}"), 0, None)]) as (url, reqs):
         _client(url, api_key_env="CASCADE_TEST_KEY").complete(MESSAGES, SCHEMA)
     assert reqs[0]["headers"]["Authorization"] == "Bearer secret"
+
+
+def test_a_truncated_body_is_retried_on_the_same_budget_then_reported():
+    from cascade.vlm import VLMError
+
+    with serve([(200, '{"choices": [', 0, None), (200, chat("{}"), 0, None)]) as (url, reqs):
+        assert _client(url, retries=1).complete(MESSAGES, SCHEMA).content == "{}"
+    assert len(reqs) == 2
+    with serve([(200, '{"choices": [', 0, None)]) as (url, reqs):
+        with pytest.raises(VLMError, match="gave up after 2 attempts: server returned non JSON"):
+            _client(url, retries=1).complete(MESSAGES, SCHEMA)
+    assert len(reqs) == 2
