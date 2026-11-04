@@ -66,7 +66,11 @@ classes:
     markers:
       - {kind: regex, pattern: '\b(?:salary|pay)\s*(?:slip|sheet)\b', scope: first_page, specificity: 0.96}
       - {kind: regex, pattern: '\bpayslip\b', scope: first_page, specificity: 0.95}
+      # "Net salary" / "nett salary" is the same take-home line as "net pay";
+      # three client slips use only that wording. Same two-term requirement.
       - {kind: keywords, all: ["net pay"], any: [gross, deductions, "basic pay", hra], scope: anywhere, specificity: 0.88}
+      - {kind: keywords, all: ["net salary"], any: [gross, deductions, "basic pay", hra], scope: anywhere, specificity: 0.88}
+      - {kind: keywords, all: ["nett salary"], any: [gross, deductions, "basic pay", hra], scope: anywhere, specificity: 0.88}
       - {kind: keywords, any: ["employee id", "employee code", "pf number", uan], scope: anywhere, specificity: 0.6}
 
   - name: purchase_order
@@ -77,7 +81,11 @@ classes:
       # No. >>", all of them pointing at a purchase order they are not. The
       # negative lookahead is the whole fix: a document titled PURCHASE ORDER
       # is one, a document citing "Purchase Order No." is quoting one.
-      - {kind: regex, pattern: '\bpurchase\s+order\b(?!\s*(?:no\b|number\b|#|\.))', scope: first_page, specificity: 0.95}
+      # Exception: a line in the first four that holds only the title, e.g. a
+      # pre-printed form heading "FOR PURCHASE ORDER NO." with the number left
+      # blank. The invoice label "Purchase Order No. >>" points at a value on
+      # the same line, so it still fails.
+      - {kind: regex, pattern: '(?m)\A(?:[^\n]*\n){0,3}[ \t]*(?:for[ \t]+)?purchase[ \t]+order(?:[ \t]+(?:no\b\.?|number\b|#))?[ \t]*$|\bpurchase\s+order\b(?!\s*(?:no\b|number\b|#|\.))', scope: first_page, specificity: 0.95}
       - {kind: regex, pattern: '\bpurchase\s+order\b(?!\s*(?:no\b|number\b|#|\.))[\s\S]{0,4000}?\b(?:ship\s+to|delivery\s+date|vendor)\b', scope: anywhere, specificity: 0.9}
       # A bare "PO No" label is compatible with an invoice and a purchase order
       # alike: it fired on 6 of the 25 client invoices and on none of the real

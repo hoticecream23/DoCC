@@ -276,3 +276,25 @@ def test_an_abstention_still_carries_a_distribution_to_diagnose_it(cfg):
     result = classify(junk, [junk], cfg, model=QuietModel())
     assert result.label == "unknown"
     assert result.all_scores, "an abstention with no scores cannot be diagnosed"
+
+
+def test_a_net_salary_slip_classifies_as_salary_slip(cfg):
+    text = "ACME LTD\nBasic 30,000\nDEDUCTIONS: PF 1,800\nNET SALARY Rs. 28,200\n"
+    result = classify(text, [text], cfg, model=None)
+    assert result.label == "salary_slip"
+
+
+def test_a_purchase_order_form_title_classifies_as_purchase_order(cfg):
+    text = (
+        "NORTH CAROLINA FORESTRY FOUNDATION, INC.\nFOR PURCHASE ORDER NO.\n"
+        "DIVISION OF FORESTRY\nOrder No. must be shown on all invoices.\n"
+    )
+    result = classify(text, [text], cfg, model=None)
+    assert result.label == "purchase_order"
+
+
+def test_an_invoice_citing_purchase_order_no_is_not_a_purchase_order(cfg):
+    text = "1035578 001599135 12/31/2025\nPurchase Order No. >>\nSubtotal For DECEMBER\n"
+    result = classify(text, [text], cfg, model=None)
+    assert result.label != "purchase_order"
+    assert result.all_scores.get("purchase_order", 0.0) < 0.7
