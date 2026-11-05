@@ -48,6 +48,10 @@ class OCREngine(ABC):
     def recognize(self, image: Any, opts: dict[str, Any]) -> OCRPage:
         """Take a PIL image, return page text plus word boxes with offsets."""
 
+    def orientation(self, image: Any, opts: dict[str, Any]) -> tuple[int, float]:
+        """Clockwise degrees that would set the page upright, and confidence."""
+        return 0, 0.0
+
 
 class TesseractEngine(OCREngine):
     """Default engine. Classical, no neural net, no network."""
@@ -86,6 +90,11 @@ class TesseractEngine(OCREngine):
             timeout=opts.get("timeout_s", 120),
         )
         return _assemble(data, self.name)
+
+    def orientation(self, image: Any, opts: dict[str, Any]) -> tuple[int, float]:
+        pt = self._pytesseract
+        osd = pt.image_to_osd(image, output_type=pt.Output.DICT, timeout=opts.get("timeout_s", 120))
+        return int(osd["rotate"]), float(osd["orientation_conf"])
 
 
 def _assemble(data: dict[str, list], engine: str) -> OCRPage:

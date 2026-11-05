@@ -113,7 +113,39 @@ def _ocr_image(image: Any, opts: dict) -> OCRPage:
     engine.configure(opts)
     if not engine.available():
         raise RuntimeError("ocr engine " + repr(engine.name) + " not available")
-    return engine.recognize(image, opts)
+    page = engine.recognize(image, opts)
+    if ocr_confidence(page.words) >= OSD_BELOW:
+        return page
+    # ponytail: one OSD guess, one re-read, keep the higher mean confidence.
+    # OSD's orientation_conf is ~1.5 on a clean 90-degree scan, so the floor is
+    # low and the confidence comparison does the real filtering. No deskew.
+    try:
+        deg, conf = engine.orientation(image, opts)
+    except Exception as exc:  # too few characters, timeout: keep the first read
+        log.debug("osd failed", extra={"error": str(exc)})
+        return page
+    if deg not in (90, 180, 270) or conf < OSD_MIN_CONF:
+        return page
+    turned = engine.recognize(image.rotate(-deg, expand=True), opts)
+    if ocr_confidence(turned.words) <= ocr_confidence(page.words):
+        return page
+    log.debug("ocr page rotated", extra={"rotated_degrees": deg, "osd_conf": conf})
+    for w in turned.words:  # boxes back into the unrotated image's frame
+        w.x0, w.y0, w.x1, w.y1 = _unrotate(w, deg, image.width, image.height)
+    return turned
+
+
+OSD_BELOW = 0.6  # first-pass mean word confidence that triggers OSD
+OSD_MIN_CONF = 1.0  # tesseract orientation_conf floor
+
+
+def _unrotate(w, deg: int, width: int, height: int) -> tuple[float, float, float, float]:
+    """A box read off the image turned `deg` clockwise, in the original's pixels."""
+    if deg == 180:
+        return width - w.x1, height - w.y1, width - w.x0, height - w.y0
+    if deg == 90:
+        return w.y0, height - w.x1, w.y1, height - w.x0
+    return width - w.y1, w.x0, width - w.y0, w.x1  # 270
 
 
 def _upscale_for_ocr(image: Any, opts: dict) -> tuple[Any, float]:

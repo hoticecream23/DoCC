@@ -244,3 +244,27 @@ def test_image_word_boxes_stay_inside_the_page(tmp_path, cfg):
     assert (pw, ph) == (420.0, 560.0)
     assert res.words, "expected word boxes"
     assert all(w.x1 <= pw and w.y1 <= ph for w in res.words)
+
+
+def test_upside_down_scan_is_turned_upright_before_reading(corpus, tmp_path, cfg):
+    """A page scanned upside down reads as noise. OSD should spot the 180 and
+    the second pass should recover the text the upright page gives."""
+    import fitz
+
+    from baseline.extract import _render
+
+    with fitz.open(corpus / "receipt_scanned.pdf") as doc:
+        upright = _render(doc.load_page(0), 300)
+    path = tmp_path / "upside_down.png"
+    flipped = upright.rotate(180)
+    flipped.save(path)
+
+    opts = cfg.extract_opts().get("ocr", {})
+    first_pass = ocr_confidence(get_engine(opts.get("engine", "tesseract")).recognize(flipped, opts).words)
+    assert first_pass < 0.6, "the flipped page must be bad enough to trigger OSD"
+
+    res = extract(path, cfg)
+    assert "Signatory" in res.pages[0]
+    assert res.page_confidences[0] > first_pass
+    pw, ph = res.page_sizes[0]
+    assert all(0 <= w.x0 <= w.x1 <= pw and 0 <= w.y0 <= w.y1 <= ph for w in res.words)
