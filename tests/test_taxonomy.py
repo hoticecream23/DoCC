@@ -409,7 +409,8 @@ def test_the_receipt_and_tax_form_markers_stay_linear(cfg):
     from baseline.rules import best_marker_score
 
     markers = [m for c in cfg.classes["classes"] if c["name"] in ("receipt", "tax_form") for m in c.get("markers", [])]
-    for text in ("gst reg " * 25000, "cash\n" * 40000, "cash\nchange x\n" * 15000, "rounding " * 25000):
+    for text in ("gst reg " * 25000, "cash\n" * 40000, "cash\nchange x\n" * 15000, "rounding " * 25000,
+                 "cash" + " " * 50000 + "x", "cash  \n" * 5000 + "x"):
         t = time.perf_counter()
         best_marker_score(markers, text, [text], 600)
         assert time.perf_counter() - t < 1.0

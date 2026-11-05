@@ -73,9 +73,11 @@ classes:
       # A GST summary or rounding / round adj line.
       - {kind: regex, pattern: '\A(?![\s\S]*\b(?:due\s+date|payment\s+terms?|bill(?:ed)?\s+to|remit)\b)[\s\S]*?(?:\bgst[ \t]+summary\b|\brounding\b|\bround(?:ing)?[ \t]*adj)', scope: anywhere, specificity: 0.97}
       # A standalone CASH line, then later a standalone CHANGE line; each
-      # label may carry an amount (RM optional). The atomic group pins the
-      # first CASH line, so a page of CASH lines with no CHANGE stays linear.
-      - {kind: regex, pattern: '\A(?![\s\S]*\b(?:due\s+date|payment\s+terms?|bill(?:ed)?\s+to|remit)\b)(?>[\s\S]*?(?m:^)[^\w\n]*cash\b[^\w\n]*(?:rm[ \t]*)?(?:\d[\d,]*[.,]\d{2})?[ \t]*(?m:$))[\s\S]*?(?m:^)[^\w\n]*change\b[^\w\n]*(?:rm[ \t]*)?(?:\d[\d,]*[.,]\d{2})?[ \t]*(?m:$)', scope: anywhere, specificity: 0.97}
+      # label may carry RM and an amount. The lookahead plus backreference
+      # pins the first CASH line (an atomic group without needing 3.11), so a
+      # page of CASH lines with no CHANGE stays linear. One quantifier owns
+      # each run of spaces, so long blank tails do not backtrack.
+      - {kind: regex, pattern: '\A(?![\s\S]*\b(?:due\s+date|payment\s+terms?|bill(?:ed)?\s+to|remit)\b)(?=(?P<c>[\s\S]*?(?m:^)[^\w\n]*cash\b(?:[ \t]*:)?(?:[ \t]*rm)?(?:[ \t]*\d[\d,]*[.,]\d{2})?[ \t]*(?m:$)))(?P=c)[\s\S]*?(?m:^)[^\w\n]*change\b(?:[ \t]*:)?(?:[ \t]*rm)?(?:[ \t]*\d[\d,]*[.,]\d{2})?[ \t]*(?m:$)', scope: anywhere, specificity: 0.97}
 
   - name: bank_statement
     description: Periodic account transaction listing.
