@@ -315,3 +315,30 @@ def test_an_invoice_mentioning_a_service_receipt_is_not_a_receipt(cfg):
     result = classify(text, [text], cfg, model=None)
     assert result.label != "receipt"
     assert result.all_scores.get("receipt", 0.0) < 0.7
+
+
+def test_a_tax_invoice_settled_in_cash_is_a_receipt(cfg):
+    text = (
+        "KEDAI RUNCIT MAJU SDN BHD\nTAX INVOICE\nInvoice No: 18000123\nCASHIER: AINA\n"
+        "MILO 1KG 1 15.90 SR\nTOTAL INCL GST 15.90\nCASH\nCHANGE\n20.00\n4.10\nTHANK YOU\n"
+    )
+    result = classify(text, [text], cfg, model=None)
+    assert result.label == "receipt"
+
+
+def test_a_tax_invoice_with_due_date_and_bill_to_stays_an_invoice(cfg):
+    text = (
+        "TAX INVOICE\nInvoice No: INV/24/0091\nGSTIN: 29ABCDE1234F1Z5\nBill To: Rao Traders\n"
+        "Due Date: 30/04/2024\nHSN 8471 Laptop 1 55,000.00\nTotal 64,900.00\n"
+    )
+    result = classify(text, [text], cfg, model=None)
+    assert result.label == "invoice"
+
+
+def test_a_paid_stamp_on_a_tax_invoice_with_due_date_stays_an_invoice(cfg):
+    text = (
+        "TAX INVOICE\nInvoice No: 4471\nDue Date: 15/05/2024\nConsulting services 12,000.00\n"
+        "Total 14,160.00\nPAID 14,160.00\n"
+    )
+    result = classify(text, [text], cfg, model=None)
+    assert result.label == "invoice"
