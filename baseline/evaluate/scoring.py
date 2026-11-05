@@ -409,3 +409,45 @@ def eval_calibration(pairs: list[tuple[dict, dict]], unknown_label: str = "unkno
         },
         "classification": bucket_stats(cls_items, metric="accuracy"),
     }
+
+
+# --------------------------------------------------------------------------
+# gold-covered fields
+# --------------------------------------------------------------------------
+
+
+def covered_fields(gold: list[dict]) -> set[str]:
+    """Field names the gold file labels at least once."""
+    return {i["field"] for g in gold for i in g.get("metadata") or [] if i.get("field")}
+
+
+def eval_covered(pairs: list[tuple[dict, dict]], covered: set[str]) -> tuple[dict, dict]:
+    """Metadata and field calibration over gold-covered fields only.
+
+    A predicted field the gold never labels cannot be judged, so it is
+    "unscored" here instead of a false positive. Counted as distinct values
+    per document, the same unit as a value FP, so the existing FP total
+    equals the covered FP plus the unscored count.
+    """
+    unscored: collections.Counter = collections.Counter()
+    kept = []
+    for g, p in pairs:
+        seen = set()
+        for item in p.get("metadata") or []:
+            name = item.get("field")
+            if name and name not in covered and (name, _norm_of(item)) not in seen:
+                seen.add((name, _norm_of(item)))
+                unscored[name] += 1
+        meta = [i for i in p.get("metadata") or [] if i.get("field") in covered]
+        kept.append((g, {**p, "metadata": meta}))
+    value = eval_metadata(kept)["value"]
+    return (
+        {
+            "fields": sorted(covered),
+            "micro": value["micro"],
+            "macro_f1": value["macro_f1"],
+            "unscored_predictions": sum(unscored.values()),
+            "unscored_per_field": dict(sorted(unscored.items())),
+        },
+        eval_calibration(kept)["fields"],
+    )

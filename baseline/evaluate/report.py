@@ -5,8 +5,10 @@ from __future__ import annotations
 from ..logging_setup import get_logger
 from .scoring import (
     BUCKETS,
+    covered_fields,
     eval_calibration,
     eval_classification,
+    eval_covered,
     eval_extraction,
     eval_metadata,
     eval_tagging,
@@ -24,6 +26,7 @@ def evaluate(
     gold = load_jsonl(gold_path)
     pred = load_jsonl(pred_path)
     pairs, missing, extra = join(gold, pred)
+    covered, calibration_covered = eval_covered(pairs, covered_fields(gold))
     log.info(
         "joined", extra={"gold": len(gold), "pred": len(pred), "matched": len(pairs),
                          "unmatched_gold": len(missing), "unscored_pred": len(extra)}
@@ -40,6 +43,8 @@ def evaluate(
         "tagging": eval_tagging(pairs),
         "tables": eval_tables(join(gold, load_jsonl(tables_path))[0] if tables_path else []),
         "calibration": eval_calibration(pairs, unknown_label),
+        "covered": covered,
+        "calibration_covered": calibration_covered,
     }
 
 
@@ -64,7 +69,8 @@ def render_report(res: dict, gold_path: str, pred_path: str) -> str:
     L += _report_extraction(res["extraction"])
     L += _report_classification(res["classification"])
     L += _report_metadata(res["metadata"])
-    L += _report_calibration(res.get("calibration") or {})
+    L += _report_covered(res.get("covered") or {})
+    L += _report_calibration(res.get("calibration") or {}, res.get("calibration_covered"))
     L += _report_tagging(res["tagging"])
     L += _report_tables(res.get("tables") or {})
     return "\n".join(L)
@@ -181,7 +187,28 @@ def _bucket_table(stats: dict, metric: str) -> list[str]:
     return L
 
 
-def _report_calibration(cal: dict) -> list[str]:
+def _report_covered(c: dict) -> list[str]:
+    if not c:
+        return []
+    m = c["micro"]
+    L = ["## Gold-covered fields", "",
+         "Scores only fields the gold file labels at least once. A predicted field",
+         "the gold never labels is unscored here, not a false positive.", "",
+         f"Covered fields: {', '.join(c['fields']) or 'none'}", "",
+         "| metric | value |", "| --- | --- |",
+         f"| micro precision | {m['precision']:.3f} |",
+         f"| micro recall | {m['recall']:.3f} |",
+         f"| micro F1 | {m['f1']:.3f} |",
+         f"| tp / fp / fn | {m['tp']} / {m['fp']} / {m['fn']} |",
+         f"| unscored predictions | {c['unscored_predictions']} |", ""]
+    if c["unscored_per_field"]:
+        L += ["| unscored field | predictions |", "| --- | --- |"]
+        L += [f"| {k} | {v} |" for k, v in c["unscored_per_field"].items()]
+        L.append("")
+    return L
+
+
+def _report_calibration(cal: dict, covered: dict | None = None) -> list[str]:
     if not cal:
         return []
     L: list[str] = ["## Calibration", "",
@@ -201,6 +228,9 @@ def _report_calibration(cal: dict) -> list[str]:
             ece = f"{v['ece']:.3f}" if v["ece"] is not None else "-"
             L.append(f"| {k} | " + " | ".join(cells) + f" | {ece} |")
         L.append("")
+    if covered:
+        L += ["### Field values, gold-covered fields only", ""]
+        L += _bucket_table(covered["overall"], "precision")
     L += ["### Classification (answered documents)", ""]
     L += _bucket_table(cal["classification"], "accuracy")
     return L

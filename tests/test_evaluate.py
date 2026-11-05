@@ -419,3 +419,42 @@ def test_calibration_buckets_precision_and_ece(tmp_path):
     assert "| 0.9-1.0 | 4 | 0.750 | 0.950 |" in md
     assert "| total | 2 / 0.50 | - | 4 / 0.75 |" in md
     assert "ECE **0.1667**" in md
+
+
+# --------------------------------------------------------------------------
+# gold-covered fields
+# --------------------------------------------------------------------------
+
+
+def test_a_field_the_gold_never_labels_is_unscored_in_the_covered_view(tmp_path):
+    from baseline.evaluate import render_report
+
+    gold = _write(tmp_path, "g.jsonl", [
+        _gold("d1", "invoice", fields=[{"field": "A", "value": "1"}]),
+        _gold("d2", "invoice", fields=[{"field": "B", "value": "2"}]),
+    ])
+    pred = _write(tmp_path, "p.jsonl", [
+        _pred("d1", "invoice", fields=[{"field": "A", "value": "1", "confidence": 0.95},
+                                       {"field": "C", "value": "x", "confidence": 0.95}]),
+        _pred("d2", "invoice", fields=[{"field": "B", "value": "2", "confidence": 0.95}]),
+    ])
+    res = evaluate(gold, pred)
+
+    cov = res["covered"]
+    assert cov["fields"] == ["A", "B"]
+    assert cov["micro"]["tp"] == 2 and cov["micro"]["fp"] == 0 and cov["micro"]["fn"] == 0
+    assert cov["micro"]["f1"] == 1.0
+    assert cov["unscored_predictions"] == 1
+    assert cov["unscored_per_field"] == {"C": 1}
+    assert res["calibration_covered"]["overall"]["buckets"]["0.9-1.0"]["precision"] == 1.0
+
+    # The existing view still counts C as a false positive.
+    assert res["metadata"]["value"]["micro"]["fp"] == 1
+    assert res["metadata"]["value"]["per_field"]["C"]["fp"] == 1
+    assert res["calibration"]["fields"]["overall"]["buckets"]["0.9-1.0"]["n"] == 3
+
+    md = render_report(res, "g", "p")
+    assert "## Gold-covered fields" in md
+    assert "| unscored predictions | 1 |" in md
+    assert "| C | 1 |" in md
+    assert "### Field values, gold-covered fields only" in md
