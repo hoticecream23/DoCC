@@ -276,7 +276,7 @@ fields:
     description: "The business that issued the document and is to be paid."
     classes: [invoice, receipt, purchase_order]   # only run on these document classes
     type: text
-    normalizer: name_norm
+    normalizer: text_norm
     # Receipts carry no "sold by" label: the vendor is the header line.
     # The pattern runs only when no label hits.
     strategies: [anchor, pattern]
@@ -311,7 +311,7 @@ fields:
     description: "The customer the document is addressed to or billed to."
     classes: [invoice, receipt, purchase_order]   # only run on these document classes
     type: text
-    normalizer: name_norm
+    normalizer: text_norm
     strategies: [anchor]
     anchor:
       window: 90

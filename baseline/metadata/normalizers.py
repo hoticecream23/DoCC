@@ -116,14 +116,6 @@ def _n_ref_upper(value: str, ctx: NormCtx):
     return re.sub(r" ?([-/.:]) ?", r"\1", v), {}
 
 
-def _n_name_norm(value: str, ctx: NormCtx):
-    # Names: case and spacing are OCR/typing noise. Upper, not title, case:
-    # the scorer compares strings exactly and SROIE gold is upper-case.
-    # Trailing "." stays: it ends abbreviations ("SDN. BHD.") and gold keeps it.
-    v = re.sub(r"\s+", " ", value).strip(" ,;:-_'\"()")
-    return v.upper(), {}
-
-
 def _n_text_norm(value: str, ctx: NormCtx):
     return re.sub(r"\s+", " ", value).strip(), {}
 
@@ -158,7 +150,6 @@ NORMALIZERS: dict[str, Callable[[str, NormCtx], tuple]] = {
     "lower_strip": _n_lower_strip,
     "upper_strip": _n_upper_strip,
     "ref_upper": _n_ref_upper,
-    "name_norm": _n_name_norm,
     "text_norm": _n_text_norm,
     "date_iso": _n_date_iso,
     "currency": _n_currency,
