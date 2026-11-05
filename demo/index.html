@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DoCC baseline pipeline</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #fff; --border: #dde1e6; --text: #1d2329; --muted: #67707a;
+  --accent: #2f6fdf; --accent-soft: #e3ecfb; --ok: #1f8a4c; --err: #c62828; --err-soft: #fdecea;
+  --mark: #fff1a8; --radius: 8px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 16px; background: var(--card); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 2; }
+header h1 { font-size: 16px; margin: 0 12px 0 0; }
+select, button, input[type=file] { font: inherit; }
+select, button { padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+#status { margin-left: auto; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.spinner { width: 14px; height: 14px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#banner { margin: 12px 16px 0; padding: 10px 12px; border-radius: var(--radius); background: var(--err-soft); color: var(--err); border: 1px solid #f3c1bd; }
+main { display: grid; grid-template-columns: 55fr 45fr; gap: 16px; padding: 16px; }
+@media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+.card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+.empty { text-align: center; color: var(--muted); padding: 60px 20px; grid-column: 1 / -1; }
+.page { margin: 0 0 14px; }
+.page img { width: 100%; height: auto; border: 1px solid var(--border); border-radius: 4px; background: #fff; }
+.page figcaption { font-size: 12px; color: var(--muted); }
+#pages { max-height: 70vh; overflow: auto; }
+#text { white-space: pre-wrap; font: 12.5px/1.5 ui-monospace, Consolas, monospace; max-height: 60vh; overflow: auto; margin: 0; }
+mark { background: var(--mark); border-radius: 2px; }
+mark.flash { animation: flash 1.2s ease-out; }
+@keyframes flash { 0%, 40% { background: var(--accent); color: #fff; } 100% { background: var(--mark); } }
+.big { font-size: 24px; font-weight: 600; }
+.bar { height: 8px; background: var(--accent-soft); border-radius: 4px; overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--accent); }
+.muted { color: var(--muted); font-size: 12px; }
+.scores { display: grid; grid-template-columns: max-content 1fr 3.5em; gap: 4px 8px; align-items: center; margin-top: 10px; font-size: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { font-size: 11px; color: var(--muted); font-weight: 600; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--accent-soft); }
+td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-right: 4px; }
+.ok { color: var(--ok); font-weight: 700; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { padding: 3px 10px; border-radius: 12px; background: var(--accent-soft); font-size: 12px; }
+.chip small { color: var(--muted); margin-left: 4px; }
+.stack { display: flex; height: 18px; border-radius: 4px; overflow: hidden; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 12px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.facts { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.errors { color: var(--err); margin: 0; padding-left: 18px; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>DoCC baseline pipeline</h1>
+  <select id="corpus" aria-label="Corpus file"><option value="">Loading corpus...</option></select>
+  <input type="file" id="upload" aria-label="Upload a file">
+  <button id="run">Run</button>
+  <span id="status"></span>
+</header>
+<div id="banner" role="alert" hidden></div>
+<main id="main">
+  <div class="empty" id="empty">Pick a corpus file or upload one, then press <b>Run</b>.</div>
+  <div class="col" id="left" hidden>
+    <section class="card"><h2>Pages</h2><div id="pages"></div></section>
+    <section class="card"><h2>Canonical text</h2><pre id="text"></pre></section>
+  </div>
+  <div class="col" id="right" hidden>
+    <section class="card" id="cls"><h2>Classification</h2></section>
+    <section class="card"><h2>Fields</h2>
+      <table><thead><tr><th>Field</th><th>Value</th><th>Normalized</th><th>Conf.</th><th>Valid</th><th>Method</th></tr></thead>
+      <tbody id="fields"></tbody></table></section>
+    <section class="card"><h2>Tags</h2><div class="chips" id="tags"></div></section>
+    <section class="card"><h2>Stage timings</h2><div id="timings"></div></section>
+    <section class="card" id="errcard" hidden><h2>Errors</h2><ul class="errors" id="errors"></ul></section>
+  </div>
+</main>
+<script>
+(() => {
+  const state = { loading: false, record: null };
+  const $ = (id) => document.getElementById(id);
+  const PALETTE = ['#2f6fdf', '#5aa0f2', '#1f8a4c', '#e0a030', '#9a5bd6', '#d0596b', '#4bb3a8', '#8a939c'];
+  const MOCK = {
+    record: {
+      classification: { label: 'invoice', confidence: 0.91, method: 'rules',
+        all_scores: { invoice: 0.91, receipt: 0.42, salary_slip: 0.12, contract: 0.05, bank_statement: 0.03, other: 0.02, letter: 0.01 } },
+      metadata: [
+        { field: 'invoice_number', value: 'INV-2024-0042', normalized_value: 'INV-2024-0042', page: 0, char_start: 16, char_end: 29, confidence: 0.95, validated: true, method: 'regex' },
+        { field: 'total_amount', value: '1,250.00', normalized_value: '1250.00', page: 0, char_start: 38, char_end: 46, confidence: 0.8, validated: false, method: 'regex', currency: 'USD' }
+      ],
+      tags: [{ tag: 'finance', confidence: 0.88, method: 'rules' }, { tag: '<b>not bold</b>', confidence: 0.4, method: 'rules' }],
+      text: { full: 'Invoice number: INV-2024-0042\nTotal: $1,250.00\nThanks & <regards>', method: 'native', extraction_confidence: 1 },
+      diagnostics: { page_count: 1, is_scanned: false, has_native_text: true, timings_ms: { extract: 120.5, classify: 30.2, metadata: 55 }, errors: ['mock error: nothing is wrong'] }
+    },
+    pages: [{ index: 0, width: 1, height: 1, png_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' }],
+    total_ms: 2310
+  };
+
+  // Build DOM nodes only; record strings always go in as text nodes, never innerHTML.
+  function el(tag, props, ...kids) {
+    const n = document.createElement(tag);
+    Object.assign(n, props || {});
+    for (const k of kids) if (k != null) n.append(k instanceof Node ? k : String(k));
+    return n;
+  }
+  const pct = (x) => Math.round((Number(x) || 0) * 100) + '%';
+  function bar(x) {
+    const s = el('span');
+    s.style.width = pct(Math.max(0, Math.min(1, Number(x) || 0)));
+    return el('div', { className: 'bar' }, s);
+  }
+
+  function setStatus(text, spin) {
+    $('status').replaceChildren(...(spin ? [el('span', { className: 'spinner' })] : []), text);
+  }
+  function showError(msg) {
+    $('banner').textContent = msg;
+    $('banner').hidden = !msg;
+  }
+
+  async function loadCorpus() {
+    const sel = $('corpus');
+    try {
+      const r = await fetch('/api/corpus');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const names = await r.json();
+      sel.replaceChildren(el('option', { value: '', textContent: '(choose a corpus file)' }),
+        ...names.map((n) => el('option', { value: n, textContent: n })));
+    } catch (e) {
+      sel.replaceChildren(el('option', { value: '', textContent: '(corpus unavailable)' }));
+    }
+  }
+
+  async function run() {
+    if (state.loading) return;
+    const file = $('upload').files[0];
+    const name = $('corpus').value;
+    if (!file && !name) { showError('Choose a corpus file or upload a file first.'); return; }
+    state.loading = true;
+    $('run').disabled = true;
+    showError('');
+    setStatus('Running...', true);
+    const t0 = performance.now();
+    try {
+      const url = file ? '/api/run?filename=' + encodeURIComponent(file.name)
+                       : '/api/run?corpus=' + encodeURIComponent(name);
+      const r = await fetch(url, { method: 'POST', body: file || undefined });
+      let data;
+      try { data = await r.json(); } catch { throw new Error('Server returned HTTP ' + r.status + ' without JSON'); }
+      if (!r.ok || data.error) throw new Error(data.error || 'HTTP ' + r.status);
+      render(data, performance.now() - t0);
+    } catch (e) {
+      showError(e.message || String(e));
+      setStatus('Failed');
+    } finally {
+      state.loading = false;
+      $('run').disabled = false;
+    }
+  }
+
+  function render(data, clientMs) {
+    const rec = data.record || {};
+    state.record = rec;
+    const ms = typeof data.total_ms === 'number' ? data.total_ms : clientMs;
+    setStatus((ms / 1000).toFixed(1) + ' s');
+    $('empty').hidden = true;
+    $('left').hidden = false;
+    $('right').hidden = false;
+    renderPages(data.pages || []);
+    renderText(rec);
+    renderClassification(rec.classification || {});
+    renderFields(rec.metadata || []);
+    renderTags(rec.tags || []);
+    renderTimings(rec.diagnostics || {}, rec.text || {});
+    const errs = (rec.diagnostics && rec.diagnostics.errors) || [];
+    $('errcard').hidden = !errs.length;
+    $('errors').replaceChildren(...errs.map((e) => el('li', {}, e)));
+  }
+
+  function renderPages(pages) {
+    const box = $('pages');
+    if (!pages.length) {
+      box.replaceChildren(el('p', { className: 'muted' }, 'No page images for this file. See the canonical text below.'));
+      return;
+    }
+    box.replaceChildren(...pages.map((p, i) => {
+      const n = (p.index ?? i) + 1;
+      const img = el('img', { alt: 'page ' + n, loading: 'lazy' });
+      img.src = 'data:image/png;base64,' + String(p.png_base64 || '').replace(/[^A-Za-z0-9+/=]/g, '');
+      if (p.width && p.height) { img.width = p.width; img.height = p.height; }
+      return el('figure', { className: 'page' }, img, el('figcaption', {}, 'page ' + n));
+    }));
+  }
+
+  function renderText(rec) {
+    const full = (rec.text && rec.text.full) || '';
+    if (!full) { $('text').replaceChildren(el('span', { className: 'muted' }, '(no text extracted)')); return; }
+    const spans = (rec.metadata || []).map((m, i) => ({ s: m.char_start, e: m.char_end, i, field: m.field }))
+      .filter((x) => Number.isInteger(x.s) && Number.isInteger(x.e) && x.s >= 0 && x.e > x.s && x.e <= full.length)
+      .sort((a, b) => a.s - b.s || b.e - a.e);
+    const nodes = [];
+    let pos = 0;
+    for (const sp of spans) {
+      if (sp.s < pos) continue; // overlaps the previous mark: skip
+      nodes.push(full.slice(pos, sp.s), el('mark', { title: sp.field, id: 'span-' + sp.i }, full.slice(sp.s, sp.e)));
+      pos = sp.e;
+    }
+    nodes.push(full.slice(pos));
+    $('text').replaceChildren(...nodes);
+  }
+
+  function renderClassification(c) {
+    const scores = Object.entries(c.all_scores || {}).sort((a, b) => b[1] - a[1]).slice(0, 6);
+    const grid = el('div', { className: 'scores' });
+    for (const [k, v] of scores) grid.append(el('span', {}, k), bar(v), el('span', { className: 'muted' }, pct(v)));
+    $('cls').replaceChildren(
+      el('h2', {}, 'Classification'),
+      el('div', { className: 'big' }, c.label || '(none)'),
+      bar(c.confidence),
+      el('div', { className: 'muted' }, pct(c.confidence) + ' confidence, method: ' + (c.method || '?')),
+      grid);
+  }
+
+  function renderFields(meta) {
+    if (!meta.length) {
+      $('fields').replaceChildren(el('tr', {}, el('td', { colSpan: 6, className: 'muted' }, 'No fields extracted.')));
+      return;
+    }
+    $('fields').replaceChildren(...meta.map((m, i) => {
+      const norm = m.normalized_value == null ? '' : m.normalized_value + (m.currency ? ' ' + m.currency : '');
+      const tr = el('tr', { title: 'page ' + ((m.page || 0) + 1) + ', chars ' + m.char_start + '-' + m.char_end },
+        el('td', {}, m.field), el('td', {}, m.value), el('td', {}, norm),
+        el('td', {}, bar(m.confidence), el('span', { className: 'muted' }, pct(m.confidence))),
+        el('td', { className: 'ok' }, m.validated ? '✓' : ''),
+        el('td', { className: 'muted' }, m.method));
+      tr.addEventListener('click', () => flash(i));
+      return tr;
+    }));
+  }
+
+  function flash(i) {
+    const m = document.getElementById('span-' + i);
+    if (!m) return;
+    m.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    m.classList.remove('flash');
+    void m.offsetWidth; // restart the animation
+    m.classList.add('flash');
+  }
+
+  function renderTags(tags) {
+    $('tags').replaceChildren(...(tags.length
+      ? tags.map((t) => el('span', { className: 'chip', title: t.method || '' }, t.tag, el('small', {}, pct(t.confidence))))
+      : [el('span', { className: 'muted' }, 'No tags.')]));
+  }
+
+  function renderTimings(d, text) {
+    const entries = Object.entries(d.timings_ms || {}).filter(([, v]) => v > 0);
+    const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
+    const stack = el('div', { className: 'stack' });
+    const legend = el('div', { className: 'legend' });
+    entries.forEach(([k, v], i) => {
+      const color = PALETTE[i % PALETTE.length];
+      const seg = el('span', { title: k + ': ' + v.toFixed(0) + ' ms' });
+      seg.style.width = (v / total * 100) + '%';
+      seg.style.background = color;
+      stack.append(seg);
+      const sw = el('i');
+      sw.style.background = color;
+      legend.append(el('span', {}, sw, k + ' ' + v.toFixed(0) + ' ms'));
+    });
+    const facts = ['pages: ' + (d.page_count ?? '?'), 'scanned: ' + (d.is_scanned ? 'yes' : 'no'),
+      'native text: ' + (d.has_native_text ? 'yes' : 'no')];
+    if (text.method) facts.push('text via ' + text.method + ' (' + pct(text.extraction_confidence) + ')');
+    $('timings').replaceChildren(
+      entries.length ? stack : el('span', { className: 'muted' }, 'No timings.'), legend,
+      el('div', { className: 'facts' }, facts.join(' · ')));
+  }
+
+  $('run').addEventListener('click', run);
+  $('corpus').addEventListener('change', () => { $('upload').value = ''; });
+  $('upload').addEventListener('change', () => { if ($('upload').files[0]) $('corpus').value = ''; });
+
+  if (new URLSearchParams(location.search).has('mock')) {
+    $('corpus').replaceChildren(el('option', { value: 'invoice_native.pdf', textContent: 'invoice_native.pdf (mock)' }));
+    render(MOCK, 0);
+  } else {
+    loadCorpus();
+  }
+})();
+</script>
+</body>
+</html>
