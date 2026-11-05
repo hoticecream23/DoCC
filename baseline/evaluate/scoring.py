@@ -339,3 +339,73 @@ def eval_tagging(pairs: list[tuple[dict, dict]]) -> dict:
             statistics.fmean([v["f1"] for v in per_tag.values()]) if per_tag else 0.0, 4
         ),
     }
+
+
+# --------------------------------------------------------------------------
+# calibration
+# --------------------------------------------------------------------------
+
+# Lower bound inclusive, upper exclusive, except the top bucket keeps 1.0.
+BUCKETS = (("0.5-0.7", 0.5, 0.7), ("0.7-0.9", 0.7, 0.9), ("0.9-1.0", 0.9, float("inf")))
+
+
+def bucket_stats(items: list[tuple[float, bool]], metric: str = "precision") -> dict:
+    """Per bucket count, hit rate and mean confidence, plus ECE.
+
+    ECE = sum over buckets of (n_b / N) * |hit_rate_b - mean_confidence_b|,
+    where N counts only predictions that fall in a bucket (confidence >= 0.5).
+    """
+    buckets, n_total, ece_sum = {}, 0, 0.0
+    for name, lo, hi in BUCKETS:
+        hits = [(c, ok) for c, ok in items if lo <= c < hi]
+        n = len(hits)
+        rate = sum(ok for _, ok in hits) / n if n else 0.0
+        mean_c = statistics.fmean(c for c, _ in hits) if n else 0.0
+        buckets[name] = {"n": n, metric: round(rate, 4), "mean_confidence": round(mean_c, 4)}
+        n_total += n
+        ece_sum += n * abs(rate - mean_c)
+    return {
+        "buckets": buckets,
+        "n": n_total,
+        "below_0.5": sum(1 for c, _ in items if c < 0.5),
+        "ece": round(ece_sum / n_total, 4) if n_total else None,
+    }
+
+
+def eval_calibration(pairs: list[tuple[dict, dict]], unknown_label: str = "unknown") -> dict:
+    """Bucket field values and classification answers by their stated confidence.
+
+    A field value is right when it is in the gold set for that field, the
+    same test as a value TP. Repeated values keep their highest confidence,
+    so counts line up with tp + fp.
+    """
+    per_field: dict[str, list[tuple[float, bool]]] = collections.defaultdict(list)
+    cls_items: list[tuple[float, bool]] = []
+    for g, p in pairs:
+        gv: dict[str, set] = collections.defaultdict(set)
+        for item in g.get("metadata") or []:
+            if item.get("field"):
+                gv[item["field"]].add(_norm_of(item))
+        best: dict[tuple[str, str], float] = {}
+        for item in p.get("metadata") or []:
+            name, conf = item.get("field"), item.get("confidence")
+            if not name or conf is None:
+                continue
+            key = (name, _norm_of(item))
+            best[key] = max(best.get(key, 0.0), float(conf))
+        for (name, value), conf in best.items():
+            per_field[name].append((conf, value in gv.get(name, set())))
+
+        c = p.get("classification") or {}
+        got = str(c.get("label", "")).strip()
+        if got and got != unknown_label and c.get("confidence") is not None:
+            cls_items.append((float(c["confidence"]), got == str(g.get("label", "")).strip()))
+
+    all_items = [x for v in per_field.values() for x in v]
+    return {
+        "fields": {
+            "overall": bucket_stats(all_items),
+            "per_field": {k: bucket_stats(v) for k, v in sorted(per_field.items())},
+        },
+        "classification": bucket_stats(cls_items, metric="accuracy"),
+    }

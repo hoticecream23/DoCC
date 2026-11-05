@@ -374,3 +374,48 @@ def test_tune_thresholds_skips_and_counts_a_malformed_prediction_line(tmp_path, 
     with caplog.at_level("WARNING"):
         assert cli.cmd_tune_thresholds(args) == 0
     assert "skipped 1 malformed prediction lines" in caplog.text
+
+
+# --------------------------------------------------------------------------
+# calibration
+# --------------------------------------------------------------------------
+
+
+def test_calibration_buckets_precision_and_ece(tmp_path):
+    from baseline.evaluate import render_report
+
+    gold_rows, pred_rows = [], []
+    # Four values at 0.95 (3 right), two at 0.6 (1 right).
+    for i, (conf, right) in enumerate([(0.95, 1), (0.95, 1), (0.95, 1), (0.95, 0),
+                                       (0.6, 1), (0.6, 0)]):
+        doc = f"d{i}"
+        gold_rows.append(_gold(doc, "invoice", fields=[{"field": "total", "value": "10"}]))
+        pred_rows.append(_pred(doc, "invoice", conf=conf, fields=[
+            {"field": "total", "value": "10" if right else "99", "confidence": conf}]))
+    gold = _write(tmp_path, "g.jsonl", gold_rows)
+    pred = _write(tmp_path, "p.jsonl", pred_rows)
+    res = evaluate(gold, pred)
+
+    overall = res["calibration"]["fields"]["overall"]
+    assert overall["buckets"]["0.9-1.0"]["n"] == 4
+    assert overall["buckets"]["0.9-1.0"]["precision"] == 0.75
+    assert overall["buckets"]["0.5-0.7"]["n"] == 2
+    assert overall["buckets"]["0.5-0.7"]["precision"] == 0.5
+    assert overall["buckets"]["0.7-0.9"]["n"] == 0
+    # 4/6 * |0.75 - 0.95| + 2/6 * |0.5 - 0.6| = 0.1333 + 0.0333
+    assert overall["ece"] == pytest.approx(1 / 6, abs=1e-4)
+    assert res["calibration"]["fields"]["per_field"]["total"] == overall
+
+    # Classification: every doc is answered right, so the gap is 1 - confidence.
+    cls = res["calibration"]["classification"]
+    assert cls["buckets"]["0.9-1.0"]["accuracy"] == 1.0
+    assert cls["ece"] == pytest.approx(4 / 6 * 0.05 + 2 / 6 * 0.4, abs=1e-4)
+
+    # Existing keys are untouched.
+    assert res["metadata"]["value"]["per_field"]["total"]["tp"] == 4
+
+    md = render_report(res, "g", "p")
+    assert "## Calibration" in md
+    assert "| 0.9-1.0 | 4 | 0.750 | 0.950 |" in md
+    assert "| total | 2 / 0.50 | - | 4 / 0.75 |" in md
+    assert "ECE **0.1667**" in md

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from ..logging_setup import get_logger
 from .scoring import (
+    BUCKETS,
+    eval_calibration,
     eval_classification,
     eval_extraction,
     eval_metadata,
@@ -37,6 +39,7 @@ def evaluate(
         "metadata": eval_metadata(pairs),
         "tagging": eval_tagging(pairs),
         "tables": eval_tables(join(gold, load_jsonl(tables_path))[0] if tables_path else []),
+        "calibration": eval_calibration(pairs, unknown_label),
     }
 
 
@@ -61,6 +64,7 @@ def render_report(res: dict, gold_path: str, pred_path: str) -> str:
     L += _report_extraction(res["extraction"])
     L += _report_classification(res["classification"])
     L += _report_metadata(res["metadata"])
+    L += _report_calibration(res.get("calibration") or {})
     L += _report_tagging(res["tagging"])
     L += _report_tables(res.get("tables") or {})
     return "\n".join(L)
@@ -163,6 +167,42 @@ def _report_metadata(m: dict) -> list[str]:
         for e in m["errors"][:25]:
             a(f"- {e}")
         a("")
+    return L
+
+
+def _bucket_table(stats: dict, metric: str) -> list[str]:
+    L = [f"| confidence | n | {metric} | mean confidence |", "| --- | --- | --- | --- |"]
+    for name, b in stats["buckets"].items():
+        L.append(f"| {name} | {b['n']} | {b[metric]:.3f} | {b['mean_confidence']:.3f} |")
+    ece = stats["ece"]
+    L += ["", f"ECE **{ece:.4f}** over {stats['n']} predictions "
+              f"({stats['below_0.5']} below 0.5 not bucketed)" if ece is not None
+          else "ECE not computed, no prediction at confidence 0.5 or more.", ""]
+    return L
+
+
+def _report_calibration(cal: dict) -> list[str]:
+    if not cal:
+        return []
+    L: list[str] = ["## Calibration", "",
+                    "A well calibrated 0.9 is right nine times in ten. ECE is the",
+                    "count weighted gap between stated confidence and observed hit rate.", "",
+                    "### Field values", ""]
+    L += _bucket_table(cal["fields"]["overall"], "precision")
+    per = cal["fields"]["per_field"]
+    if per:
+        names = [b[0] for b in BUCKETS]
+        L += ["Per field, n / precision:", "",
+              "| field | " + " | ".join(names) + " | ECE |",
+              "| --- " * (len(names) + 2) + "|"]
+        for k, v in per.items():
+            cells = [f"{v['buckets'][n]['n']} / {v['buckets'][n]['precision']:.2f}"
+                     if v["buckets"][n]["n"] else "-" for n in names]
+            ece = f"{v['ece']:.3f}" if v["ece"] is not None else "-"
+            L.append(f"| {k} | " + " | ".join(cells) + f" | {ece} |")
+        L.append("")
+    L += ["### Classification (answered documents)", ""]
+    L += _bucket_table(cal["classification"], "accuracy")
     return L
 
 
