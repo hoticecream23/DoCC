@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from ..config import Config
 from ..logging_setup import get_logger
 from ..schema import MetadataField, MetadataMethod, WordBox, page_for_offset, page_spans
+from ..tables.geometry import _group_lines, _overlap_ratio
 from .normalizers import NormCtx, normalize
 from .validators import CHECKSUM_VALIDATORS, run_validator
 
@@ -88,7 +89,84 @@ def _pattern_candidates(full: str, fdef: dict, limit: int) -> list[Candidate]:
     return out
 
 
-def _anchor_candidates(full: str, fdef: dict, default_window: int, limit: int) -> list[Candidate]:
+def _layout_value(
+    full: str,
+    words: list[WordBox],
+    pos: int,
+    label_end: int,
+    how: str,
+    vrx: re.Pattern,
+    rej_value: str | None,
+) -> tuple[int, int, str] | None:
+    """The value printed right of, or on the line below, the label at [pos, label_end).
+
+    Only words whose offsets slice back to their own text are used, so a
+    mis-mapped native PDF word can never give a wrong span.
+    """
+    good = [
+        w for w in words
+        if w.char_start is not None and w.char_end is not None
+        and full[w.char_start : w.char_end] == w.text
+    ]
+    lab = [w for w in good if w.char_end > pos and w.char_start < label_end]
+    if not lab:
+        return None
+    page = lab[0].page
+    lab = [w for w in lab if w.page == page]
+    lx0, lx1 = min(w.x0 for w in lab), max(w.x1 for w in lab)
+    ly0, ly1 = min(w.y0 for w in lab), max(w.y1 for w in lab)
+    page_words = [w for w in good if w.page == page and w.char_start >= label_end]
+
+    if how == "right_of_label":
+        # ponytail: 0.5 y overlap and a 2pt slack on x; per-font tolerance if
+        # tight receipts mis-pair rows.
+        cands = sorted(
+            (w for w in page_words
+             if w.x0 >= lx1 - 2 and _overlap_ratio(ly0, ly1, w.y0, w.y1) >= 0.5),
+            key=lambda w: w.x0,
+        )
+    elif how == "below_label":
+        dicts = [
+            {"x0": w.x0, "y0": w.y0, "x1": w.x1, "y1": w.y1, "text": w.text, "w": w}
+            for w in good if w.page == page
+        ]
+        # ponytail: 0.5 overlap groups lines, as the table code does.
+        lines = _group_lines(dicts, 0.5)
+        idx = next(
+            (i for i, ln in enumerate(lines) if any(d["w"] is lab[0] for d in ln.words)),
+            None,
+        )
+        if idx is None or idx + 1 >= len(lines):
+            return None
+        # Only the next line, and only words under the label's x span.
+        cands = [
+            d["w"] for d in lines[idx + 1].words
+            if _overlap_ratio(lx0, lx1, d["x0"], d["x1"]) > 0
+            and d["w"].char_start >= label_end
+        ]
+    else:
+        return None
+
+    # ponytail: one word, not a run; join neighbours if values split on spaces.
+    for w in cands:
+        m = vrx.search(w.text)
+        if not m:
+            continue
+        s, e, val = _span_of(m)
+        if s >= e or (rej_value and _compile(rej_value, False).fullmatch(val)):
+            continue
+        start, end = w.char_start + s, w.char_start + e
+        return start, end, full[start:end]
+    return None
+
+
+def _anchor_candidates(
+    full: str,
+    fdef: dict,
+    default_window: int,
+    limit: int,
+    words: list[WordBox] | None = None,
+) -> list[Candidate]:
     spec = fdef.get("anchor") or {}
     labels = spec.get("labels") or []
     value_rx = spec.get("value_regex")
@@ -108,6 +186,7 @@ def _anchor_candidates(full: str, fdef: dict, default_window: int, limit: int) -
     # invoice number) is refused.
     rej_value = spec.get("reject_value")
     low = full.lower()
+    layout = spec.get("layout_direction")
 
     out: list[Candidate] = []
     # Most specific labels first so a weak label never shadows a strong one.
@@ -165,6 +244,47 @@ def _anchor_candidates(full: str, fdef: dict, default_window: int, limit: int) -
                 )
             if len(out) >= limit:
                 return out
+            pos = low.find(text, pos + 1)
+    if out or not layout or not words:
+        return out
+
+    # The text rule found nothing: pair each label with the value printed by
+    # it on the page. Same reject rules, validator and confidence as above,
+    # with the distance taken as half the window.
+    for lab in sorted(labels, key=lambda l: -float(l.get("specificity", 0.5))):
+        text = str(lab.get("text", "")).lower()
+        if not text:
+            continue
+        spec_score = float(lab.get("specificity", 0.5))
+        pos = low.find(text)
+        while pos >= 0:
+            label_end = pos + len(text)
+            line_start = full.rfind("\n", 0, pos) + 1
+            line_end = full.find("\n", label_end)
+            if line_end < 0:
+                line_end = len(full)
+            rejected = (rej_before and _compile(rej_before).search(low[line_start:pos])) or (
+                rej_after and _compile(rej_after).match(low[label_end:line_end])
+            )
+            hit = None if rejected else _layout_value(
+                full, words, pos, label_end, layout, vrx, rej_value
+            )
+            if hit:
+                start, end, val = hit
+                ok = run_validator(validator, val, args) if validator else False
+                # ponytail: fixed 0.8 decay for a box pairing; scale by box
+                # distance if confidence needs to rank layout hits.
+                conf = min(0.95, spec_score * 0.8)
+                if ok:
+                    conf = min(1.0, conf + 0.05)
+                out.append(
+                    Candidate(
+                        value=val, start=start, end=end, confidence=round(conf, 4),
+                        method=MetadataMethod.ANCHOR, validated=ok,
+                    )
+                )
+                if len(out) >= limit:
+                    return out
             pos = low.find(text, pos + 1)
     return out
 
@@ -262,7 +382,7 @@ def candidates_for(
         if strategy == "pattern":
             out.extend(_pattern_candidates(full, fdef, limit))
         elif strategy == "anchor":
-            out.extend(_anchor_candidates(full, fdef, default_window, limit))
+            out.extend(_anchor_candidates(full, fdef, default_window, limit, words))
         elif strategy == "positional":
             out.extend(
                 _positional_candidates(
@@ -334,7 +454,7 @@ def extract_fields(
             if strategy == "pattern":
                 cands = _pattern_candidates(full, fdef, limit)
             elif strategy == "anchor":
-                cands = _anchor_candidates(full, fdef, default_window, limit)
+                cands = _anchor_candidates(full, fdef, default_window, limit, words)
             elif strategy == "positional":
                 cands = _positional_candidates(
                     full, fdef, cfg.templates, doc_class, words, spans, page_sizes
