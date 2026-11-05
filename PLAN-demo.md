@@ -34,3 +34,4 @@ DocumentRecord fields the page uses: `classification.{label,confidence,all_score
 
 - 2026-11-05: plan written, D1-D3 dispatched in parallel.
 - 2026-11-05: D2 1d1da75, D3 72b9068 + 5239f82 (cascade status corrected: a real run happened 2026-10-22, numbers from session notes), D1 8421356 (520 tests). D4: verified in the in-app browser on invoice_native.pdf (native, 13 fields, 7 tags), receipt_scanned.pdf (OCR, 1.1 s extract), salary_slip.docx (no page image, text shown); no console errors. In progress: Host/Origin check on the server after a security review flag.
+- 2026-11-05: 900f791 Host/Origin check (522 tests). Re-verified in the browser after restart on purchase_order.pdf. **Demo complete.** Run: `python -m demo`, open http://127.0.0.1:8765. Walkthrough: docs/How_It_Works.md.
