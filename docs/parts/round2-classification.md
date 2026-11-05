@@ -71,22 +71,22 @@ id_document (4 docs, R .25 = 1/4, only the PAN card, 0.93): Aadhaar, passport, v
 
 Training set: the 112 labelled client docs. Text is the stored canonical `text.full` in results_classification.jsonl. The label is the folder name in `source_path`, mapped by config/taxonomy.yaml (no folder dropped): court_document 46, invoice 25, salary_slip 15, receipt 7, purchase_order 6, tax_form 5, contract 4, id_document 4. The old model (42 synthetic docs, 7 classes x 6) is kept outside git under models/previous/.
 
-Protocol: `python scripts/cv_classifier.py results_classification.jsonl OUT`. 5-fold StratifiedKFold, shuffle, seed 0. Each fold fits `build_estimator` (the same pipeline as `train`) on the training docs only. Held-out docs are scored by the model alone (top probability >= model_min .45) and by the full `classify()` (rules + model). The current model is scored on the same held-out docs. Thresholds unchanged. All numbers below are CV; none come from the all-112 fit.
+Protocol: `python scripts/cv_classifier.py results_classification.jsonl OUT [--baseline-models models/previous]`. One doc_id is filed twice (Stroyproekt, under Litigation Strategy Notes and Written Submissions, same bytes). CV keeps one copy, so the CV runs on 111 docs (court_document 45) and no copy is tested against its own twin. 5-fold StratifiedKFold, shuffle, seed 0. Each fold fits `build_estimator` (the same pipeline as `train`) on the training docs only. Held-out docs are scored by the model alone (top probability >= model_min .45) and by the full `classify()` (rules + model). The "current" columns are the previous model from models/previous/, scored on the same held-out docs. Thresholds unchanged. All numbers below are CV; none come from the all-112 fit.
 
 Per fold (coverage / min class precision / macro F1):
 
 | fold | current model | new model | current full | new full |
 |---|---|---|---|---|
-| 0 | .000 / - / .000 | .870 / .500 / .542 | .913 / .500 / .558 | .957 / .500 / .572 |
-| 1 | .000 / - / .000 | .783 / 1.00 / .500 | .913 / 1.00 / .944 | .957 / 1.00 / .958 |
-| 2 | .000 / - / .000 | .773 / 1.00 / .375 | .955 / .833 / .739 | .955 / .833 / .739 |
-| 3 | .000 / - / .000 | .773 / 1.00 / .375 | .955 / .833 / .739 | .955 / .833 / .739 |
-| 4 | .000 / - / .000 | .864 / 1.00 / .667 | .864 / 1.00 / .633 | .955 / 1.00 / .833 |
-| mean | .000 / - / .000 | .812 / .900 / .492 | .920 / .833 / .723 | .955 / .833 / .768 |
-| pooled | .000 / - / .000 | .812 / .667 / .502 | .920 / .800 / .795 | .955 / .800 / .816 |
+| 0 | .000 / - / .000 | .826 / 1.00 / .583 | 1.00 / .500 / .697 | 1.00 / .500 / .697 |
+| 1 | .000 / - / .000 | .909 / 1.00 / .750 | .864 / 1.00 / .736 | .955 / 1.00 / .875 |
+| 2 | .000 / - / .000 | .773 / 1.00 / .375 | .864 / .800 / .700 | .955 / .833 / .739 |
+| 3 | .000 / - / .000 | .773 / 1.00 / .429 | 1.00 / .833 / .939 | 1.00 / .833 / .939 |
+| 4 | .000 / - / .000 | .773 / 1.00 / .429 | .864 / 1.00 / .667 | .864 / 1.00 / .667 |
+| mean | .000 / - / .000 | .811 / 1.00 / .513 | .918 / .827 / .748 | .955 / .833 / .783 |
+| pooled | .000 / - / .000 | .811 / 1.00 / .550 | .919 / .800 / .795 | .955 / .800 / .816 |
 
-Pooled precision among answered, full pipeline, current -> new: court_document 46/46 -> 46/46, invoice 23/26 -> 25/28, salary_slip 14/14 -> 15/15, receipt 5/5 -> 6/6, purchase_order 4/4 -> 4/4, tax_form 2/2 -> 2/2, contract 4/5 -> 4/5, id_document 1/1 -> 1/1. Model alone, new: contract 2/3, everything else 1.0; the current model answers nothing at .45.
+Pooled precision among answered, full pipeline, current -> new: court_document 45/45 -> 45/45, invoice 23/26 -> 25/28, salary_slip 14/14 -> 15/15, receipt 5/5 -> 6/6, purchase_order 4/4 -> 4/4, tax_form 2/2 -> 2/2, contract 4/5 -> 4/5, id_document 1/1 -> 1/1. Model alone, new: every class it answers is 1.0 (contract 2/2, purchase_order 1/1); the current model answers nothing at .45.
 
-Changes in the full decision: 4 docs, all from unknown to the right class (2 invoice, 1 receipt, 1 salary_slip). The remaining errors (2 tax_form -> invoice, 1 PO -> invoice, 1 PO -> contract) are rule answers and identical under both models.
+The full decision changes on 4 docs, all from unknown to the right class (2 invoice, 1 receipt, 1 salary_slip). The other errors (2 tax_form -> invoice, 1 PO -> invoice, 1 PO -> contract) are rule answers and the same under both models.
 
-Decision: adopted. Full-pipeline coverage rises (.920 -> .955), no class loses precision, macro F1 rises (.795 -> .816 pooled). contract and id_document have 4 docs each: reported, not claimed. 112 docs is thin; the rules were also tuned on these docs, so the full-pipeline numbers are optimistic for both models alike. Final model: `baseline train --kind classifier` on all 112, manifest updated.
+Decision: adopted. Full-pipeline coverage rises (.919 -> .955 pooled), no class loses precision, macro F1 rises (.795 -> .816 pooled). contract and id_document have 4 docs each: reported, not claimed. 111 docs is a thin set. The rules were also tuned on these docs, so the full-pipeline numbers are optimistic for both models alike. Final model: `baseline train --kind classifier` on all 112 docs, manifest updated.

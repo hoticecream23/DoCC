@@ -5,9 +5,14 @@ The label is the folder name in source_path, mapped through config/taxonomy.yaml
 Each fold fits the same pipeline as baseline.classify.train (build_estimator)
 on the training docs and scores the held-out docs two ways: model alone
 (top probability >= model_min) and the full rule+model classify(). The current
-model needs no fitting; it is scored on the same held-out docs.
+model needs no fitting; it is scored on the same held-out docs. It is read
+from --baseline-models (default models/previous), never from models/, because
+models/ holds the model fitted on these same docs.
 
-    python scripts/cv_classifier.py results_classification.jsonl OUT_DIR
+A doc_id filed under two folders is kept once (first by source_path), so no
+copy is trained on while its twin is tested.
+
+    python scripts/cv_classifier.py results_classification.jsonl OUT_DIR [--baseline-models DIR]
 """
 
 from __future__ import annotations
@@ -25,9 +30,13 @@ from baseline.config import load_config_cached  # noqa: E402
 
 
 def load_docs(path, label_map):
-    docs, dropped = [], collections.Counter()
-    for line in open(path, encoding="utf-8"):
-        r = json.loads(line)
+    docs, dropped, seen, dupes = [], collections.Counter(), set(), []
+    rows = [json.loads(line) for line in open(path, encoding="utf-8")]
+    for r in sorted(rows, key=lambda r: r["source_path"]):
+        if r.get("doc_id") in seen:
+            dupes.append(r["source_path"])
+            continue
+        seen.add(r.get("doc_id"))
         folder = r["source_path"].replace("\\", "/").split("/")[-2]
         cls = label_map.get(folder)
         if not cls:
@@ -36,7 +45,7 @@ def load_docs(path, label_map):
         t = r["text"]
         pages = [p if isinstance(p, str) else p.get("text", "") for p in t.get("pages", [])]
         docs.append({"doc_id": r.get("doc_id"), "full": t["full"], "pages": pages, "gold": cls})
-    return docs, dropped
+    return docs, dropped, dupes
 
 
 def model_alone(model, full, model_min, unknown):
@@ -70,15 +79,18 @@ def score(pairs, unknown):
     }
 
 
-def main(results, out_dir, folds=5, seed=0):
+def main(results, out_dir, baseline_models, folds=5, seed=0):
     from sklearn.model_selection import StratifiedKFold
 
     cfg = load_config_cached(ROOT / "config")
     opts = cfg.classify_opts()
     unknown = str(opts.get("unknown_label", "unknown"))
     model_min = float(opts.get("model_min_confidence", 0.45))
-    docs, dropped = load_docs(results, cfg.client_label_map)
-    current = C.load_model(ROOT / "models" / "classifier")
+    docs, dropped, dupes = load_docs(results, cfg.client_label_map)
+    base_dir = Path(baseline_models) / "classifier"
+    current = C.load_model(base_dir)
+    if current is None:
+        raise SystemExit(f"no baseline model in {base_dir}")
     golds = [d["gold"] for d in docs]
 
     skf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=seed)
@@ -103,7 +115,8 @@ def main(results, out_dir, folds=5, seed=0):
             fh.write(json.dumps(r) + "\n")
 
     report = {"n_docs": len(docs), "class_counts": dict(collections.Counter(golds)),
-              "dropped": dict(dropped), "folds": folds, "seed": seed, "per_fold": [], "pooled": {}}
+              "dropped": dict(dropped), "duplicate_doc_ids_dropped": dupes,
+              "current_model_dir": str(base_dir), "new_model": "fitted per fold", "folds": folds, "seed": seed, "per_fold": [], "pooled": {}}
     keys = ["current_model", "new_model", "current_full", "new_full"]
     for k in range(folds):
         rows = [r for r in preds if r["fold"] == k]
@@ -113,6 +126,8 @@ def main(results, out_dir, folds=5, seed=0):
     (out / "cv_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
 
     print("docs", len(docs), "classes", report["class_counts"], "dropped", report["dropped"])
+    print("duplicate doc_id copies dropped:", dupes)
+    print("current_* columns use", base_dir, "| new_* columns use a model fitted per fold")
     print("fold  " + "  ".join(f"{k:>24}" for k in keys) + "   (coverage / min class P / macro F1)")
     for k, f in enumerate(report["per_fold"]):
         print(f"{k:>4}  " + "  ".join(
@@ -127,4 +142,11 @@ def main(results, out_dir, folds=5, seed=0):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("results")
+    ap.add_argument("out_dir")
+    ap.add_argument("--baseline-models", default=str(ROOT / "models" / "previous"))
+    a = ap.parse_args()
+    main(a.results, a.out_dir, a.baseline_models)
