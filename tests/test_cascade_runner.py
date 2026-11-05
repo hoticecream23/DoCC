@@ -173,3 +173,36 @@ def test_the_fallback_also_drops_a_bad_offset(corpus, cfg, ccfg, monkeypatch):
     assert bad_field not in r.record.metadata
     assert r.record.verify_offsets() == []
     assert any("dropped" in e for e in r.record.diagnostics.errors)
+
+
+def _stub_client(url):
+    from cascade.config import VLMSettings
+    from cascade.vlm import VLMClient
+
+    return VLMClient(VLMSettings(base_url=url, model="m", timeout_s=2, retries=0, backoff_s=0, max_tokens=100),
+                     sleep=lambda s: None)
+
+
+def test_a_400_is_retried_once_with_half_the_pages(corpus, cfg, ccfg):
+    from cascade.prompt import response_schema
+    from cascade.runner import process_document
+    from vlm_stub import chat, serve
+
+    names = response_schema(cfg)["properties"]["fields"]["required"]
+    ok = chat(json.dumps({"class": "unknown", "fields": {n: [] for n in names}}))
+    with serve([(400, '{"error": "context"}', 0, None), (200, ok, 0, None)]) as (url, reqs):
+        r = process_document(corpus / "invoice_native.pdf", cfg, ccfg, _stub_client(url))
+    assert len(reqs) == 2
+    assert r.provenance["fallback"] is False
+    assert r.provenance["reduced_pages"] == max(1, ccfg.render.max_pages // 2)
+
+
+def test_a_second_400_falls_back(corpus, cfg, ccfg):
+    from cascade.runner import process_document
+    from vlm_stub import serve
+
+    with serve([(400, '{"error": "context"}', 0, None)]) as (url, reqs):
+        r = process_document(corpus / "invoice_native.pdf", cfg, ccfg, _stub_client(url))
+    assert len(reqs) == 2
+    assert r.provenance["fallback"] is True
+    assert any(e.startswith("cascade: VLMBadRequest: HTTP 400") for e in r.record.diagnostics.errors)

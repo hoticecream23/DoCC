@@ -33,6 +33,10 @@ class VLMError(RuntimeError):
     """The server could not give an answer."""
 
 
+class VLMBadRequest(VLMError):
+    """HTTP 400. Ollama sends it when the prompt overflows the context."""
+
+
 @dataclass(frozen=True)
 class VLMReply:
     content: str
@@ -147,7 +151,7 @@ class VLMClient:
                 last = f"HTTP {exc.code}"
                 if exc.code in _RETRY_STATUS:
                     continue
-                raise VLMError(last) from exc
+                raise (VLMBadRequest if exc.code == 400 else VLMError)(last) from exc
             except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as exc:
                 last = f"{type(exc).__name__}: {exc}"
                 continue

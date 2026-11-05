@@ -217,3 +217,9 @@ def test_an_oversized_response_is_refused():
         with pytest.raises(VLMError, match=r"max_response_bytes \(100\)"):
             _client(url, max_response_bytes=100).complete(MESSAGES, SCHEMA)
     assert len(reqs) == 1
+
+
+def test_a_500_is_retried_then_succeeds():
+    with serve([(500, "{}", 0, None), (200, chat("{}"), 0, None)]) as (url, reqs):
+        assert _client(url).complete(MESSAGES, SCHEMA).content == "{}"
+    assert len(reqs) == 2

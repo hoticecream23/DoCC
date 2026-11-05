@@ -25,7 +25,7 @@ from .config import CascadeConfig
 from .merge import decide
 from .prompt import build_messages, check_descriptions, parse_answer, response_schema
 from .render import render_pages
-from .vlm import Backend
+from .vlm import Backend, VLMBadRequest
 
 log = get_logger(__name__)
 
@@ -106,7 +106,16 @@ def process_document(
         if not images and not full.strip():
             raise ValueError("nothing to send: no page image and no text")
         messages = build_messages(cfg, sent, images, r.max_text_chars)
-        reply = timed("vlm", lambda: backend.complete(messages, response_schema(cfg)))
+        try:
+            reply = timed("vlm", lambda: backend.complete(messages, response_schema(cfg)))
+        except VLMBadRequest:
+            # ponytail: one retry with half the page budget for a context overflow;
+            # a one page document is resent as is, downscale images if that keeps failing.
+            n = max(1, r.max_pages // 2)
+            sent, images = sent[:n], images[:n]
+            prov["reduced_pages"], prov["pages_sent"], prov["images_sent"] = n, len(sent), len(images)
+            messages = build_messages(cfg, sent, images, r.max_text_chars)
+            reply = timed("vlm", lambda: backend.complete(messages, response_schema(cfg)))
         prov["model"], prov["finish_reason"], prov["raw"] = reply.model, reply.finish_reason, reply.content
         answer = parse_answer(reply.content, cfg)
         decision = timed("decide", lambda: decide(
