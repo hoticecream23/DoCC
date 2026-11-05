@@ -57,6 +57,33 @@ def _runner_up(scores: dict[str, Any], label: str) -> tuple[str, Any]:
     return name, round(float(score), 4)
 
 
+# Export-only, appended after every agreed column so no position moves. The
+# importer and merge read by header name and never look at it.
+PRIORITY_COLUMN = "REVIEW_PRIORITY"
+_CHECKED_METHODS = {"regex_checksum", "regex_format"}
+
+
+def review_priority(m: dict[str, Any]) -> str:
+    """HIGH, MEDIUM or LOW for one field row, from the eval's confidence buckets.
+
+    HIGH: below 0.7 (the [0.5,0.7) bucket and the unbucketed tail), or
+    unvalidated with no checksum/format regex behind it. LOW: [0.9,1.0] and
+    validated. Everything else MEDIUM.
+    """
+    # ponytail: fixed bucket edges, read measured per-field precision per bucket
+    # from a calibration file once one exists.
+    try:
+        conf = float(m.get("confidence"))
+    except (TypeError, ValueError):
+        conf = 0.0
+    validated = m.get("validated") is True
+    if conf < 0.7 or (not validated and m.get("method") not in _CHECKED_METHODS):
+        return "HIGH"
+    if conf >= 0.9 and validated:
+        return "LOW"
+    return "MEDIUM"
+
+
 def _write_row(ws, values: list[Any]) -> None:
     """Append a row, forcing every string to stay a string.
 
@@ -108,7 +135,7 @@ def export_workbook(
     taxo = wb.create_sheet("Taxonomy")
     items = wb.create_sheet("Line items")
     for ws, cols in (
-        (docs, DOCUMENT_COLUMNS), (meta, METADATA_COLUMNS), (tags_ws, TAG_COLUMNS),
+        (docs, DOCUMENT_COLUMNS), (meta, [*METADATA_COLUMNS, PRIORITY_COLUMN]), (tags_ws, TAG_COLUMNS),
         (taxo, TAXONOMY_COLUMNS), (items, LINE_ITEM_COLUMNS),
     ):
         _write_row(ws, cols)
@@ -189,6 +216,7 @@ def _write_document_rows(records: list[dict[str, Any]], docs, meta, tags_ws,
                 m.get("validated", ""), m.get("normalizer_version", ""),
                 *_carry_metadata(prior, doc_id, str(m.get("field") or "").casefold(),
                                  str(m.get("value") or ""), counts),
+                review_priority(m),
             ])
             counts["metadata"] += 1
 

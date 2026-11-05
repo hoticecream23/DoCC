@@ -293,7 +293,8 @@ def test_export_writes_every_tab_with_the_agreed_columns(tmp_path, cfg):
     out = tmp_path / "wb.xlsx"
     counts = export_workbook([_record("a" * 16)], cfg, out)
     assert counts["documents"] == 1
-    for name, cols in (("Documents", DOCUMENT_COLUMNS), ("Metadata", METADATA_COLUMNS),
+    for name, cols in (("Documents", DOCUMENT_COLUMNS),
+                       ("Metadata", [*METADATA_COLUMNS, "REVIEW_PRIORITY"]),
                        ("Tags", TAG_COLUMNS), ("Taxonomy", TAXONOMY_COLUMNS),
                        ("Line items", LINE_ITEM_COLUMNS)):
         assert _tab(out, name)[0] == cols
@@ -438,6 +439,59 @@ def test_export_then_import_is_lossless(tmp_path, cfg):
     assert by_field["total_amount"]["char_start"] == 1
     assert by_field["total_amount"]["char_end"] == 4
 
+
+
+def test_export_adds_review_priority_last_and_import_ignores_it(tmp_path, cfg):
+    """REVIEW_PRIORITY is appended after every agreed column, so no position
+    moves, and confirming every row still gives the same gold as before."""
+    from baseline.schema import compute_doc_id
+    from baseline.workbook import METADATA_COLUMNS, export_workbook
+
+    root = tmp_path / "docs"
+    root.mkdir()
+    src = root / "invoice.pdf"
+    src.write_bytes(b"priority doc")
+    doc_id = compute_doc_id(src)
+
+    def field(name, value, conf, method, validated):
+        return {"field": name, "value": value, "normalized_value": value, "page": 0,
+                "char_start": 0, "char_end": 3, "confidence": conf, "method": method,
+                "validated": validated, "normalizer_version": "1.0.0", "currency": None}
+
+    rec = _record(doc_id, metadata=[
+        field("total_amount", "500.00", 0.6, "regex_format", True),       # low bucket
+        field("invoice_number", "INV1", 0.95, "anchor", False),           # unvalidated
+        field("gstin", "27AAAPL1234C1ZV", 0.8, "regex_checksum", True),   # mid bucket
+        field("invoice_date", "2024-01-02", 0.95, "regex_format", True),  # top, validated
+    ])
+    out = tmp_path / "wb.xlsx"
+    export_workbook([rec], cfg, out)
+
+    header, rows = _tab(out, "Metadata")
+    assert header == [*METADATA_COLUMNS, "REVIEW_PRIORITY"]
+    assert {r["FIELD"]: r["REVIEW_PRIORITY"] for r in rows} == {
+        "total_amount": "HIGH", "invoice_number": "HIGH",
+        "gstin": "MEDIUM", "invoice_date": "LOW",
+    }
+
+    wb = openpyxl.load_workbook(out)
+    for tab, vcol in (("Documents", "CLASS_VERDICT"), ("Metadata", "VERDICT"),
+                      ("Tags", "VERDICT")):
+        ws = wb[tab]
+        head = [str(c.value).strip().upper() for c in ws[1]]
+        v, g = head.index(vcol) + 1, head.index("IS_GOLD") + 1
+        for r in range(2, ws.max_row + 1):
+            ws.cell(row=r, column=v).value = "OK"
+            ws.cell(row=r, column=g).value = "True"
+    wb.save(out)
+    with_col = import_workbook(out, root, cfg).rows
+
+    # The same sheet with the column deleted is what an older export looks like.
+    wb = openpyxl.load_workbook(out)
+    wb["Metadata"].delete_cols(len(METADATA_COLUMNS) + 1)
+    wb.save(out)
+    assert with_col == import_workbook(out, root, cfg).rows
+    assert len(with_col[0]["metadata"]) == 4
 
 # --------------------------------------------------- merging a review forward
 #
