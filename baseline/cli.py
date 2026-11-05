@@ -38,6 +38,11 @@ from .tables import build as build_tables
 log = get_logger(__name__)
 
 
+def _cfg(args: argparse.Namespace):
+    """The Config main() loaded; tests that call cmd_* directly may not set it."""
+    return getattr(args, "cfg", None) or load_config_cached(args.config)
+
+
 def _read_annotations(path: str | Path) -> list[dict]:
     """JSONL of {path|text, label?, tags?}. Sorted so training is reproducible."""
     rows = read_jsonl(path)
@@ -74,7 +79,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_train(args: argparse.Namespace) -> int:
-    cfg = load_config_cached(args.config)
+    cfg = _cfg(args)
     rows = _read_annotations(args.annotations)
     if not rows:
         log.error("no annotations found", extra={"file": args.annotations})
@@ -109,7 +114,7 @@ def cmd_train(args: argparse.Namespace) -> int:
 
 def cmd_tune_thresholds(args: argparse.Namespace) -> int:
     """Re-score predictions with the tagger, fit F1 optimal cutoffs, save them."""
-    cfg = load_config_cached(args.config)
+    cfg = _cfg(args)
     model_dir = Path(args.root) / str(cfg.tagging_opts().get("model_dir", "models/tagger"))
     model = tagging_mod.load_model(args.model_dir or model_dir)
     if model is None:
@@ -201,7 +206,7 @@ def cmd_tune_thresholds(args: argparse.Namespace) -> int:
 
 
 def cmd_import_labels(args: argparse.Namespace) -> int:
-    cfg = load_config_cached(args.config)
+    cfg = _cfg(args)
     res = import_labels(args.csv, args.root, cfg, args.name_column, args.label_column)
     if res.unmapped_labels:
         return 1
@@ -225,7 +230,7 @@ def cmd_import_labels(args: argparse.Namespace) -> int:
 
 
 def cmd_export_workbook(args: argparse.Namespace) -> int:
-    cfg = load_config_cached(args.config)
+    cfg = _cfg(args)
     records = read_jsonl(args.input)
     tables = read_jsonl(args.tables) if args.tables else None
     try:
@@ -250,7 +255,7 @@ def cmd_export_workbook(args: argparse.Namespace) -> int:
 
 
 def cmd_import_workbook(args: argparse.Namespace) -> int:
-    cfg = load_config_cached(args.config)
+    cfg = _cfg(args)
     res = import_workbook(args.xlsx, args.root, cfg)
     summary = render_workbook_summary(res, str(args.xlsx), str(args.root))
 
@@ -276,7 +281,7 @@ def cmd_import_workbook(args: argparse.Namespace) -> int:
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
-    cfg = load_config_cached(args.config)
+    cfg = _cfg(args)
     unknown = str(cfg.classify_opts().get("unknown_label", "unknown"))
     res = evaluate(args.gold, args.pred, unknown, args.pred_tables)
     if not res["matched"]:
@@ -319,7 +324,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
-    cfg = load_config_cached(args.config)
+    cfg = _cfg(args)
     unknown = str(cfg.classify_opts().get("unknown_label", "unknown"))
     cmp = compare(args.gold, args.a, args.b, unknown, args.a_tables, args.b_tables)
     report = render_comparison(cmp, str(args.a), str(args.b))
@@ -339,7 +344,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
 
 def cmd_graph(args: argparse.Namespace) -> int:
-    cfg = load_config_cached(args.config)
+    cfg = _cfg(args)
     if not cfg.graph:
         log.error("no graph.yaml in the config directory")
         return 1
@@ -360,7 +365,7 @@ def cmd_graph(args: argparse.Namespace) -> int:
 
 
 def cmd_tables(args: argparse.Namespace) -> int:
-    cfg = load_config_cached(args.config)
+    cfg = _cfg(args)
     if not cfg.tables:
         log.error("no tables.yaml in the config directory")
         return 1
@@ -499,6 +504,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     setup_logging(args.log_level)
     try:
+        args.cfg = load_config_cached(args.config)
         return int(args.func(args))
     except KeyboardInterrupt:
         log.warning("interrupted")

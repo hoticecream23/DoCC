@@ -19,6 +19,8 @@ vlm:
   # Bigger responses are refused, so a bad server cannot exhaust memory.
   max_response_bytes: 8388608
   allowed_hosts: []
+  # HTTP codes worth another attempt. 400 is not: it means the prompt is too big.
+  retry_statuses: [429, 500, 502, 503, 504]
   # Extra request fields for the server. Thinking models spend the whole
   # max_tokens budget thinking and return no answer, so thinking is turned
   # off: reasoning_effort for Ollama, chat_template_kwargs for vLLM.

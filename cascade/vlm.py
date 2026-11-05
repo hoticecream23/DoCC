@@ -26,9 +26,6 @@ from .config import VLMSettings
 
 log = logging.getLogger(__name__)
 
-_RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
-
-
 class VLMError(RuntimeError):
     """The server could not give an answer."""
 
@@ -149,7 +146,7 @@ class VLMClient:
             except urllib.error.HTTPError as exc:
                 exc.close()  # the error wraps the open response
                 last = f"HTTP {exc.code}"
-                if exc.code in _RETRY_STATUS:
+                if exc.code in self._s.retry_statuses:
                     continue
                 raise (VLMBadRequest if exc.code == 400 else VLMError)(last) from exc
             except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as exc:

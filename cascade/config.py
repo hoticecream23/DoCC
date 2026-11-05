@@ -9,10 +9,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import Field, model_validator
 
-from baseline.config import DEFAULT_CONFIG_DIR
+from baseline.config import DEFAULT_CONFIG_DIR, read_yaml
 from baseline.schema import Confidence, Strict
 
 
@@ -27,6 +26,8 @@ class VLMSettings(Strict):
     max_tokens: int = Field(gt=0)
     max_response_bytes: int = Field(default=8 * 1024 * 1024, gt=0)
     allowed_hosts: list[str] = Field(default_factory=list)
+    # HTTP codes worth another attempt. 400 is not: it means the prompt is too big.
+    retry_statuses: frozenset[int] = frozenset({429, 500, 502, 503, 504})
     # Server specific request fields, such as the switch that turns off a
     # model's thinking. Never overrides the fields VLMClient sets itself.
     extra_body: dict[str, Any] = Field(default_factory=dict)
@@ -61,6 +62,4 @@ class CascadeConfig(Strict):
 
 def load_cascade_config(config_dir: str | Path | None = None) -> CascadeConfig:
     d = Path(config_dir) if config_dir else DEFAULT_CONFIG_DIR
-    with open(d / "cascade.yaml", "r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
-    return CascadeConfig.model_validate(data or {})
+    return CascadeConfig.model_validate(read_yaml(d / "cascade.yaml"))

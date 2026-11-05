@@ -16,13 +16,17 @@ import yaml
 DEFAULT_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
 
+def read_yaml(path: Path) -> Any:
+    """The one yaml.safe_load for config files. Empty file gives {}."""
+    with open(path, "r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    return {} if data is None else data
+
+
 def _load(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"missing config file: {path}")
-    with open(path, "r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
-    if data is None:
-        return {}
+    data = read_yaml(path)
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a mapping at top level")
     return data
