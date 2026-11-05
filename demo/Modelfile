@@ -1,0 +1,5 @@
+# The demo's VLM: qwen3.5:9b with a context big enough for four pages of
+# text plus images. Ollama's default 4096 rejects a two-page invoice.
+# Build once:  ollama create qwen3.5:9b-16k -f demo/Modelfile
+FROM qwen3.5:9b
+PARAMETER num_ctx 16384

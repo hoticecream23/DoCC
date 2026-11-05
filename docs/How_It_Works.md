@@ -259,10 +259,13 @@ the same document (README.md). `broken.pdf` is a damaged file. Use it to show
 how the system reports a failure. Try it before the demo.
 
 The Baseline / Cascade toggle picks the pipeline. Cascade needs Ollama running.
-Pull the model once with `ollama pull qwen3.5:9b`. Before each demo, run
-`set OLLAMA_CONTEXT_LENGTH=16384` and then `ollama serve`. The status pill shows
-whether the server answers. Set `DOCC_VLM_BASE_URL` and `DOCC_VLM_MODEL` to use
-another server or model. The default is `http://127.0.0.1:11434/v1` and `qwen3.5:9b`.
+Run `ollama pull qwen3.5:9b` once. Then run
+`ollama create qwen3.5:9b-16k -f demo/Modelfile` once. The default 4096-token
+context rejects a two-page invoice, so this model sets 16384 tokens. As an
+alternative, run `set OLLAMA_CONTEXT_LENGTH=16384` and then `ollama serve`.
+The status pill shows whether the server answers. Set `DOCC_VLM_BASE_URL` and
+`DOCC_VLM_MODEL` to use another server or model. The default is
+`http://127.0.0.1:11434/v1` and `qwen3.5:9b-16k`.
 
 ## 8. Questions you may get
 

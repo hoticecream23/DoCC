@@ -43,7 +43,7 @@ def vlm_settings(ccfg):
     over = {k: v for k, v in (("base_url", os.environ.get("DOCC_VLM_BASE_URL")),
                               ("model", os.environ.get("DOCC_VLM_MODEL"))) if v}
     if ccfg.vlm.model is None and not over:
-        over = {"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3.5:9b"}
+        over = {"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3.5:9b-16k"}
     return ccfg.vlm.model_copy(update=over)
 
 
