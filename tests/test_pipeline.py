@@ -132,9 +132,9 @@ def test_a_broken_pdf_does_not_kill_the_run(corpus, cfg):
     assert record.text.full == ""
 
 
-def test_batch_completes_despite_a_broken_file(corpus, tmp_path):
-    out = tmp_path / "results.jsonl"
-    stats = run_batch(corpus, out, workers=1)
+def test_batch_completes_despite_a_broken_file(corpus, default_serial_run):
+    assert (corpus / "broken.pdf").exists()
+    stats, out = default_serial_run.stats, default_serial_run.out
     assert stats["written"] == stats["found"]
     assert stats["failed"] == 0
     lines = out.read_text(encoding="utf-8").strip().splitlines()
@@ -148,18 +148,6 @@ def test_every_stage_is_timed(corpus, cfg):
 
 # ---------------------------------------------------------------- determinism
 
-def _config_with_fixed_timings(cfg, tmp_path):
-    """Copy the config and zero the timings, the one field that varies."""
-    cfgdir = tmp_path / "detcfg"
-    cfgdir.mkdir()
-    for name in ("classes.yaml", "fields.yaml", "tags.yaml"):
-        shutil.copyfile(cfg.config_dir / name, cfgdir / name)
-    pipe = yaml.safe_load((cfg.config_dir / "pipeline.yaml").read_text(encoding="utf-8"))
-    pipe.setdefault("runtime", {})["deterministic_timings"] = True
-    (cfgdir / "pipeline.yaml").write_text(yaml.safe_dump(pipe), encoding="utf-8")
-    return str(cfgdir)
-
-
 def _strip_timings(path):
     out = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -169,34 +157,28 @@ def _strip_timings(path):
     return out
 
 
-def test_same_input_gives_byte_identical_output(corpus, cfg, tmp_path):
+def test_same_input_gives_byte_identical_output(corpus, serial_run, tmp_path):
     """With timings pinned, two runs are identical byte for byte."""
-    cfgdir = _config_with_fixed_timings(cfg, tmp_path)
-    a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
-    run_batch(corpus, a, config_dir=cfgdir, workers=1)
-    run_batch(corpus, b, config_dir=cfgdir, workers=1)
-    assert a.read_bytes() == b.read_bytes()
+    b = tmp_path / "b.jsonl"
+    run_batch(corpus, b, config_dir=serial_run.config_dir, workers=1)
+    assert serial_run.out.read_bytes() == b.read_bytes()
 
 
-def test_parallel_output_is_byte_identical_to_serial(corpus, cfg, tmp_path):
-    cfgdir = _config_with_fixed_timings(cfg, tmp_path)
-    a, b = tmp_path / "serial.jsonl", tmp_path / "parallel.jsonl"
-    run_batch(corpus, a, config_dir=cfgdir, workers=1)
-    run_batch(corpus, b, config_dir=cfgdir, workers=3)
-    assert a.read_bytes() == b.read_bytes()
+def test_parallel_output_is_byte_identical_to_serial(corpus, serial_run, tmp_path):
+    b = tmp_path / "parallel.jsonl"
+    run_batch(corpus, b, config_dir=serial_run.config_dir, workers=3)
+    assert serial_run.out.read_bytes() == b.read_bytes()
 
 
-def test_default_config_is_deterministic_apart_from_timings(corpus, tmp_path):
+def test_default_config_is_deterministic_apart_from_timings(corpus, default_serial_run, tmp_path):
     """Real timings are on by default, so only that field may differ."""
-    a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
-    run_batch(corpus, a, workers=1)
+    b = tmp_path / "b.jsonl"
     run_batch(corpus, b, workers=3)
-    assert _strip_timings(a) == _strip_timings(b)
+    assert _strip_timings(default_serial_run.out) == _strip_timings(b)
 
 
-def test_timings_are_recorded_by_default(corpus, tmp_path):
-    out = tmp_path / "t.jsonl"
-    run_batch(corpus, out, workers=1)
+def test_timings_are_recorded_by_default(default_serial_run):
+    out = default_serial_run.out
     recs = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
     non_zero = [r for r in recs if any(v > 0 for v in r["diagnostics"]["timings_ms"].values())]
     assert non_zero, "default config should record real per stage timings"
@@ -204,17 +186,23 @@ def test_timings_are_recorded_by_default(corpus, tmp_path):
 
 # ---------------------------------------------------------------- resume
 
-def test_resume_skips_documents_already_written(corpus, tmp_path):
+def _copy_run(run, tmp_path):
+    """A writable copy of a shared run's output, so resume can append to it."""
     out = tmp_path / "results.jsonl"
-    first = run_batch(corpus, out, workers=1)
+    shutil.copyfile(run.out, out)
+    return out
+
+
+def test_resume_skips_documents_already_written(corpus, default_serial_run, tmp_path):
+    first = default_serial_run.stats
+    out = _copy_run(default_serial_run, tmp_path)
     second = run_batch(corpus, out, workers=1)
     assert second["skipped"] == first["found"]
     assert second["written"] == 0
 
 
-def test_resume_picks_up_only_the_new_document(corpus, tmp_path):
-    out = tmp_path / "results.jsonl"
-    run_batch(corpus, out, workers=1)
+def test_resume_picks_up_only_the_new_document(corpus, default_serial_run, tmp_path):
+    out = _copy_run(default_serial_run, tmp_path)
     (corpus / "extra.txt").write_text("PAYMENT RECEIPT\nReceipt No: R-1\n", encoding="utf-8")
     try:
         stats = run_batch(corpus, out, workers=1)
@@ -225,9 +213,15 @@ def test_resume_picks_up_only_the_new_document(corpus, tmp_path):
 
 
 def test_no_resume_reprocesses_everything(corpus, tmp_path):
+    # A small subset is enough: the behaviour is per document, not per corpus.
+    src = tmp_path / "in"
+    src.mkdir()
+    for name in ("contract.txt", "salary_slip.docx"):
+        shutil.copyfile(corpus / name, src / name)
     out = tmp_path / "results.jsonl"
-    run_batch(corpus, out, workers=1)
-    stats = run_batch(corpus, out, workers=1, resume=False)
+    run_batch(src, out, workers=1)
+    stats = run_batch(src, out, workers=1, resume=False)
+    assert stats["found"] == 2
     assert stats["skipped"] == 0
     assert stats["written"] == stats["found"]
 

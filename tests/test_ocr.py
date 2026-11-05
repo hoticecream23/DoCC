@@ -158,23 +158,11 @@ def test_ocr_output_is_reproducible(corpus, cfg):
     ]
 
 
-def test_batch_with_ocr_is_byte_identical_across_worker_counts(corpus, cfg, tmp_path):
-    import shutil
-
-    import yaml
-
-    cfgdir = tmp_path / "cfg"
-    cfgdir.mkdir()
-    for name in ("classes.yaml", "fields.yaml", "tags.yaml"):
-        shutil.copyfile(cfg.config_dir / name, cfgdir / name)
-    pipe = yaml.safe_load((cfg.config_dir / "pipeline.yaml").read_text(encoding="utf-8"))
-    pipe.setdefault("runtime", {})["deterministic_timings"] = True
-    (cfgdir / "pipeline.yaml").write_text(yaml.safe_dump(pipe), encoding="utf-8")
-
-    a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
-    run_batch(corpus, a, config_dir=str(cfgdir), workers=1)
-    run_batch(corpus, b, config_dir=str(cfgdir), workers=3)
-    assert a.read_bytes() == b.read_bytes()
+def test_batch_with_ocr_is_byte_identical_across_worker_counts(corpus, serial_run, tmp_path):
+    assert (corpus / "receipt_scanned.pdf").exists()
+    b = tmp_path / "b.jsonl"
+    run_batch(corpus, b, config_dir=serial_run.config_dir, workers=3)
+    assert serial_run.out.read_bytes() == b.read_bytes()
 
 
 # ---------------------------------------------------------------- engine interface
