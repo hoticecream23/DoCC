@@ -89,7 +89,7 @@ fields:
     description: "The document's own invoice, bill, receipt or order reference number."
     classes: [invoice, receipt, purchase_order]   # only run on these document classes
     type: text
-    normalizer: upper_strip
+    normalizer: ref_upper
     strategies: [anchor, pattern]
     anchor:
       window: 60

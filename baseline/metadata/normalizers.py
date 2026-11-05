@@ -109,6 +109,13 @@ def _n_upper_strip(value: str, ctx: NormCtx):
     return re.sub(r"\s+", " ", value).strip().upper(), {}
 
 
+def _n_ref_upper(value: str, ctx: NormCtx):
+    # Reference numbers: OCR spacing around separators is noise, "02 - 140305"
+    # and "02-140305" are the same number.
+    v = re.sub(r"\s+", " ", value).strip().upper()
+    return re.sub(r" ?([-/.:]) ?", r"\1", v), {}
+
+
 def _n_text_norm(value: str, ctx: NormCtx):
     return re.sub(r"\s+", " ", value).strip(), {}
 
@@ -142,6 +149,7 @@ NORMALIZERS: dict[str, Callable[[str, NormCtx], tuple]] = {
     "digits_only": _n_digits_only,
     "lower_strip": _n_lower_strip,
     "upper_strip": _n_upper_strip,
+    "ref_upper": _n_ref_upper,
     "text_norm": _n_text_norm,
     "date_iso": _n_date_iso,
     "currency": _n_currency,

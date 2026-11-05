@@ -50,3 +50,14 @@ def test_stacked_labels_never_take_a_date_as_the_number(cfg):
 
 def test_a_bracketed_receipt_number_is_read(cfg):
     assert _inv(cfg, "TAX INVOICE\nRECEIPT NO.[00519738]\n05/01/17 10:55\n") == ["00519738"]
+
+
+def test_invoice_numbers_normalise_spacing_and_case():
+    from baseline.metadata import NormCtx, normalize
+
+    ctx = NormCtx(full="", start=0, end=0, opts={})
+    assert normalize("ref_upper", "02 - 140305", ctx)[0] == "02-140305"
+    assert normalize("ref_upper", "inv/2024 / 001", ctx)[0] == "INV/2024/001"
+    assert normalize("ref_upper", " AB  12 ", ctx)[0] == "AB 12"
+    for plain in ("02-140305", "INV/2024/001", "12345"):
+        assert normalize("ref_upper", plain, ctx)[0] == plain
