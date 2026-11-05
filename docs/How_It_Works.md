@@ -1,61 +1,51 @@
 # How it works
 
-A walkthrough for the live demo. Read it top to bottom while the demo UI runs.
-Each number names the file it comes from.
+A walkthrough for the live demo. Each number names its source.
 
 ## 1. What it is
 
-The system takes a document and writes one JSON record for it. The record holds
-the text, the document type, the fields found in it, and a set of tags. The
-current system is the baseline. It is deterministic and runs on a CPU only. It
+The system writes one JSON record per document: text, type, fields and tags.
+The current system is the baseline. It is deterministic and runs on a CPU only. It
 uses regex, checksums, TF-IDF, linear SVMs and Tesseract OCR. It makes no LLM
-calls (README.md). The baseline has two jobs. It sets the floor that any
-smarter approach must beat. It also freezes the output contract, so that one
-evaluation harness can score any implementation. The successor is cascade v2.
+calls (README.md). It sets the floor that a smarter approach must beat, and
+freezes the output contract so one harness can score any implementation. The successor is cascade v2.
 In cascade v2, a local vision model reads each page. Cascade v2 writes the same
 record, and the same harness scores it (PROJECT_STATE.md).
 
 ## 2. One document, end to end
 
 `baseline/pipeline.py`, function `process_document`, runs these stages in
-order: extract, classify, metadata, tag. Each stage is timed. A stage that
-fails records an error and returns a safe default, so the document still gets
-a record. Tables and the knowledge graph are separate passes. They run later,
-over the results file.
+order: extract, classify, metadata, tag. Each stage is timed. A failed stage
+records an error and returns a safe default, so the document still gets a
+record.
 
-The rule for every stage is the same: **refuse rather than guess.** A wrong
-answer costs more than a missing one, because a person downstream trusts it.
-The system says `unknown`, or emits nothing, when the evidence is weak. This is
-how classification keeps precision at 1.0 while coverage grows
+The rule for every stage: **refuse rather than guess.** A wrong answer costs
+more than a missing one. On weak evidence the system says `unknown` or emits
+nothing. This is how classification keeps precision at 1.0 while coverage grows
 (docs/parts/audit.md).
 
 ### 2.1 Text extraction
 
 - **In:** a file. PDF, DOCX, TXT or an image.
-- **Out:** the canonical text, split by page, plus the route each page took and
-  an extraction confidence.
-- **How:** the extractor checks a PDF page by page. A page with a text layer is
-  read directly (the *native* route). A page with fewer than 100 characters of
-  native text counts as scanned (config/pipeline.yaml) and goes to OCR. A
-  document can mix both. That is the *hybrid* route, and `page_methods` says
-  which page went which way. DOCX and TXT are read directly. Images always go
+- **Out:** the canonical text by page, each page's route, and a confidence.
+- **How:** a PDF page with a text layer is read directly (*native*). A page
+  with fewer than 100 characters of native text goes to OCR
+  (config/pipeline.yaml). A mix is *hybrid*; `page_methods` shows each page. DOCX and TXT are read directly. Images always go
   to OCR (README.md).
-- **Quality gate:** a text layer can be somebody else's bad OCR, saved into the
-  PDF. The gate scores the text. Above a threshold of 0.02 it re-reads the page
-  through OCR and records the page as `ocr_rescued` (config/pipeline.yaml).
+- **Quality gate:** a text layer can be somebody else's bad OCR. A page that
+  scores above 0.02 is re-read through OCR as `ocr_rescued`
+  (config/pipeline.yaml).
 - **How it fails:** a poor scan gives poor text, and every later stage inherits
-  it. A corrupt file gives no text. The record still exists, with the error in
-  `diagnostics.errors`.
+  it. A corrupt file gives an error in `diagnostics.errors`.
 - **In the demo:** the text route (native, ocr or hybrid), the per-page
   methods, the confidence, and the `extract` timing.
 
 ### 2.2 Classification
 
 - **In:** the canonical text.
-- **Out:** a label, a confidence, and the method that decided (rule or model).
-- **How:** there are two layers. First come the rules in
-  `config/classes.yaml`. Each class has markers: keywords or regexes, each with
-  a scope (first page, header, anywhere) and a specificity. Two examples for
+- **Out:** a label, a confidence, and the method (rule or model).
+- **How:** first the rules in `config/classes.yaml`. Each class has keyword or
+  regex markers, each with a scope and a specificity. Two examples for
   `invoice`:
   - the words "invoice number" and "invoice date" together, specificity 0.96;
   - the regex `\bproforma\s+invoice\b` on the first page, specificity 0.93.
@@ -65,8 +55,8 @@ how classification keeps precision at 1.0 while coverage grows
   SVM decides. A model answer below 0.45 is discarded (`model_min_confidence`).
   A weaker rule at 0.7 or above counts only after the model declines
   (`rule_min_confidence`). If nothing passes, the label is `unknown`.
-- **How it fails:** a document with none of the expected words gets `unknown`.
-  That is the designed failure. The model is trained on synthetic data only and
+- **How it fails:** a document with none of the expected words gets `unknown`,
+  by design. The model is trained on synthetic data only and
   cannot predict 9 of the 17 classes. The rule layer carries every class
   (PROJECT_STATE.md, "Known gaps" 3).
 - **In the demo:** the label, the confidence, the method, and the `classify`
@@ -75,9 +65,8 @@ how classification keeps precision at 1.0 while coverage grows
 ### 2.3 Metadata fields
 
 - **In:** the canonical text, the class, and the word boxes.
-- **Out:** a list of fields. Each field has a raw value, a normalized value, a
-  page, `char_start` and `char_end`, a confidence, a method, and a `validated`
-  flag (baseline/schema.py).
+- **Out:** fields, each with value, normalized value, page, `char_start`,
+  `char_end`, confidence, method and `validated` (baseline/schema.py).
 - **How:** `config/fields.yaml` defines each field with one or more strategies:
   - **regex** for values with a fixed shape;
   - **anchor**: find a label word, then look for the value near it;
@@ -93,9 +82,8 @@ how classification keeps precision at 1.0 while coverage grows
   Validators check IDs with real checksums: PAN, Aadhaar, GSTIN, IFSC and card
   numbers. A value that fails its checksum is not emitted at all. On real
   scans, a failed checksum was always misread text (README.md).
-- **Offsets:** every value points into the canonical text. Slice the text with
-  the offsets and you get the value back. The pipeline checks this when it
-  builds the field, and again before it writes the record. A field whose
+- **Offsets:** slice the canonical text with a field's offsets and you get the
+  value back. This is checked at build and again at write. A field whose
   offsets do not slice back is dropped (config/pipeline.yaml,
   `drop_on_offset_mismatch`).
 - **How it fails:** an anchor field fails when the document prints no label.
@@ -110,26 +98,18 @@ how classification keeps precision at 1.0 while coverage grows
 - **In:** the text, the fields, and facts such as page count and whether the
   document is scanned.
 - **Out:** a list of tags, each with a confidence and a source method.
-- **How:** tags are separate from the class. A document has one type but can
-  have many tags. Tags come from keywords, a model, or the metadata itself. A
+- **How:** a document has one type but many tags. Tags come from keywords, a model, or the metadata itself. A
   validated GSTIN is stronger evidence for `gst_applicable` than the word "GST",
   and the tag records which source it came from (README.md).
 - **In the demo:** the tag list, with the method next to each tag.
 
 ### 2.5 Post passes: tables and graph
 
-Both run over a results file, not inside the pipeline. Neither changes the
-document record.
-
-- **Tables** try three strategies in order: tab-delimited rows (DOCX), word-box
-  geometry (PDFs and scans), and whitespace columns (TXT). A band whose columns
-  do not line up is refused, and the reason is recorded. A wrong table is worse
-  than a missing one (README.md).
-- **Graph** builds organisations only from fields whose format proves them,
-  such as a checksummed GSTIN or PAN. Names never join two entities
-  (README.md).
-
-The demo may not show these passes. They are here so the full picture is clear.
+Both run later over a results file and never change the record. Tables try
+tab-delimited rows, word-box geometry, then whitespace columns, and refuse a
+band whose columns do not line up. The graph joins organisations only on
+checksummed IDs such as GSTIN or PAN, never on names (README.md). The demo may
+not show these passes.
 
 ## 3. The contract
 
@@ -144,8 +124,8 @@ The demo may not show these passes. They are here so the full picture is clear.
 - `tags`;
 - `diagnostics`: page count, scanned flag, per-stage timings in ms, errors.
 
-**Why offsets and a page on every value.** A value with a location can be
-checked. A reviewer can jump to it. The harness can score whether the system
+**Why offsets and a page on every value.** A reviewer can jump to the value.
+The harness can score whether the system
 pointed at the right place (span scoring), not only whether the value is right.
 A pipeline that returns values without locations scores zero on span F1
 (cascade v2 design spec). Offsets also block invented values: if a value is
@@ -154,8 +134,8 @@ not in the text, there is no span to point at.
 **Why the eval harness never imports the pipeline.** `baseline/evaluate/`
 imports nothing from the rest of `baseline` except logging, and keeps its own
 JSONL reader (PROJECT_STATE.md, "Code layout"). It reads any JSONL that matches
-the schema. So the baseline, cascade v2 and any rival pipeline are scored by
-identical code. A pipeline cannot pass by sharing a bug with its own scorer.
+the schema. So every pipeline is scored by identical code, and none can pass by
+sharing a bug with its scorer.
 
 ## 4. How it is measured
 
@@ -227,30 +207,34 @@ Cascade v2 is the successor. The code is in `cascade/`, beside `baseline/`.
 endpoint (vLLM or Ollama). `docs/client_poc_setup.md` gives the setup and a
 model choice by GPU memory.
 
-**Status.** Cascade v2 is built and tested against a fake model and a stub
-server. It has not yet run on a real model, so it has no scored numbers
-(PROJECT_STATE.md, "Status"; HANDOFF.md, "Where things stand").
+**Status.** Cascade v2 has run on a real model once, on 2026-10-22, on the
+developer laptop: an RTX 3070 with 8 GB, Ollama serving `qwen3.5:9b`
+(Apache-2.0). Thinking was turned off through `vlm.extra_body` (commit
+e4d6384), and Ollama ran with `OLLAMA_CONTEXT_LENGTH=16384`. On 20
+human-reviewed documents, baseline to cascade (session notes, 2026-10-22; not
+yet in a checked-in report):
+
+| Metric | Baseline | Cascade v2 |
+| --- | --- | --- |
+| Classification macro F1 | 0.758 | 0.953 |
+| Classification coverage | 0.70 | 1.00 |
+| Metadata micro F1 | 0.488 | 0.440 |
+
+The metadata drop is not yet investigated. Cascade v2 has not yet run on the
+client's GPU server.
 
 ## 6. Safety and ops
 
-- **Model manifest.** A sha256 manifest is checked before every model load.
-  `baseline run` refuses models that do not match it (docs/parts/audit.md).
-- **No network except the configured VLM.** The baseline makes no network
-  calls. The cascade client refuses any server that is not loopback or listed
-  in `vlm.allowed_hosts`. It never follows redirects and ignores proxy
-  variables (PROJECT_STATE.md, "Cascade v2"). It warns when a key goes over
-  plain http to a non-loopback host, and caps a response body at 8 MiB
+- **Model manifest:** a sha256 check before every model load
   (docs/parts/audit.md).
-- **Locked dependencies.** `requirements.lock` pins 26 packages
-  (docs/parts/audit.md).
-- **Documents stay local.** The baseline reads and writes local files only.
-  Cascade sends page images and text only to the configured model server, which
-  runs on the client's own hardware. No document content leaves the company
-  (cascade v2 design spec).
-- **Deterministic.** The same input gives the same output, byte for byte, with
-  one worker or eight. Timings are the only exception (README.md).
-- **A broken file never stops a batch.** The error is recorded on that document
-  and the run continues (README.md).
+- **Network:** the baseline makes none. The cascade client talks only to
+  loopback or `vlm.allowed_hosts`, follows no redirects, ignores proxies, and
+  caps a response at 8 MiB (PROJECT_STATE.md; docs/parts/audit.md).
+- **Locked dependencies:** `requirements.lock`, 26 pins (docs/parts/audit.md).
+- **Documents stay local:** cascade sends pages only to the configured model
+  server on the client's hardware (cascade v2 design spec).
+- **Deterministic:** same input, same bytes, with any worker count; timings
+  excepted. A broken file never stops a batch (README.md).
 
 ## 7. Running the demo
 
@@ -286,8 +270,6 @@ how the system reports a failure. Try it before the demo.
   still exists and says what happened. Scan quality is the main limit today.
 - **How do you add a class?** Edit `config/classes.yaml`: a name and its
   markers. Fields and tags are YAML edits too. No Python changes (README.md).
-- **Does any data leave the machine?** Not from the baseline. Cascade talks
-  only to the configured model server on the client's hardware.
 - **How do you know a change helped?** `baseline compare` scores two runs on
   the same gold and lists regressions. It can fail a CI run on a regression
   (README.md).
