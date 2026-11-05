@@ -45,3 +45,13 @@ def test_record_hash_updates_manifest(tmp_path):
     text = (models / classify.MANIFEST).read_text(encoding="utf-8")
     assert text.endswith("  tagger/model.joblib\n") and "classifier" not in text
     assert tagging.load_model(models / "tagger") is not None
+
+
+def test_train_writes_manifest_and_loads(tmp_path):
+    texts = ["invoice total due net 30"] * 3 + ["salary slip basic pay net pay"] * 3
+    labels = ["invoice"] * 3 + ["salary_slip"] * 3
+    classify.train(texts, labels, tmp_path / "models" / "classifier")
+    text = (tmp_path / "models" / classify.MANIFEST).read_text(encoding="utf-8")
+    assert text.endswith("  classifier/model.joblib\n")
+    m = classify.load_model(tmp_path / "models" / "classifier")
+    assert m.labels == ["invoice", "salary_slip"]
