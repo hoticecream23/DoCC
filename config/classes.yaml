@@ -63,6 +63,19 @@ classes:
       # invoice marker so it outranks "tax invoice" and "invoice no"; an
       # invoice with any of the four invoice lines never fires it.
       - {kind: regex, pattern: '\A(?![\s\S]*\b(?:due\s+date|payment\s+terms?|bill(?:ed)?\s+to|remit)\b)(?=[\s\S]*\bt[a&]x\s*invoice\b)[\s\S]*?(?:(?m:^)[ \t]*(?:cash|change|tendered|paid|amount[ \t]+paid|visa|master[ \t]*card|credit[ \t]+card|card[ \t]+type)\b[^\n\d]{0,20}(?:\d+[.,]\d{2})?[ \t]*(?m:$)|\b(?:cash|change|tendered|paid|card|visa|master\s*card)\b[^\n\d]{0,30}\d+[.,]\d{2}\b|\b(?:cashier|pos|terminal|till)\b)', scope: anywhere, specificity: 0.97}
+      # Malaysian GST receipts that do not say "tax invoice" (or say it with
+      # no settlement line). Each marker carries the same gate as above: no
+      # due date, payment terms, bill-to or remit line. Each fired on 0 of
+      # the 112 client docs (round2-classification audit). Union of the three
+      # reaches 109 of the 124 SROIE misses. 0.97, above every invoice marker.
+      # A GST registration line: GST ID / GST Reg No / GST No.
+      - {kind: regex, pattern: '\A(?![\s\S]*\b(?:due\s+date|payment\s+terms?|bill(?:ed)?\s+to|remit)\b)[\s\S]*?\bgst[ \t]*(?:reg\w{0,12}\.?[ \t]*)?(?:id|no)\b', scope: anywhere, specificity: 0.97}
+      # A GST summary or rounding / round adj line.
+      - {kind: regex, pattern: '\A(?![\s\S]*\b(?:due\s+date|payment\s+terms?|bill(?:ed)?\s+to|remit)\b)[\s\S]*?(?:\bgst[ \t]+summary\b|\brounding\b|\bround(?:ing)?[ \t]*adj)', scope: anywhere, specificity: 0.97}
+      # A standalone CASH line, then later a standalone CHANGE line; each
+      # label may carry an amount (RM optional). The atomic group pins the
+      # first CASH line, so a page of CASH lines with no CHANGE stays linear.
+      - {kind: regex, pattern: '\A(?![\s\S]*\b(?:due\s+date|payment\s+terms?|bill(?:ed)?\s+to|remit)\b)(?>[\s\S]*?(?m:^)[^\w\n]*cash\b[^\w\n]*(?:rm[ \t]*)?(?:\d[\d,]*[.,]\d{2})?[ \t]*(?m:$))[\s\S]*?(?m:^)[^\w\n]*change\b[^\w\n]*(?:rm[ \t]*)?(?:\d[\d,]*[.,]\d{2})?[ \t]*(?m:$)', scope: anywhere, specificity: 0.97}
 
   - name: bank_statement
     description: Periodic account transaction listing.
@@ -132,6 +145,9 @@ classes:
       - {kind: regex, pattern: '\bform\s+(?:16|26as|gstr-?\d)\b', scope: anywhere, specificity: 0.95}
       - {kind: regex, pattern: '\btds\s+certificate\b', scope: anywhere, specificity: 0.93}
       - {kind: keywords, any: ["assessment year", "previous year", "tax deducted at source"], scope: anywhere, specificity: 0.75}
+      # A (property) tax statement: 1 of 5 client tax docs, 0 of the other
+      # 107 (round2-classification audit), so it may pass rule_min alone.
+      - {kind: regex, pattern: '\b(?:property\s+)?tax\s+statement\b', scope: header, specificity: 0.8}
 
   - name: court_document
     description: >

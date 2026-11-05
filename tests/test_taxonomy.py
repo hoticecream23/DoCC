@@ -342,3 +342,74 @@ def test_a_paid_stamp_on_a_tax_invoice_with_due_date_stays_an_invoice(cfg):
     )
     result = classify(text, [text], cfg, model=None)
     assert result.label == "invoice"
+
+
+def test_a_receipt_with_a_gst_id_line_is_a_receipt(cfg):
+    text = (
+        "SYARIKAT PERNIAGAAN GIN KEE\n(81109-A)\nGST ID: 000750673920\nINVOICE NO: 18291\n"
+        "SAKAI 1KG 2 8.40 SR\nTOTAL 8.40\nTHANK YOU\n"
+    )
+    assert classify(text, [text], cfg, model=None).label == "receipt"
+
+
+def test_a_receipt_with_a_rounding_line_is_a_receipt(cfg):
+    text = (
+        "UNIHAKKA INTERNATIONAL SDN BHD\nInvoice # : OR18032302160046\nNASI LEMAK 1 6.03\n"
+        "Total Sales 6.03\nRounding Adj -0.03\nTotal 6.00\n"
+    )
+    assert classify(text, [text], cfg, model=None).label == "receipt"
+
+
+def test_a_receipt_with_cash_then_change_lines_is_a_receipt(cfg):
+    text = (
+        "MR D.I.Y. (M) SDN BHD\nInvoice No: 0129482\nKILAT AUTO ECO WASH 1 9.00\nTOTAL 9.00\n"
+        "CASH\nRM 10.00\nCHANGE\n1.00\n"
+    )
+    assert classify(text, [text], cfg, model=None).label == "receipt"
+
+
+def test_an_invoice_with_a_gst_no_line_and_due_date_stays_an_invoice(cfg):
+    text = (
+        "Invoice No: INV-2024-118\nGST No: 27ABCDE1234F1Z5\nDue Date: 30/04/2024\n"
+        "Consulting 1 45,000.00\nTotal 53,100.00\n"
+    )
+    assert classify(text, [text], cfg, model=None).label == "invoice"
+
+
+def test_an_invoice_with_a_rounding_line_and_bill_to_stays_an_invoice(cfg):
+    text = (
+        "Invoice No: 7781\nBill To: Mehta Exports\nGST Summary\nFreight 12,499.60\n"
+        "Rounding 0.40\nTotal 12,500.00\n"
+    )
+    assert classify(text, [text], cfg, model=None).label == "invoice"
+
+
+def test_an_invoice_with_cash_and_change_lines_and_due_date_stays_an_invoice(cfg):
+    text = (
+        "Invoice No: 5520\nDue Date: 15/05/2024\nPayment mode:\nCash\nChange\n"
+        "Office chairs 4 32,000.00\nTotal 32,000.00\n"
+    )
+    assert classify(text, [text], cfg, model=None).label == "invoice"
+
+
+def test_a_property_tax_statement_is_a_tax_form(cfg):
+    text = "COUNTY TREASURER\n2023 PROPERTY TAX STATEMENT\nParcel 12-345\nAmount 1,204.00\n"
+    assert classify(text, [text], cfg, model=None).label == "tax_form"
+
+
+def test_a_tax_statement_word_deep_in_a_contract_is_not_a_tax_form(cfg):
+    # header scope: the phrase past the first 600 characters does not count
+    text = "SERVICE AGREEMENT\n" + "clause text\n" * 80 + "The vendor shall send a tax statement yearly.\n"
+    assert classify(text, [text], cfg, model=None).label != "tax_form"
+
+
+def test_the_receipt_and_tax_form_markers_stay_linear(cfg):
+    import time
+
+    from baseline.rules import best_marker_score
+
+    markers = [m for c in cfg.classes["classes"] if c["name"] in ("receipt", "tax_form") for m in c.get("markers", [])]
+    for text in ("gst reg " * 25000, "cash\n" * 40000, "cash\nchange x\n" * 15000, "rounding " * 25000):
+        t = time.perf_counter()
+        best_marker_score(markers, text, [text], 600)
+        assert time.perf_counter() - t < 1.0
