@@ -56,6 +56,17 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
 .facts { margin-top: 8px; font-size: 12px; color: var(--muted); }
 .errors { color: var(--err); margin: 0; padding-left: 18px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg input { position: absolute; opacity: 0; width: 0; height: 0; }
+.seg label { padding: 5px 10px; cursor: pointer; background: #fff; }
+.seg input:checked + label { background: var(--accent); color: #fff; }
+.seg input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pill { padding: 2px 10px; border-radius: 12px; font-size: 12px; background: #e8eaed; color: var(--muted); }
+.pill.up { background: #e3f4ea; color: var(--ok); }
+.badge, .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); margin-left: 6px; text-transform: none; letter-spacing: 0; font-weight: 600; }
+.tag { background: #fdf3e1; color: #a5650a; }
+.warn { color: #a5650a; font-weight: 600; }
+#cmp { font-size: 12px; padding: 8px 12px; }
 [hidden] { display: none !important; }
 </style>
 </head>
@@ -64,6 +75,11 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
   <h1>DoCC baseline pipeline</h1>
   <select id="corpus" aria-label="Corpus file"><option value="">Loading corpus...</option></select>
   <input type="file" id="upload" aria-label="Upload a file">
+  <span class="seg" role="radiogroup" aria-label="Pipeline mode">
+    <input type="radio" name="mode" id="m-baseline" value="baseline" checked><label for="m-baseline">Baseline</label>
+    <input type="radio" name="mode" id="m-cascade" value="cascade"><label for="m-cascade">Cascade</label>
+  </span>
+  <span class="pill" id="vlm">VLM ...</span>
   <button id="run">Run</button>
   <span id="status"></span>
 </header>
@@ -75,19 +91,24 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
     <section class="card"><h2>Canonical text</h2><pre id="text"></pre></section>
   </div>
   <div class="col" id="right" hidden>
+    <section class="card" id="cmp" hidden></section>
     <section class="card" id="cls"><h2>Classification</h2></section>
     <section class="card"><h2>Fields</h2>
       <table><thead><tr><th>Field</th><th>Value</th><th>Normalized</th><th>Conf.</th><th>Valid</th><th>Method</th></tr></thead>
       <tbody id="fields"></tbody></table></section>
     <section class="card"><h2>Tags</h2><div class="chips" id="tags"></div></section>
     <section class="card"><h2>Stage timings</h2><div id="timings"></div></section>
+    <section class="card" id="modelcard" hidden><h2>Model</h2><div id="model"></div></section>
     <section class="card" id="errcard" hidden><h2>Errors</h2><ul class="errors" id="errors"></ul></section>
   </div>
 </main>
 <script>
 (() => {
-  const state = { loading: false, record: null };
+  const state = { loading: false, record: null, last: { key: null, baseline: null, cascade: null } };
   const $ = (id) => document.getElementById(id);
+  const mode = () => document.querySelector('input[name=mode]:checked').value;
+  const fileKey = () => { const f = $('upload').files[0]; return f ? 'upload:' + f.name : $('corpus').value; };
+  const resetLast = () => { state.last = { key: fileKey(), baseline: null, cascade: null }; };
   const PALETTE = ['#2f6fdf', '#5aa0f2', '#1f8a4c', '#e0a030', '#9a5bd6', '#d0596b', '#4bb3a8', '#8a939c'];
   const MOCK = {
     record: {
@@ -102,8 +123,15 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
       diagnostics: { page_count: 1, is_scanned: false, has_native_text: true, timings_ms: { extract: 120.5, classify: 30.2, metadata: 55 }, errors: ['mock error: nothing is wrong'] }
     },
     pages: [{ index: 0, width: 1, height: 1, png_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' }],
-    total_ms: 2310
+    total_ms: 2310, mode: 'baseline'
   };
+  const MOCK_CASCADE = JSON.parse(JSON.stringify(MOCK));
+  Object.assign(MOCK_CASCADE, { mode: 'cascade', total_ms: 9840,
+    provenance: { model: 'qwen2.5-vl-7b (mock)', finish_reason: 'stop', pages_sent: 1, images_sent: 1, fallback: true,
+      errors: ['mock: page 2 <img> skipped'], timings_ms: { render: 210, extract: 6400, merge: 12 } } });
+  MOCK_CASCADE.record.classification.confidence = 0.96;
+  MOCK_CASCADE.record.metadata.push({ field: 'due_date', value: '2024-07-01', normalized_value: '2024-07-01', page: 0,
+    confidence: 0.7, validated: true, method: 'vlm' });
 
   // Build DOM nodes only; record strings always go in as text nodes, never innerHTML.
   function el(tag, props, ...kids) {
@@ -150,14 +178,19 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
     showError('');
     setStatus('Running...', true);
     const t0 = performance.now();
+    const m = mode();
+    if (state.last.key !== fileKey()) resetLast();
     try {
-      const url = file ? '/api/run?filename=' + encodeURIComponent(file.name)
-                       : '/api/run?corpus=' + encodeURIComponent(name);
+      const url = (file ? '/api/run?filename=' + encodeURIComponent(file.name)
+                        : '/api/run?corpus=' + encodeURIComponent(name)) + '&mode=' + m;
       const r = await fetch(url, { method: 'POST', body: file || undefined });
       let data;
       try { data = await r.json(); } catch { throw new Error('Server returned HTTP ' + r.status + ' without JSON'); }
       if (!r.ok || data.error) throw new Error(data.error || 'HTTP ' + r.status);
-      render(data, performance.now() - t0);
+      if (typeof data.total_ms !== 'number') data.total_ms = performance.now() - t0;
+      data.mode = data.mode === 'cascade' ? 'cascade' : 'baseline';
+      state.last[data.mode] = data;
+      render(data, 0);
     } catch (e) {
       showError(e.message || String(e));
       setStatus('Failed');
@@ -175,12 +208,18 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
     $('empty').hidden = true;
     $('left').hidden = false;
     $('right').hidden = false;
+    const m = data.mode === 'cascade' ? 'cascade' : 'baseline';
+    $('m-' + m).checked = true;
+    const other = state.last[m === 'cascade' ? 'baseline' : 'cascade'];
+    const prov = m === 'cascade' ? data.provenance : null;
     renderPages(data.pages || []);
     renderText(rec);
-    renderClassification(rec.classification || {});
-    renderFields(rec.metadata || []);
+    renderCompare();
+    renderClassification(rec.classification || {}, m);
+    renderFields(rec.metadata || [], other && new Set(((other.record || {}).metadata || []).map((x) => x.field)), m);
     renderTags(rec.tags || []);
-    renderTimings(rec.diagnostics || {}, rec.text || {});
+    renderTimings(rec.diagnostics || {}, rec.text || {}, (prov && prov.timings_ms) || {});
+    renderModel(prov);
     const errs = (rec.diagnostics && rec.diagnostics.errors) || [];
     $('errcard').hidden = !errs.length;
     $('errors').replaceChildren(...errs.map((e) => el('li', {}, e)));
@@ -218,19 +257,29 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
     $('text').replaceChildren(...nodes);
   }
 
-  function renderClassification(c) {
+  function renderCompare() {
+    const { baseline: b, cascade: c } = state.last;
+    $('cmp').hidden = !(b && c);
+    if (!(b && c)) return;
+    const sum = (d) => { const r = d.record || {}, k = r.classification || {};
+      return (k.label || '(none)') + ' ' + pct(k.confidence) + ' · ' + (r.metadata || []).length + ' fields'; };
+    $('cmp').textContent = 'baseline: ' + sum(b) + '  →  cascade: ' + sum(c);
+  }
+
+  function renderClassification(c, m) {
     const scores = Object.entries(c.all_scores || {}).sort((a, b) => b[1] - a[1]).slice(0, 6);
     const grid = el('div', { className: 'scores' });
     for (const [k, v] of scores) grid.append(el('span', {}, k), bar(v), el('span', { className: 'muted' }, pct(v)));
     $('cls').replaceChildren(
-      el('h2', {}, 'Classification'),
+      el('h2', {}, 'Classification', el('span', { className: 'badge' }, m)),
       el('div', { className: 'big' }, c.label || '(none)'),
       bar(c.confidence),
       el('div', { className: 'muted' }, pct(c.confidence) + ' confidence, method: ' + (c.method || '?')),
       grid);
   }
 
-  function renderFields(meta) {
+  // otherNames: field names of the other mode's run on this file, or null when there is none.
+  function renderFields(meta, otherNames, mode) {
     if (!meta.length) {
       $('fields').replaceChildren(el('tr', {}, el('td', { colSpan: 6, className: 'muted' }, 'No fields extracted.')));
       return;
@@ -238,7 +287,8 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
     $('fields').replaceChildren(...meta.map((m, i) => {
       const norm = m.normalized_value == null ? '' : m.normalized_value + (m.currency ? ' ' + m.currency : '');
       const tr = el('tr', { title: 'page ' + ((m.page || 0) + 1) + ', chars ' + m.char_start + '-' + m.char_end },
-        el('td', {}, m.field), el('td', {}, m.value), el('td', {}, norm),
+        el('td', {}, m.field, otherNames && !otherNames.has(m.field) ? el('span', { className: 'tag' }, mode + ' only') : null),
+        el('td', {}, m.value), el('td', {}, norm),
         el('td', {}, bar(m.confidence), el('span', { className: 'muted' }, pct(m.confidence))),
         el('td', { className: 'ok' }, m.validated ? '✓' : ''),
         el('td', { className: 'muted' }, m.method));
@@ -262,8 +312,10 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
       : [el('span', { className: 'muted' }, 'No tags.')]));
   }
 
-  function renderTimings(d, text) {
-    const entries = Object.entries(d.timings_ms || {}).filter(([, v]) => v > 0);
+  function renderTimings(d, text, vlm) {
+    const base = d.timings_ms || {};
+    const entries = [...Object.entries(base), ...Object.entries(vlm).map(([k, v]) => [k in base ? 'vlm·' + k : k, v])]
+      .filter(([, v]) => v > 0);
     const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
     const stack = el('div', { className: 'stack' });
     const legend = el('div', { className: 'legend' });
@@ -285,15 +337,48 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
       el('div', { className: 'facts' }, facts.join(' · ')));
   }
 
+  function renderModel(p) {
+    $('modelcard').hidden = !p;
+    if (!p) return;
+    const errs = p.errors || [];
+    $('model').replaceChildren(
+      el('div', {}, 'model: ', el('b', {}, p.model ?? '?'), ' · finish: ' + (p.finish_reason ?? '?')),
+      el('div', { className: 'muted' }, 'pages sent: ' + (p.pages_sent ?? '?') + ' · images sent: ' + (p.images_sent ?? '?')),
+      el('div', {}, 'fallback: ', p.fallback ? el('span', { className: 'warn' }, 'yes') : 'no'),
+      errs.length ? el('ul', { className: 'errors' }, ...errs.map((e) => el('li', {}, e))) : null);
+  }
+
+  function setPill(s) {
+    const p = $('vlm');
+    p.textContent = s.reachable ? 'VLM · ' + (s.model || '?') : 'VLM offline';
+    p.className = 'pill' + (s.reachable ? ' up' : '');
+    p.title = s.base_url || '';
+  }
+  async function loadStatus() {
+    try {
+      const r = await fetch('/api/status');
+      setPill(r.ok ? ((await r.json()).cascade || {}) : {});
+    } catch { setPill({}); }
+  }
+
   $('run').addEventListener('click', run);
-  $('corpus').addEventListener('change', () => { $('upload').value = ''; });
-  $('upload').addEventListener('change', () => { if ($('upload').files[0]) $('corpus').value = ''; });
+  $('corpus').addEventListener('change', () => { $('upload').value = ''; resetLast(); });
+  $('upload').addEventListener('change', () => { if ($('upload').files[0]) $('corpus').value = ''; resetLast(); });
+  // Switching mode shows a cached result for this file if one exists; otherwise wait for Run.
+  for (const r of document.querySelectorAll('input[name=mode]')) r.addEventListener('change', () => {
+    const d = state.last[mode()];
+    if (d && state.last.key === fileKey()) render(d, 0);
+  });
 
   if (new URLSearchParams(location.search).has('mock')) {
     $('corpus').replaceChildren(el('option', { value: 'invoice_native.pdf', textContent: 'invoice_native.pdf (mock)' }));
-    render(MOCK, 0);
+    state.last = { key: fileKey(), baseline: MOCK, cascade: MOCK_CASCADE };
+    setPill({ reachable: true, model: 'qwen2.5-vl-7b (mock)', base_url: 'http://localhost:8000/v1' });
+    render(MOCK_CASCADE, 0);
   } else {
     loadCorpus();
+    loadStatus();
+    setInterval(loadStatus, 15000);
   }
 })();
 </script>
