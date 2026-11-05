@@ -14,6 +14,7 @@
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
 header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 16px; background: var(--card); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 2; }
 header h1 { font-size: 16px; margin: 0 12px 0 0; }
+header > * { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 select, button, input[type=file] { font: inherit; }
 select, button { padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
 button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; }
@@ -128,7 +129,8 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
   const MOCK_CASCADE = JSON.parse(JSON.stringify(MOCK));
   Object.assign(MOCK_CASCADE, { mode: 'cascade', total_ms: 9840,
     provenance: { model: 'qwen2.5-vl-7b (mock)', finish_reason: 'stop', pages_sent: 1, images_sent: 1, fallback: true,
-      errors: ['mock: page 2 <img> skipped'], timings_ms: { render: 210, extract: 6400, merge: 12 } } });
+      errors: ['mock: page 2 <img> skipped'] } });
+  Object.assign(MOCK_CASCADE.record.diagnostics.timings_ms, { cascade_render: 210, cascade_vlm: 6400, cascade_decide: 12 });
   MOCK_CASCADE.record.classification.confidence = 0.96;
   MOCK_CASCADE.record.metadata.push({ field: 'due_date', value: '2024-07-01', normalized_value: '2024-07-01', page: 0,
     confidence: 0.7, validated: true, method: 'vlm' });
@@ -218,7 +220,7 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
     renderClassification(rec.classification || {}, m);
     renderFields(rec.metadata || [], other && new Set(((other.record || {}).metadata || []).map((x) => x.field)), m);
     renderTags(rec.tags || []);
-    renderTimings(rec.diagnostics || {}, rec.text || {}, (prov && prov.timings_ms) || {});
+    renderTimings(rec.diagnostics || {}, rec.text || {});
     renderModel(prov);
     const errs = (rec.diagnostics && rec.diagnostics.errors) || [];
     $('errcard').hidden = !errs.length;
@@ -312,10 +314,8 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
       : [el('span', { className: 'muted' }, 'No tags.')]));
   }
 
-  function renderTimings(d, text, vlm) {
-    const base = d.timings_ms || {};
-    const entries = [...Object.entries(base), ...Object.entries(vlm).map(([k, v]) => [k in base ? 'vlm·' + k : k, v])]
-      .filter(([, v]) => v > 0);
+  function renderTimings(d, text) {
+    const entries = Object.entries(d.timings_ms || {}).filter(([, v]) => v > 0);
     const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
     const stack = el('div', { className: 'stack' });
     const legend = el('div', { className: 'legend' });
@@ -345,7 +345,7 @@ td .bar { width: 60px; display: inline-block; vertical-align: middle; margin-rig
       el('div', {}, 'model: ', el('b', {}, p.model ?? '?'), ' · finish: ' + (p.finish_reason ?? '?')),
       el('div', { className: 'muted' }, 'pages sent: ' + (p.pages_sent ?? '?') + ' · images sent: ' + (p.images_sent ?? '?')),
       el('div', {}, 'fallback: ', p.fallback ? el('span', { className: 'warn' }, 'yes') : 'no'),
-      errs.length ? el('ul', { className: 'errors' }, ...errs.map((e) => el('li', {}, e))) : null);
+      ...(errs.length ? [el('ul', { className: 'errors' }, ...errs.map((e) => el('li', {}, e)))] : []));
   }
 
   function setPill(s) {
