@@ -14,6 +14,7 @@ recorded as `rule_only` so the choice is measured, not argued.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -76,6 +77,25 @@ def _in_scope(fdef: dict, doc_class: str, cfg: Config) -> bool:
 
 
 _GROUND_RANK = {EXACT: 0, LOOSE: 1, NORMALISED: 2, UNGROUNDED: 3}
+_OTHER_IDS = ("gstin", "pan", "ifsc", "phone")
+
+
+def _alnum(s: str) -> str:
+    return re.sub(r"[\W_]", "", s).upper()
+
+
+def _shape_ok(name: str, raw: str, other_ids: set[str]) -> bool:
+    """A model-only identifier must look like one; a rule-agreeing value skips this.
+
+    ponytail: hard-coded for the two fields the audit saw confused; move to
+    fields.yaml if a third field needs it.
+    """
+    if name == "account_number":
+        digits = re.sub(r"\D", "", raw)
+        return not re.search(r"[A-Za-z]", raw) and 9 <= len(digits) <= 18 and _alnum(raw) not in other_ids
+    if name == "invoice_number":
+        return bool(re.search(r"\d", raw)) and len(raw) <= 30
+    return True
 
 
 def _key(normalized: str | None, raw: str) -> str:
@@ -162,6 +182,11 @@ def decide_fields(
             elif g.rule_agrees:
                 method, confidence, validated = MetadataMethod.VLM_RULE_AGREE, tiers.agree, False
             else:
+                other_ids = {_alnum(m.value) for m in out if m.field in _OTHER_IDS}
+                other_ids |= {_alnum(v) for f in _OTHER_IDS for v in answer.fields.get(f, [])}
+                if not _shape_ok(name, raw, other_ids):
+                    item["outcome"] = "shape_failed"
+                    continue
                 method, validated = MetadataMethod.VLM, False
                 confidence = tiers.ambiguous if g.n_matches > 1 else tiers.grounded
             normalized, extras = normalize(

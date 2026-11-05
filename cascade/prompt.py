@@ -21,9 +21,27 @@ Rules:
   reformat dates or amounts, do not correct spelling, do not translate.
 - When the value appears in the page text provided, copy it as it appears there.
 - Return a value only if it is printed on the document. If a field is not
-  there, return an empty list for it. Never guess.
+  there, return an empty list for it. Never return an empty string. Never guess.
+- Return the exact printed string of the one value that fits the field's
+  definition, not a value of a nearby or similar field.
 - Use "{unknown}" as the class when the document is none of the classes below.
 """
+
+
+# What each field is not, where the model was seen to confuse it.
+_NOT = {
+    "account_number": "Not a GSTIN, PAN, IFSC, phone, customer, reference or invoice number, nor a date.",
+    "invoice_number": "The document's own number, not a PO, reference or order number of another document.",
+    "total_amount": "The grand total, not a subtotal, a line amount or a tax line.",
+    "tax_amount": "The total tax, not one line item's tax.",
+    "vendor_name": "Who issues the document and is paid, not the customer.",
+    "buyer_name": "Who is billed and pays, not the issuer.",
+}
+
+
+# Single-value fields a page often prints several of. Capped at one item, the
+# model joins them into one string or drops the right one, so the merge picks.
+_OFTEN_SEVERAL = ("email", "phone")
 
 
 class VLMOutputError(ValueError):
@@ -60,7 +78,11 @@ def response_schema(cfg: Config) -> dict:
             "class": {"type": "string", "enum": [*cfg.class_names, _unknown(cfg)]},
             "fields": {
                 "type": "object",
-                "properties": {n: {"type": "array", "items": {"type": "string"}} for n in names},
+                "properties": {
+                    f["name"]: {"type": "array", "items": {"type": "string"}}
+                    | ({} if f.get("multi") or f["name"] in _OFTEN_SEVERAL else {"maxItems": 1})
+                    for f in cfg.field_defs if f.get("name")
+                },
                 "required": names,
                 "additionalProperties": False,
             },
@@ -78,7 +100,7 @@ def _system_text(cfg: Config) -> str:
     lines.append("Fields:")
     for f in cfg.field_defs:
         scope = ", ".join(f.get("classes") or []) or "any class"
-        lines.append(f"- {f['name']} (applies to: {scope}): {f.get('description', '')}")
+        lines.append(f"- {f['name']} (applies to: {scope}): {f.get('description', '')} {_NOT.get(f['name'], '')}".rstrip())
     return "\n".join(lines)
 
 

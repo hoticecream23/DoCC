@@ -37,7 +37,7 @@ def test_schema_enumerates_classes_and_requires_every_field(cfg):
     fields = s["properties"]["fields"]
     assert fields["additionalProperties"] is False
     assert sorted(fields["required"]) == sorted(_names(cfg))
-    assert fields["properties"]["total_amount"] == {"type": "array", "items": {"type": "string"}}
+    assert fields["properties"]["total_amount"] == {"type": "array", "items": {"type": "string"}, "maxItems": 1}
 
 
 def test_messages_carry_descriptions_text_and_images(cfg):
@@ -100,3 +100,22 @@ def test_parse_answer_rejects_anything_off_schema(cfg, content, message):
 
     with pytest.raises(VLMOutputError, match=message):
         parse_answer(content, cfg)
+
+
+def test_confused_fields_carry_a_negative_definition(cfg):
+    from cascade.prompt import build_messages
+
+    system = build_messages(cfg, ["x"], [], max_text_chars=10)[0]["content"]
+    assert "Not a GSTIN, PAN, IFSC, phone" in system
+    assert "not a PO, reference or order number" in system
+    assert "not a subtotal" in system
+    assert "Never return an empty string" in system and "empty list" in system
+
+
+def test_single_value_fields_allow_one_item_and_multi_fields_any(cfg):
+    from cascade.prompt import response_schema
+
+    props = response_schema(cfg)["properties"]["fields"]["properties"]
+    assert props["invoice_number"]["maxItems"] == 1
+    assert "maxItems" not in props["gstin"]  # multi: true in fields.yaml
+    assert "maxItems" not in props["email"]  # a page often prints several

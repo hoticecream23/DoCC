@@ -207,3 +207,41 @@ def test_an_out_of_scope_field_leaves_no_rule_only_record(cfg):
     assert "invoice_number" not in _by_field(d)
     # invoice_number should have no provenance record (out of scope produces no record)
     assert [p for p in d.field_provenance if p["field"] == "invoice_number"] == []
+
+
+SHAPES = TEXT + "Account No: 1234-5678-901\nCust ID 40044448\nTel 9876543210\nOrder: ABC\n"
+
+
+def test_a_model_only_account_number_must_be_9_to_18_digits(cfg):
+    d = _decide(cfg, {"account_number": ["1234-5678-901"]}, text=SHAPES, baseline_meta=[], rules={})
+    assert [m.value for m in _by_field(d)["account_number"]] == ["1234-5678-901"]
+    d = _decide(cfg, {"account_number": ["40044448"]}, text=SHAPES, baseline_meta=[], rules={})
+    assert "account_number" not in _by_field(d)
+    assert [p["outcome"] for p in _prov(d, "account_number")] == ["shape_failed"]
+
+
+def test_a_model_only_account_number_equal_to_another_id_is_rejected():
+    from cascade.merge import _shape_ok
+
+    assert not _shape_ok("account_number", "98765 43210", {"9876543210"})
+    assert _shape_ok("account_number", "98765 43210", {"1111111111"})
+    assert not _shape_ok("invoice_number", "A1" * 16, set())  # over 30 chars
+
+
+def test_a_model_only_invoice_number_needs_a_digit(cfg):
+    d = _decide(cfg, {"invoice_number": ["ABC"]}, text=SHAPES, baseline_meta=[], rules={})
+    assert "invoice_number" not in _by_field(d)
+    assert [p["outcome"] for p in _prov(d, "invoice_number")] == ["shape_failed"]
+
+
+def test_an_empty_model_value_is_not_present(cfg):
+    from cascade.prompt import parse_answer
+
+    d = _decide(cfg, {"invoice_number": ["", "  "]})
+    assert "invoice_number" not in _by_field(d)
+    assert all(p["outcome"] in ("ungrounded", "rule_only") for p in _prov(d, "invoice_number"))
+    import json
+
+    fields = {f["name"]: [] for f in cfg.field_defs}
+    fields["total_amount"] = [""]
+    assert "total_amount" not in parse_answer(json.dumps({"class": "invoice", "fields": fields}), cfg).fields
