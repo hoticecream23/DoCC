@@ -29,3 +29,26 @@ def test_vendor_regex_is_linear_on_repeated_keywords(cfg):
     t = time.perf_counter()
     _vendor(cfg, text)
     assert time.perf_counter() - t < 1.0
+
+
+def test_a_name_wrapped_onto_a_second_capital_line_is_joined(cfg):
+    text = "3180301\nSECURE PARKING\nCORPORATION S/B\nRIVERWALK VILLAGE\nTOTAL 5.00\n"
+    assert [" ".join(v.split()) for v in _vendor(cfg, text)] == ["SECURE PARKING CORPORATION S/B"]
+    # An address or a tel line under the name is not part of it.
+    assert _vendor(cfg, "SHOP ONE\nJALAN BESAR\nTOTAL 1.00\n") == ["SHOP ONE"]
+    assert _vendor(cfg, "SHOP ONE\nNO. 5-7\nTOTAL 1.00\n") == ["SHOP ONE"]
+    # A name that already ends in its company suffix is complete.
+    assert _vendor(cfg, "SHOP ONE SDN BHD\nIOI MALL\nTOTAL 1.00\n") == ["SHOP ONE SDN BHD"]
+
+
+def test_vendor_regex_is_linear_on_wrapped_capital_lines(cfg):
+    import time
+
+    for text in (
+        ("invoice " * 700 + chr(10)) * 3 + "SHOP" + chr(10) + "A" * 39 + chr(10),
+        "A " * 40 + chr(10) + "B" * 5000 + chr(10) + "TOTAL",
+        ("AB" * 40 + chr(10)) * 300 + "TOTAL",
+    ):
+        t = time.perf_counter()
+        _vendor(cfg, text)
+        assert time.perf_counter() - t < 1.0

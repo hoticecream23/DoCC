@@ -46,3 +46,7 @@ def test_stacked_labels_never_take_a_date_as_the_number(cfg):
     # The number was left blank, so the first value in the block is the date.
     assert _inv(cfg, "INV NO:\nDATE :\n16/12/2017\nTOTAL QTY:\n") == []
     assert _inv(cfg, "BILL NO:\nCASHIER:\nBILL DT:\n12/01/2017 08:44:46 PM\n") == []
+
+
+def test_a_bracketed_receipt_number_is_read(cfg):
+    assert _inv(cfg, "TAX INVOICE\nRECEIPT NO.[00519738]\n05/01/17 10:55\n") == ["00519738"]
