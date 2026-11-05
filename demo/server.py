@@ -5,15 +5,21 @@ import base64
 import io
 import json
 import logging
+import os
 import shutil
 import tempfile
+import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from baseline.config import load_config_cached
 from baseline.pipeline import Models, process_document
+from cascade.config import load_cascade_config
+from cascade.runner import process_document as cascade_process
+from cascade.vlm import VLMClient, VLMError
 
 log = logging.getLogger("demo")
 MAX_BYTES = 25 * 1024 * 1024
@@ -23,6 +29,34 @@ IMAGE_EXT = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 
 class BadInput(ValueError):
     pass
+
+
+class Unavailable(RuntimeError):
+    pass
+
+
+make_backend = VLMClient  # seam: tests swap in a fake backend
+
+
+def vlm_settings(ccfg):
+    """cascade.yaml, then env overrides; Ollama on this laptop when nothing is set."""
+    over = {k: v for k, v in (("base_url", os.environ.get("DOCC_VLM_BASE_URL")),
+                              ("model", os.environ.get("DOCC_VLM_MODEL"))) if v}
+    if ccfg.vlm.model is None and not over:
+        over = {"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3.5:9b"}
+    return ccfg.vlm.model_copy(update=over)
+
+
+def reachable(settings) -> bool:
+    req = urllib.request.Request(settings.base_url.rstrip("/") + "/models")
+    key = os.environ.get(settings.api_key_env) if settings.api_key_env else None
+    if key:
+        req.add_header("Authorization", f"Bearer {key}")
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=2):
+            return True
+    except Exception:  # HTTPError included: a 401 still means unusable for the demo
+        return False
 
 
 def render_pages(path: Path) -> list[dict]:
@@ -63,13 +97,34 @@ def make_server(port: int, root: Path) -> ThreadingHTTPServer:
     corpus = root / "corpus"
     cfg = load_config_cached(None)
     models = Models.load(cfg, root)
+    ccfg = load_cascade_config(None)
+    vlm = vlm_settings(ccfg)
+    backend: list = []  # built on the first cascade request, then reused
+    lock = threading.Lock()
 
-    def run(path: Path) -> dict:
+    def get_backend():
+        if not vlm.model:
+            raise Unavailable("no VLM model configured")
+        if not reachable(vlm):
+            raise Unavailable(f"VLM server not reachable at {vlm.base_url}")
+        with lock:
+            if not backend:
+                backend.append(make_backend(vlm))
+        return backend[0]
+
+    def run(path: Path, mode: str) -> dict:
         t0 = time.perf_counter()
-        record, _ = process_document(path, cfg, models)
-        pages = render_pages(path)
-        return {"record": record.model_dump(mode="json"), "pages": pages,
-                "total_ms": (time.perf_counter() - t0) * 1000}
+        out = {"mode": mode}
+        if mode == "cascade":
+            res = cascade_process(path, cfg, ccfg, get_backend(), models)
+            record = res.record
+            out["provenance"] = {k: res.provenance[k] for k in (
+                "model", "finish_reason", "pages_sent", "images_sent", "fallback", "errors", "timings_ms")}
+        else:
+            record, _ = process_document(path, cfg, models)
+        out.update(record=record.model_dump(mode="json"), pages=render_pages(path),
+                   total_ms=(time.perf_counter() - t0) * 1000)
+        return out
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
@@ -104,6 +159,9 @@ def make_server(port: int, root: Path) -> ThreadingHTTPServer:
                 if not page.is_file():
                     return self._send(404, b"demo/index.html not found", "text/plain; charset=utf-8")
                 return self._send(200, page.read_bytes(), "text/html; charset=utf-8")
+            if path == "/api/status":
+                return self._json(200, {"cascade": {"base_url": vlm.base_url, "model": vlm.model,
+                                                    "reachable": reachable(vlm)}})
             if path == "/api/corpus":
                 return self._json(200, sorted(p.name for p in corpus.iterdir() if p.is_file()))
             self._json(404, {"error": "not found"})
@@ -117,6 +175,9 @@ def make_server(port: int, root: Path) -> ThreadingHTTPServer:
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
             tmp = None
             try:
+                mode = q.get("mode", "baseline")
+                if mode not in ("baseline", "cascade"):
+                    raise BadInput(f"unknown mode: {mode!r}")
                 if "corpus" in q:
                     target = (corpus / _safe_name(q["corpus"])).resolve()
                     if target.parent != corpus.resolve() or not target.is_file():
@@ -133,9 +194,13 @@ def make_server(port: int, root: Path) -> ThreadingHTTPServer:
                     target.write_bytes(self.rfile.read(size))
                 else:
                     raise BadInput("pass ?corpus=<name> or ?filename=<name>")
-                self._json(200, run(target))
+                self._json(200, run(target, mode))
             except BadInput as e:
                 self._json(400, {"error": str(e)})
+            except Unavailable as e:
+                self._json(503, {"error": str(e)})
+            except VLMError as e:  # ponytail: the runner falls back on VLM errors, so this rarely fires
+                self._json(502, {"error": str(e)})
             except Exception:
                 log.exception("run failed")
                 self._json(500, {"error": "pipeline failed; see server log"})
@@ -146,7 +211,9 @@ def make_server(port: int, root: Path) -> ThreadingHTTPServer:
         def log_message(self, fmt, *args) -> None:
             log.info(fmt, *args)
 
-    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    srv.vlm = vlm
+    return srv
 
 
 def serve(port: int, root: Path) -> None:
@@ -154,6 +221,7 @@ def serve(port: int, root: Path) -> None:
     t0 = time.perf_counter()
     srv = make_server(port, root)
     print(f"DoCC demo ready in {time.perf_counter() - t0:.1f}s at http://127.0.0.1:{srv.server_port}/", flush=True)
+    print(f"cascade VLM: {srv.vlm.base_url} model={srv.vlm.model}", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
