@@ -77,10 +77,17 @@ def test_a_value_a_rule_also_found_is_marked_as_agreement(cfg):
     assert (m.value, m.method, m.confidence) == ("INV-1", MetadataMethod.VLM_RULE_AGREE, 0.9)
 
 
-def test_a_non_multi_field_keeps_only_the_first_grounded_value(cfg):
+def test_a_non_multi_field_prefers_the_value_a_rule_agrees_with(cfg):
     d = _decide(cfg, {"invoice_number": ["NOT-THERE-9", "INV-2", "INV-1"]})
-    assert [m.value for m in _by_field(d)["invoice_number"]] == ["INV-2"]
-    assert [p["outcome"] for p in _prov(d, "invoice_number")] == ["ungrounded", "exact"]
+    assert [m.value for m in _by_field(d)["invoice_number"]] == ["INV-1"]
+    assert [(p["vlm_value"], p["rule_agrees"]) for p in _prov(d, "invoice_number")] == [("INV-1", True)]
+
+
+def test_without_rule_agreement_the_strongest_grounding_wins(cfg):
+    text = TEXT + "Ref ab-7\n"
+    d = _decide(cfg, {"invoice_number": ["NOT-THERE-9", "AB-7", "INV-2"]}, text=text, baseline_meta=[],
+                rules={})
+    assert [m.value for m in _by_field(d)["invoice_number"]] == ["INV-2"]  # exact beats loose "ab-7"
 
 
 def test_a_reformatted_amount_is_emitted_as_printed_and_normalised(cfg):

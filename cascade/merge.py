@@ -30,7 +30,7 @@ from baseline.schema import (
 )
 
 from .config import ConfidenceTiers
-from .ground import TextIndex, ground
+from .ground import EXACT, LOOSE, NORMALISED, UNGROUNDED, TextIndex, ground
 from .prompt import VLMAnswer
 
 
@@ -73,6 +73,9 @@ def _in_scope(fdef: dict, doc_class: str, cfg: Config) -> bool:
         return True
     run_all = bool(cfg.metadata_opts().get("run_scoped_fields_when_unknown", True))
     return doc_class in ("", _unknown(cfg)) and run_all
+
+
+_GROUND_RANK = {EXACT: 0, LOOSE: 1, NORMALISED: 2, UNGROUNDED: 3}
 
 
 def _key(normalized: str | None, raw: str) -> str:
@@ -128,10 +131,15 @@ def decide_fields(
 
         rule_cands = candidates_for(full, pages, fdef, cfg, doc_class, words, page_sizes)
         model_emitted = False
-        for value in answer.fields.get(name, []):
+        tried = [(v, ground(v, index, fdef, rule_cands, norm_opts)) for v in answer.fields.get(name, [])]
+        if not multi:
+            # One value is kept, so try the best first: rule agreement, then the
+            # strongest grounding (exact, loose, normalised; one match over many),
+            # then the model's order (the sort is stable).
+            tried.sort(key=lambda vg: (not vg[1].rule_agrees, _GROUND_RANK[vg[1].outcome], vg[1].n_matches > 1))
+        for value, g in tried:
             if kept and not multi:
                 break
-            g = ground(value, index, fdef, rule_cands, norm_opts)
             item = {"field": name, "vlm_value": value, "outcome": g.outcome,
                     "n_matches": g.n_matches, "rule_agrees": g.rule_agrees,
                     "char_start": g.start, "char_end": g.end, "emitted": False}
