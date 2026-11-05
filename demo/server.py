@@ -83,7 +83,21 @@ def make_server(port: int, root: Path) -> ThreadingHTTPServer:
         def _json(self, code: int, obj) -> None:
             self._send(code, json.dumps(obj).encode("utf-8"))
 
+        def _allowed(self, post: bool = False) -> bool:
+            """Block DNS rebinding (Host) and cross-site POSTs (Origin)."""
+            hosts = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
+            if self.headers.get("Host") not in hosts:
+                self._json(403, {"error": "bad host"})
+                return False
+            origin = self.headers.get("Origin")
+            if post and origin is not None and origin not in {f"http://{h}" for h in hosts}:
+                self._json(403, {"error": "bad origin"})
+                return False
+            return True
+
         def do_GET(self) -> None:
+            if not self._allowed():
+                return
             path = urlparse(self.path).path
             if path == "/":
                 page = root / "demo" / "index.html"
@@ -95,6 +109,8 @@ def make_server(port: int, root: Path) -> ThreadingHTTPServer:
             self._json(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if not self._allowed(post=True):
+                return
             url = urlparse(self.path)
             if url.path != "/api/run":
                 return self._json(404, {"error": "not found"})

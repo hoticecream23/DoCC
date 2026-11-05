@@ -21,8 +21,9 @@ def base():
     srv.server_close()
 
 
-def call(url, data=None):
-    req = urllib.request.Request(url, data=data, method="POST" if data is not None else "GET")
+def call(url, data=None, headers=None):
+    req = urllib.request.Request(url, data=data, headers=headers or {},
+                                 method="POST" if data is not None else "GET")
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
             return r.status, json.loads(r.read())
@@ -51,3 +52,13 @@ def test_run_rejects_traversal(base):
 def test_run_upload_txt(base):
     code, body = call(base + "/api/run?filename=x.txt", b"Invoice No: 123\nTotal: 50.00 USD\n")
     assert code == 200 and body["pages"] == []
+
+
+def test_foreign_host_rejected(base):
+    code, body = call(base + "/api/corpus", headers={"Host": "evil.example"})
+    assert code == 403 and body["error"] == "bad host"
+
+
+def test_foreign_origin_rejected(base):
+    code, body = call(base + "/api/run?corpus=invoice_native.pdf", b"", {"Origin": "http://evil.example"})
+    assert code == 403 and body["error"] == "bad origin"
