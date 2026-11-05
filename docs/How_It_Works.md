@@ -204,8 +204,8 @@ Cascade v2 is the successor. The code is in `cascade/`, beside `baseline/`.
 7. Cascade writes the record plus a provenance sidecar: the model's raw
    answer and what happened to every value (README.md).
 
-**What it needs to run.** A GPU server with an OpenAI-compatible model
-endpoint (vLLM or Ollama). See `docs/client_poc_setup.md`.
+**What it needs to run.** A GPU server with an OpenAI-compatible endpoint
+(vLLM or Ollama); see `docs/client_poc_setup.md`.
 
 **Status.** Cascade v2 runs on the developer laptop: an RTX 3070 with 8 GB,
 Ollama serving `qwen3.5:9b` (Apache-2.0), thinking off, 16384-token context.
@@ -222,6 +222,8 @@ Cascade now beats the baseline on both classification and metadata. The
 earlier metadata "drop" was the old scoring: it counted fields the gold never
 labels as false positives (PLAN-cascade.md). Run-to-run variance is about one
 document in 20 on classification (docs/parts/rounds.md).
+
+Cascade v2 has not yet run on the client's GPU server.
 
 For how cascade is built, read docs/How_Cascade_Works.md.
 
