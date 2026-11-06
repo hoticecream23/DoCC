@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from ..schema import Table, TableCell, TableMethod
 
 
-def _is_header_row(cells: list[TableCell], n_cols: int, hcfg: dict) -> bool:
+def _is_header_row(cells: list[TableCell], n_cols: int, hcfg: dict[str, Any]) -> bool:
     """First row is a header when it is a full row of labels, not of values.
 
     Digits are the tell. When the test fails the table is emitted with no
@@ -29,8 +31,21 @@ def _assemble(
     n_cols: int,
     method: TableMethod,
     cells: list[TableCell],
-    tcfg: dict,
+    tcfg: dict[str, Any],
 ) -> Table:
+    """Wrap a finished grid of cells as a Table, header row flagged if found.
+
+    Args:
+        page: Page number.
+        n_rows: Rows in the grid.
+        n_cols: Columns in the grid.
+        method: Strategy that produced the grid.
+        cells: The cells. Header cells are flagged in place.
+        tcfg: Tables config.
+
+    Returns:
+        The table, with an empty `table_id` for the caller to fill in.
+    """
     header: list[str] = []
     if _is_header_row(cells, n_cols, dict(tcfg.get("header", {}))):
         by_col = {c.col: c.text for c in cells if c.row == 0}
@@ -39,11 +54,9 @@ def _assemble(
             if c.row == 0:
                 c.is_header = True
 
-    placed = [c for c in cells if c.char_start is not None and c.char_end is not None]
-    span = (
-        (min(c.char_start for c in placed), max(c.char_end for c in placed))
-        if len(placed) == len(cells) and placed
-        else (None, None)
+    placed = [(c.char_start, c.char_end) for c in cells if c.char_start is not None and c.char_end is not None]
+    span: tuple[int | None, int | None] = (
+        (min(s for s, _ in placed), max(e for _, e in placed)) if len(placed) == len(cells) and placed else (None, None)
     )
     # Grid occupancy, nothing more. It orders candidates, it is not calibrated
     # against whether the table is right. A sparse but correct table scores

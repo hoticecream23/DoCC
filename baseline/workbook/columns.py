@@ -6,7 +6,13 @@ one place. A rename that touches only one side breaks the loop in silence.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openpyxl.workbook.workbook import Workbook
+
+# One sheet row as openpyxl returns it.
+Row = tuple[Any, ...]
 
 # The four things a reviewer can say about a row, and the spellings seen in the
 # sheet so far. Casing and spacing vary between reviewers and always will, so
@@ -128,13 +134,13 @@ def _cell(value: Any) -> str:
     return str(value).strip()
 
 
-def _get(row: tuple, index: dict[str, int], column: str) -> str:
+def _get(row: Row, index: dict[str, int], column: str) -> str:
     """One column of one row as a stripped string, blank when absent."""
     i = index.get(column)
     return "" if i is None or i >= len(row) else _cell(row[i])
 
 
-def _read_tab(wb, name: str) -> tuple[dict[str, int], list[tuple]]:
+def _read_tab(wb: Workbook, name: str) -> tuple[dict[str, int], list[Row]]:
     """Header index plus the non empty rows of one tab.
 
     DOC_ID is filled only on the first row of each document, the way a person
@@ -151,17 +157,17 @@ def _read_tab(wb, name: str) -> tuple[dict[str, int], list[tuple]]:
         return {}, []
     index = {h: i for i, h in enumerate(header) if h}
 
-    out: list[tuple] = []
+    out: list[Row] = []
     carried = ""
     key = index.get("DOC_ID")
     for row in rows:
         if not any(c is not None and _cell(c) for c in row):
             continue
-        row = list(row)
+        cells = list(row)
         if key is not None:
-            here = _cell(row[key])
+            here = _cell(cells[key])
             if here:
                 carried = here
-            row[key] = carried
-        out.append(tuple(row))
+            cells[key] = carried
+        out.append(tuple(cells))
     return index, out

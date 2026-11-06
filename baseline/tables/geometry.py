@@ -6,11 +6,17 @@ layout actually is.
 
 from __future__ import annotations
 
+import functools
 import statistics
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..schema import PAGE_SEP, Table, TableCell, TableMethod
 from .assemble import _assemble
+
+# One word box from the extractor: text, x0, y0, x1, y1, and optional
+# char_start and char_end.
+Word = dict[str, Any]
 
 # --------------------------------------------------------------------------
 # small numeric helpers
@@ -29,6 +35,7 @@ def _percentile(values: list[float], pct: float) -> float:
 
 
 def _median(values: list[float]) -> float:
+    """Median, zero for no values."""
     return statistics.median(values) if values else 0.0
 
 
@@ -59,21 +66,24 @@ class _Cell:
     x1: float
     y0: float
     y1: float
-    words: list[dict] = field(default_factory=list)
+    words: list[Word] = field(default_factory=list)
 
 
 @dataclass
 class _Line:
+    """Words that share a baseline, with the line's vertical extent."""
+
     y0: float
     y1: float
-    words: list[dict] = field(default_factory=list)
+    words: list[Word] = field(default_factory=list)
 
     @property
     def height(self) -> float:
+        """Vertical extent of the line."""
         return self.y1 - self.y0
 
 
-def _group_lines(words: list[dict], overlap_ratio: float) -> list[_Line]:
+def _group_lines(words: list[Word], overlap_ratio: float) -> list[_Line]:
     """Words into lines by vertical overlap, top to bottom.
 
     Overlap rather than a y threshold, so a line with mixed font sizes still
@@ -99,7 +109,7 @@ def _group_lines(words: list[dict], overlap_ratio: float) -> list[_Line]:
     return lines
 
 
-def _estimate_space_width(lines: list[_Line], gcfg: dict) -> float:
+def _estimate_space_width(lines: list[_Line], gcfg: dict[str, Any]) -> float:
     """One space, in points, for this page.
 
     Within line gaps are bimodal: spaces inside a cell, and the much wider
@@ -108,7 +118,7 @@ def _estimate_space_width(lines: list[_Line], gcfg: dict) -> float:
     """
     gaps = []
     for ln in lines:
-        for a, b in zip(ln.words, ln.words[1:]):
+        for a, b in zip(ln.words, ln.words[1:], strict=False):
             g = b["x0"] - a["x1"]
             if g > 0:
                 gaps.append(g)
@@ -119,7 +129,7 @@ def _estimate_space_width(lines: list[_Line], gcfg: dict) -> float:
 def _segment_cells(line: _Line, row: int, gap_limit: float) -> list[_Cell]:
     """Split one line where the horizontal gap exceeds the limit."""
     cells: list[_Cell] = []
-    cur: list[dict] = []
+    cur: list[Word] = []
     for w in line.words:
         if cur and (w["x0"] - cur[-1]["x1"]) > gap_limit:
             cells.append(_make_cell(row, cur))
@@ -130,7 +140,8 @@ def _segment_cells(line: _Line, row: int, gap_limit: float) -> list[_Cell]:
     return cells
 
 
-def _make_cell(row: int, words: list[dict]) -> _Cell:
+def _make_cell(row: int, words: list[Word]) -> _Cell:
+    """A cell spanning the boxes of its words."""
     return _Cell(
         row=row,
         x0=min(w["x0"] for w in words),
@@ -144,6 +155,12 @@ def _make_cell(row: int, words: list[dict]) -> _Cell:
 # --------------------------------------------------------------------------
 # columns and bands
 # --------------------------------------------------------------------------
+
+
+def _fit_score(cell: _Cell, columns: list[list[_Cell]], i: int) -> tuple[float, int]:
+    """Mean overlap of the cell with column i. Lower index wins a tie."""
+    col = columns[i]
+    return round(sum(_overlap_ratio(cell.x0, cell.x1, m.x0, m.x1) for m in col) / len(col), 6), -i
 
 
 def _build_columns(cells: list[_Cell], ratio: float) -> tuple[list[list[_Cell]], int]:
@@ -176,16 +193,7 @@ def _build_columns(cells: list[_Cell], ratio: float) -> tuple[list[list[_Cell]],
         if len(fits) > 1:
             ambiguous += 1
         # Best overlap wins, lowest index breaks a tie.
-        best = max(
-            fits,
-            key=lambda i: (
-                round(
-                    sum(_overlap_ratio(cell.x0, cell.x1, m.x0, m.x1) for m in columns[i]) / len(columns[i]),
-                    6,
-                ),
-                -i,
-            ),
-        )
+        best = max(fits, key=functools.partial(_fit_score, cell, columns))
         columns[best].append(cell)
 
     columns.sort(key=lambda col: (round(min(m.x0 for m in col), 3), round(min(m.x1 for m in col), 3)))
@@ -193,7 +201,7 @@ def _build_columns(cells: list[_Cell], ratio: float) -> tuple[list[list[_Cell]],
 
 
 def _geometry_bands(
-    lines: list[_Line], gcfg: dict, min_cols: int, min_rows: int
+    lines: list[_Line], gcfg: dict[str, Any], min_cols: int, min_rows: int
 ) -> list[list[tuple[int, list[_Cell]]]]:
     """Runs of consecutive lines that each segment into enough cells."""
     space = _estimate_space_width(lines, gcfg)
@@ -228,14 +236,43 @@ def _geometry_bands(
 # --------------------------------------------------------------------------
 
 
-def detect_geometry(page: int, words: list[dict], full: str, tcfg: dict) -> tuple[list[Table], list[str]]:
-    """Tables on one page from its word boxes."""
+@dataclass(frozen=True)
+class _GeomParams:
+    """Thresholds for one page, read once from the tables config."""
+
+    min_rows: int
+    min_cols: int
+    min_cells: int
+    ratio: float
+    support: int
+
+    @classmethod
+    def from_config(cls, tcfg: dict[str, Any]) -> _GeomParams:
+        """Read the thresholds, with their defaults, from the tables config."""
+        gcfg = dict(tcfg.get("geometry", {}))
+        return cls(
+            min_rows=int(tcfg.get("min_rows", 2)),
+            min_cols=int(tcfg.get("min_cols", 2)),
+            min_cells=int(tcfg.get("min_cells", 6)),
+            ratio=float(gcfg.get("column_overlap_ratio", 0.4)),
+            support=int(gcfg.get("min_column_support", 2)),
+        )
+
+
+def detect_geometry(page: int, words: list[Word], full: str, tcfg: dict[str, Any]) -> tuple[list[Table], list[str]]:
+    """Tables on one page from its word boxes.
+
+    Args:
+        page: Page number.
+        words: Word boxes on the page.
+        full: Canonical text of the document, for cell offsets.
+        tcfg: Tables config.
+
+    Returns:
+        The tables found, and reasons for bands that were rejected.
+    """
     gcfg = dict(tcfg.get("geometry", {}))
-    min_rows = int(tcfg.get("min_rows", 2))
-    min_cols = int(tcfg.get("min_cols", 2))
-    min_cells = int(tcfg.get("min_cells", 6))
-    ratio = float(gcfg.get("column_overlap_ratio", 0.4))
-    support = int(gcfg.get("min_column_support", 2))
+    params = _GeomParams.from_config(tcfg)
 
     usable = [w for w in words if (w.get("text") or "").strip()]
     if not usable:
@@ -245,63 +282,76 @@ def detect_geometry(page: int, words: list[dict], full: str, tcfg: dict) -> tupl
     tables: list[Table] = []
     abstained: list[str] = []
 
-    for band in _geometry_bands(lines, gcfg, min_cols, min_rows):
-        if len(band) < min_rows:
+    for band in _geometry_bands(lines, gcfg, params.min_cols, params.min_rows):
+        if len(band) < params.min_rows:
             continue
-        # Renumber rows so they are dense inside this band.
-        flat: list[_Cell] = []
-        for r, (_, cells) in enumerate(band):
-            for c in cells:
-                c.row = r
-                flat.append(c)
-
-        columns, ambiguous = _build_columns(flat, ratio)
-        where = f"page {page} rows {band[0][0]}-{band[-1][0]}"
-
-        widest = max(len(cells) for _, cells in band)
-        if len(columns) < min_cols:
-            continue
-        if ambiguous:
-            abstained.append(f"{where}: {ambiguous} cell(s) fit more than one column")
-            continue
-        if len(columns) > widest:
-            # More columns than the widest row has cells means the rows do not
-            # actually line up. Common when text is space aligned but rendered
-            # in a proportional font, where the header drifts off its data.
-            abstained.append(f"{where}: {len(columns)} columns but the widest row holds {widest} cells")
-            continue
-        thin = [i for i, col in enumerate(columns) if len(col) < support]
-        if thin:
-            abstained.append(f"{where}: column(s) {thin} stand on fewer than {support} cells")
-            continue
-        if len(flat) < min_cells:
-            continue
-
-        cells = []
-        for ci, col in enumerate(columns):
-            for c in col:
-                cells.append(_cell_from_words(c.row, ci, page, c.words, full))
-        cells.sort(key=lambda c: (c.row, c.col))
-        tables.append(_assemble(page, len(band), len(columns), TableMethod.GEOMETRY, cells, tcfg))
+        got = _band_to_table(page, band, full, tcfg, params)
+        if isinstance(got, str):
+            abstained.append(got)
+        elif got is not None:
+            tables.append(got)
 
     return tables, abstained
 
 
-def _cell_from_words(row: int, col: int, page: int, words: list[dict], full: str) -> TableCell:
+def _band_problem(where: str, columns: list[list[_Cell]], ambiguous: int, widest: int, support: int) -> str | None:
+    """Why a band's columns cannot be trusted, or None when they can."""
+    if ambiguous:
+        return f"{where}: {ambiguous} cell(s) fit more than one column"
+    if len(columns) > widest:
+        # More columns than the widest row has cells means the rows do not
+        # actually line up. Common when text is space aligned but rendered
+        # in a proportional font, where the header drifts off its data.
+        return f"{where}: {len(columns)} columns but the widest row holds {widest} cells"
+    thin = [i for i, col in enumerate(columns) if len(col) < support]
+    if thin:
+        return f"{where}: column(s) {thin} stand on fewer than {support} cells"
+    return None
+
+
+def _band_to_table(
+    page: int, band: list[tuple[int, list[_Cell]]], full: str, tcfg: dict[str, Any], params: _GeomParams
+) -> Table | str | None:
+    """Judge one band. A table, a reason it was rejected, or None to skip quietly."""
+    # Renumber rows so they are dense inside this band.
+    flat: list[_Cell] = []
+    for r, (_, row_cells) in enumerate(band):
+        for c in row_cells:
+            c.row = r
+            flat.append(c)
+
+    columns, ambiguous = _build_columns(flat, params.ratio)
+    where = f"page {page} rows {band[0][0]}-{band[-1][0]}"
+
+    widest = max(len(row_cells) for _, row_cells in band)
+    if len(columns) < params.min_cols:
+        return None
+    problem = _band_problem(where, columns, ambiguous, widest, params.support)
+    if problem is not None:
+        return problem
+    if len(flat) < params.min_cells:
+        return None
+
+    cells = [_cell_from_words(c.row, ci, page, c.words, full) for ci, col in enumerate(columns) for c in col]
+    cells.sort(key=lambda c: (c.row, c.col))
+    return _assemble(page, len(band), len(columns), TableMethod.GEOMETRY, cells, tcfg)
+
+
+def _cell_from_words(row: int, col: int, page: int, words: list[Word], full: str) -> TableCell:
     """One cell, offsets taken from the words when every one of them placed.
 
     The text is the canonical slice, not the words joined back together, so
     the offsets verify by construction. When any word is unplaced, or the span
     would cross a line, the offsets are null rather than approximate.
     """
-    starts = [w.get("char_start") for w in words]
-    ends = [w.get("char_end") for w in words]
+    starts = [w["char_start"] for w in words if w.get("char_start") is not None]
+    ends = [w["char_end"] for w in words if w.get("char_end") is not None]
     x0 = min(w["x0"] for w in words)
     y0 = min(w["y0"] for w in words)
     x1 = max(w["x1"] for w in words)
     y1 = max(w["y1"] for w in words)
 
-    if all(s is not None for s in starts) and all(e is not None for e in ends):
+    if len(starts) == len(words) and len(ends) == len(words):
         s, e = min(starts), max(ends)
         slice_ = full[s:e]
         if "\n" not in slice_ and PAGE_SEP not in slice_:

@@ -9,6 +9,7 @@ that touches only one of them silently breaks the loop.
 - `exporter.py`  a results file out to the sheet
 - `importer.py`  the reviewed sheet back in as gold
 - `merge.py`     carrying an earlier review onto a new run
+- `summary.py`   the markdown summary of an import
 """
 
 from .columns import (
@@ -23,8 +24,9 @@ from .columns import (
     VERDICTS,
 )
 from .exporter import export_workbook
-from .importer import WorkbookImport, import_workbook, render_summary
+from .importer import WorkbookImport, import_workbook
 from .merge import PriorReview, load_prior_review
+from .summary import render_summary
 
 __all__ = [
     "DOCUMENT_COLUMNS",

@@ -3,30 +3,37 @@
 from __future__ import annotations
 
 import collections
-import json
 import statistics
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
+
+# A gold or predicted record, as read from JSONL.
+Record = dict[str, Any]
+Pair = tuple[Record, Record]
 
 # Gold rows may key on either. doc_id is preferred, path is the fallback.
 KEYS = ("doc_id", "source_path", "path")
 
-
-def load_jsonl(path: str | Path) -> list[dict]:
-    rows = []
-    with open(path, encoding="utf-8") as fh:
-        for i, line in enumerate(fh, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{i} is not valid JSON: {exc}") from exc
-    return rows
+# Error rates the coverage curve is read at.
+COVERAGE_TARGETS = (0.01, 0.05, 0.10)
+# Most common classification mistakes kept in a result.
+CONFUSION_TOP = 10
 
 
-def _keys_of(row: dict) -> list[str]:
+class PRF(TypedDict):
+    """Precision, recall and F1 with the counts behind them."""
+
+    precision: float
+    recall: float
+    f1: float
+    tp: int
+    fp: int
+    fn: int
+
+
+def keys_of(row: Record) -> list[str]:
+    """Every join key a row offers, full value then file name."""
     out = []
     for k in KEYS:
         v = row.get(k)
@@ -36,27 +43,37 @@ def _keys_of(row: dict) -> list[str]:
     return out
 
 
-def join(gold: list[dict], pred: list[dict]) -> tuple[list[tuple[dict, dict]], list[str], list[str]]:
-    """Match gold to predictions on doc_id, then path, then filename."""
-    index: dict[str, dict] = {}
+def join(gold: list[Record], pred: list[Record]) -> tuple[list[Pair], list[str], list[str]]:
+    """Match gold to predictions on doc_id, then path, then filename.
+
+    Args:
+        gold: Gold records.
+        pred: Predicted records.
+
+    Returns:
+        Matched (gold, prediction) pairs, keys of gold rows with no
+        prediction, and keys of predictions no gold row used.
+    """
+    index: dict[str, Record] = {}
     for p in pred:
-        for k in _keys_of(p):
+        for k in keys_of(p):
             index.setdefault(k, p)
 
-    pairs, missing = [], []
+    pairs: list[Pair] = []
+    missing: list[str] = []
     used = set()
     for g in gold:
         hit = None
-        for k in _keys_of(g):
+        for k in keys_of(g):
             if k in index:
                 hit = index[k]
                 break
         if hit is None:
-            missing.append(_keys_of(g)[0] if _keys_of(g) else "?")
+            missing.append(keys_of(g)[0] if keys_of(g) else "?")
         else:
             pairs.append((g, hit))
             used.add(id(hit))
-    extra = [_keys_of(p)[0] for p in pred if id(p) not in used]
+    extra = [keys_of(p)[0] for p in pred if id(p) not in used]
     return pairs, missing, extra
 
 
@@ -65,7 +82,17 @@ def join(gold: list[dict], pred: list[dict]) -> tuple[list[tuple[dict, dict]], l
 # --------------------------------------------------------------------------
 
 
-def prf(tp: int, fp: int, fn: int) -> dict:
+def prf(tp: int, fp: int, fn: int) -> PRF:
+    """Precision, recall and F1 from raw counts.
+
+    Args:
+        tp: True positives.
+        fp: False positives.
+        fn: False negatives.
+
+    Returns:
+        The three rates rounded to four places, plus the counts.
+    """
     p = tp / (tp + fp) if tp + fp else 0.0
     r = tp / (tp + fn) if tp + fn else 0.0
     f = 2 * p * r / (p + r) if p + r else 0.0
@@ -73,7 +100,15 @@ def prf(tp: int, fp: int, fn: int) -> dict:
 
 
 def levenshtein(a: str, b: str) -> int:
-    """Two row edit distance. Fine for page sized strings."""
+    """Two row edit distance. Fine for page sized strings.
+
+    Args:
+        a: First string.
+        b: Second string.
+
+    Returns:
+        Character edit distance between the two.
+    """
     if a == b:
         return 0
     if not a:
@@ -87,6 +122,16 @@ def levenshtein(a: str, b: str) -> int:
             cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
         prev = cur
     return prev[-1]
+
+
+def counts() -> dict[str, int]:
+    """Fresh tp/fp/fn counter."""
+    return {"tp": 0, "fp": 0, "fn": 0}
+
+
+def macro_f1(per: dict[str, PRF]) -> float:
+    """Mean F1 over the entries, zero when there are none."""
+    return round(statistics.fmean([v["f1"] for v in per.values()]) if per else 0.0, 4)
 
 
 # --------------------------------------------------------------------------
@@ -107,8 +152,15 @@ def _word_error(ref: list[str], hyp: list[str]) -> int:
     return prev[-1]
 
 
-def eval_extraction(pairs: list[tuple[dict, dict]]) -> dict:
-    """CER and WER, only over gold rows that carry reference text."""
+def eval_extraction(pairs: list[Pair]) -> dict[str, Any]:
+    """CER and WER, only over gold rows that carry reference text.
+
+    Args:
+        pairs: Matched (gold, prediction) records.
+
+    Returns:
+        `scored`, and `cer` and `wer` when anything was scored.
+    """
     cers, wers, n = [], [], 0
     for g, p in pairs:
         ref = g.get("text")
@@ -133,21 +185,33 @@ def eval_extraction(pairs: list[tuple[dict, dict]]) -> dict:
     }
 
 
-def coverage_at_error(items: list[tuple[float, bool]], unknown_flags: list[bool], targets=(0.01, 0.05, 0.10)) -> dict:
+def coverage_at_error(
+    items: list[tuple[float, bool]],
+    unknown_flags: list[bool],
+    targets: Sequence[float] = COVERAGE_TARGETS,
+) -> dict[str, float]:
     """Max coverage achievable while staying under each error rate.
 
     Coverage is the share of all documents answered. Error is measured only
     among answered ones. This is the metric that matters when the system is
     allowed to decline.
+
+    Args:
+        items: (confidence, correct) per document.
+        unknown_flags: True where the document was not answered.
+        targets: Error rates to read the curve at.
+
+    Returns:
+        `coverage_at_<n>pct_error` and `threshold_at_<n>pct_error` per target.
     """
     total = len(items)
     if not total:
         return {}
     # Only non unknown predictions count as answers.
-    answers = [(c, ok) for (c, ok), unk in zip(items, unknown_flags) if not unk]
+    answers = [(c, ok) for (c, ok), unk in zip(items, unknown_flags, strict=False) if not unk]
     answers.sort(key=lambda t: -t[0])
 
-    out: dict[str, Any] = {}
+    out: dict[str, float] = {}
     for target in targets:
         best_cov, best_thr = 0.0, 1.0
         tp = 0
@@ -163,11 +227,32 @@ def coverage_at_error(items: list[tuple[float, bool]], unknown_flags: list[bool]
     return out
 
 
-def eval_classification(pairs: list[tuple[dict, dict]], unknown_label: str = "unknown") -> dict:
-    per: dict[str, dict[str, int]] = collections.defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
+def _count_label(per: dict[str, dict[str, int]], truth: str, got: str, ok: bool, is_unknown: bool) -> None:
+    """Add one classification outcome to the per label counts."""
+    if ok:
+        per[truth]["tp"] += 1
+    else:
+        per[truth]["fn"] += 1
+        if not is_unknown:
+            per[got]["fp"] += 1
+
+
+def eval_classification(pairs: list[Pair], unknown_label: str = "unknown") -> dict[str, Any]:
+    """Accuracy, coverage, per label F1 and the most common mistakes.
+
+    Args:
+        pairs: Matched (gold, prediction) records.
+        unknown_label: Label the system uses to abstain.
+
+    Returns:
+        Summary counts and rates, `per_label` scores, `confusion`, and the
+        coverage at error figures.
+    """
+    per: dict[str, dict[str, int]] = collections.defaultdict(counts)
     correct = answered = 0
-    conf_items, unknown_flags = [], []
-    confusion: collections.Counter = collections.Counter()
+    conf_items: list[tuple[float, bool]] = []
+    unknown_flags: list[bool] = []
+    confusion: collections.Counter[tuple[str, str]] = collections.Counter()
 
     for g, p in pairs:
         truth = str(g.get("label", "")).strip()
@@ -183,17 +268,9 @@ def eval_classification(pairs: list[tuple[dict, dict]], unknown_label: str = "un
             correct += int(ok)
         if not ok:
             confusion[(truth, got or unknown_label)] += 1
+        _count_label(per, truth, got, ok, is_unknown)
 
-        if ok:
-            per[truth]["tp"] += 1
-        else:
-            per[truth]["fn"] += 1
-            if not is_unknown:
-                per[got]["fp"] += 1
-
-    labels = sorted(per)
-    per_label = {k: prf(per[k]["tp"], per[k]["fp"], per[k]["fn"]) for k in labels}
-    macro = round(statistics.fmean([v["f1"] for v in per_label.values()]) if per_label else 0.0, 4)
+    per_label = {k: prf(per[k]["tp"], per[k]["fp"], per[k]["fn"]) for k in sorted(per)}
     n = len(pairs)
     return {
         "n": n,
@@ -202,107 +279,23 @@ def eval_classification(pairs: list[tuple[dict, dict]], unknown_label: str = "un
         "coverage": round(answered / n, 4) if n else 0.0,
         "accuracy_overall": round(correct / n, 4) if n else 0.0,
         "accuracy_when_answered": round(correct / answered, 4) if answered else 0.0,
-        "macro_f1": macro,
+        "macro_f1": macro_f1(per_label),
         "per_label": per_label,
-        "confusion": {f"{t} -> {g}": c for (t, g), c in confusion.most_common(10)},
+        "confusion": {f"{t} -> {g}": c for (t, g), c in confusion.most_common(CONFUSION_TOP)},
         **coverage_at_error(conf_items, unknown_flags),
     }
 
 
-def _norm_of(item: dict) -> str:
-    v = item.get("normalized_value")
-    if v is None:
-        v = item.get("value")
-    return str(v).strip() if v is not None else ""
+def eval_tagging(pairs: list[Pair]) -> dict[str, Any]:
+    """Per tag, micro and macro F1 over the tag sets of each document.
 
+    Args:
+        pairs: Matched (gold, prediction) records.
 
-def eval_metadata(pairs: list[tuple[dict, dict]]) -> dict:
-    """Scored two ways, because they answer different questions.
-
-    value: did we get the right answer.
-    span:  did we point at the right place in the text.
-    Span needs gold offsets, so it is skipped where gold has none.
+    Returns:
+        `per_tag`, `micro` and `macro_f1`.
     """
-    val: dict[str, dict[str, int]] = collections.defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
-    span: dict[str, dict[str, int]] = collections.defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
-    span_scored = 0
-    validated_tp = validated_fp = 0
-    errors: list[str] = []
-
-    for g, p in pairs:
-        gold_fields = g.get("metadata") or []
-        pred_fields = p.get("metadata") or []
-
-        gv: dict[str, set] = collections.defaultdict(set)
-        gs: dict[str, set] = collections.defaultdict(set)
-        has_spans = False
-        for item in gold_fields:
-            name = item.get("field")
-            if not name:
-                continue
-            gv[name].add(_norm_of(item))
-            if item.get("char_start") is not None and item.get("char_end") is not None:
-                gs[name].add((int(item["char_start"]), int(item["char_end"])))
-                has_spans = True
-
-        pv: dict[str, set] = collections.defaultdict(set)
-        ps: dict[str, set] = collections.defaultdict(set)
-        for item in pred_fields:
-            name = item.get("field")
-            if not name:
-                continue
-            pv[name].add(_norm_of(item))
-            ps[name].add((int(item.get("char_start", -1)), int(item.get("char_end", -1))))
-            if item.get("validated"):
-                truth = gv.get(name, set())
-                if _norm_of(item) in truth:
-                    validated_tp += 1
-                elif truth:
-                    validated_fp += 1
-                    errors.append(
-                        f"{_keys_of(g)[0]}: {name} validated but wrong, "
-                        f"got {_norm_of(item)!r} want {sorted(truth)!r}"
-                    )
-
-        for name in set(gv) | set(pv):
-            got, want = pv.get(name, set()), gv.get(name, set())
-            val[name]["tp"] += len(got & want)
-            val[name]["fp"] += len(got - want)
-            val[name]["fn"] += len(want - got)
-            if want and not (got & want):
-                errors.append(f"{_keys_of(g)[0]}: {name} want {sorted(want)!r} got {sorted(got) or 'nothing'!r}")
-
-        if has_spans:
-            span_scored += 1
-            for name in set(gs) | set(ps):
-                got, want = ps.get(name, set()), gs.get(name, set())
-                span[name]["tp"] += len(got & want)
-                span[name]["fp"] += len(got - want)
-                span[name]["fn"] += len(want - got)
-
-    def _roll(d):
-        per = {k: prf(v["tp"], v["fp"], v["fn"]) for k, v in sorted(d.items())}
-        tp = sum(v["tp"] for v in d.values())
-        fp = sum(v["fp"] for v in d.values())
-        fn = sum(v["fn"] for v in d.values())
-        micro = prf(tp, fp, fn)
-        macro = round(statistics.fmean([v["f1"] for v in per.values()]) if per else 0.0, 4)
-        return {"per_field": per, "micro": micro, "macro_f1": macro}
-
-    return {
-        "value": _roll(val),
-        "span": _roll(span) if span_scored else {"per_field": {}, "note": "gold has no offsets"},
-        "span_scored_docs": span_scored,
-        "validated_precision": (
-            round(validated_tp / (validated_tp + validated_fp), 4) if validated_tp + validated_fp else None
-        ),
-        "validated_wrong": validated_fp,
-        "errors": errors[:40],
-    }
-
-
-def eval_tagging(pairs: list[tuple[dict, dict]]) -> dict:
-    per: dict[str, dict[str, int]] = collections.defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
+    per: dict[str, dict[str, int]] = collections.defaultdict(counts)
     for g, p in pairs:
         want = set(g.get("tags") or [])
         got = {t["tag"] for t in (p.get("tags") or []) if t.get("tag")}
@@ -318,120 +311,4 @@ def eval_tagging(pairs: list[tuple[dict, dict]]) -> dict:
     tp = sum(v["tp"] for v in per.values())
     fp = sum(v["fp"] for v in per.values())
     fn = sum(v["fn"] for v in per.values())
-    return {
-        "per_tag": per_tag,
-        "micro": prf(tp, fp, fn),
-        "macro_f1": round(statistics.fmean([v["f1"] for v in per_tag.values()]) if per_tag else 0.0, 4),
-    }
-
-
-# --------------------------------------------------------------------------
-# calibration
-# --------------------------------------------------------------------------
-
-# Lower bound inclusive, upper exclusive, except the top bucket keeps 1.0.
-BUCKETS = (("0.5-0.7", 0.5, 0.7), ("0.7-0.9", 0.7, 0.9), ("0.9-1.0", 0.9, float("inf")))
-
-
-def bucket_stats(items: list[tuple[float, bool]], metric: str = "precision") -> dict:
-    """Per bucket count, hit rate and mean confidence, plus ECE.
-
-    ECE = sum over buckets of (n_b / N) * |hit_rate_b - mean_confidence_b|,
-    where N counts only predictions that fall in a bucket (confidence >= 0.5).
-    """
-    buckets, n_total, ece_sum = {}, 0, 0.0
-    for name, lo, hi in BUCKETS:
-        hits = [(c, ok) for c, ok in items if lo <= c < hi]
-        n = len(hits)
-        rate = sum(ok for _, ok in hits) / n if n else 0.0
-        mean_c = statistics.fmean(c for c, _ in hits) if n else 0.0
-        buckets[name] = {"n": n, metric: round(rate, 4), "mean_confidence": round(mean_c, 4)}
-        n_total += n
-        ece_sum += n * abs(rate - mean_c)
-    return {
-        "buckets": buckets,
-        "n": n_total,
-        "below_0.5": sum(1 for c, _ in items if c < 0.5),
-        "ece": round(ece_sum / n_total, 4) if n_total else None,
-    }
-
-
-def eval_calibration(pairs: list[tuple[dict, dict]], unknown_label: str = "unknown") -> dict:
-    """Bucket field values and classification answers by their stated confidence.
-
-    A field value is right when it is in the gold set for that field, the
-    same test as a value TP. Repeated values keep their highest confidence,
-    so counts line up with tp + fp.
-    """
-    per_field: dict[str, list[tuple[float, bool]]] = collections.defaultdict(list)
-    cls_items: list[tuple[float, bool]] = []
-    for g, p in pairs:
-        gv: dict[str, set] = collections.defaultdict(set)
-        for item in g.get("metadata") or []:
-            if item.get("field"):
-                gv[item["field"]].add(_norm_of(item))
-        best: dict[tuple[str, str], float] = {}
-        for item in p.get("metadata") or []:
-            name, conf = item.get("field"), item.get("confidence")
-            if not name or conf is None:
-                continue
-            key = (name, _norm_of(item))
-            best[key] = max(best.get(key, 0.0), float(conf))
-        for (name, value), conf in best.items():
-            per_field[name].append((conf, value in gv.get(name, set())))
-
-        c = p.get("classification") or {}
-        got = str(c.get("label", "")).strip()
-        if got and got != unknown_label and c.get("confidence") is not None:
-            cls_items.append((float(c["confidence"]), got == str(g.get("label", "")).strip()))
-
-    all_items = [x for v in per_field.values() for x in v]
-    return {
-        "fields": {
-            "overall": bucket_stats(all_items),
-            "per_field": {k: bucket_stats(v) for k, v in sorted(per_field.items())},
-        },
-        "classification": bucket_stats(cls_items, metric="accuracy"),
-    }
-
-
-# --------------------------------------------------------------------------
-# gold-covered fields
-# --------------------------------------------------------------------------
-
-
-def covered_fields(gold: list[dict]) -> set[str]:
-    """Field names the gold file labels at least once."""
-    return {i["field"] for g in gold for i in g.get("metadata") or [] if i.get("field")}
-
-
-def eval_covered(pairs: list[tuple[dict, dict]], covered: set[str]) -> tuple[dict, dict]:
-    """Metadata and field calibration over gold-covered fields only.
-
-    A predicted field the gold never labels cannot be judged, so it is
-    "unscored" here instead of a false positive. Counted as distinct values
-    per document, the same unit as a value FP, so the existing FP total
-    equals the covered FP plus the unscored count.
-    """
-    unscored: collections.Counter = collections.Counter()
-    kept = []
-    for g, p in pairs:
-        seen = set()
-        for item in p.get("metadata") or []:
-            name = item.get("field")
-            if name and name not in covered and (name, _norm_of(item)) not in seen:
-                seen.add((name, _norm_of(item)))
-                unscored[name] += 1
-        meta = [i for i in p.get("metadata") or [] if i.get("field") in covered]
-        kept.append((g, {**p, "metadata": meta}))
-    value = eval_metadata(kept)["value"]
-    return (
-        {
-            "fields": sorted(covered),
-            "micro": value["micro"],
-            "macro_f1": value["macro_f1"],
-            "unscored_predictions": sum(unscored.values()),
-            "unscored_per_field": dict(sorted(unscored.items())),
-        },
-        eval_calibration(kept)["fields"],
-    )
+    return {"per_tag": per_tag, "micro": prf(tp, fp, fn), "macro_f1": macro_f1(per_tag)}

@@ -1,3 +1,6 @@
+# Over 400 lines because the module docstring is the written contract for
+# how a reviewed sheet becomes gold (about 40 lines). The code itself is
+# read, parse and merge steps that only make sense together.
 """The reviewed workbook, read back in as gold.
 
 The workbook is the human facing mirror of `results.jsonl`: every document,
@@ -33,6 +36,7 @@ Four things about the sheet shape the code more than the format does.
    field or tag the pipeline never emitted leaves no trace, and gold built from
    this sheet can measure precision honestly but not recall. `render_summary`
    says so in the report rather than leaving the next reader to infer it.
+   The summary itself lives in `summary.py`.
 
 Names are read through the config the same way `labels.py` reads client labels
 through `taxonomy.yaml`: a class, field or tag that is not declared is a loud
@@ -51,14 +55,19 @@ from ..config import Config
 from ..logging_setup import get_logger
 from ..metadata import NormCtx, normalize
 from ..schema import compute_doc_id
-from .columns import TRUTHY, VERDICTS, _cell, _get, _read_tab
+from .columns import TRUTHY, VERDICTS, Row, _cell, _get, _read_tab
 
 log = get_logger(__name__)
+
+# One gold document: doc_id, label, metadata, tags, and optional path and filename.
+GoldRow = dict[str, Any]
 
 
 @dataclass
 class WorkbookImport:
-    rows: list[dict[str, Any]] = field(default_factory=list)
+    """Gold rows read from a workbook, plus everything that did not import."""
+
+    rows: list[GoldRow] = field(default_factory=list)
     # Everything the caller has to be told about rather than have guessed at.
     unknown_classes: list[str] = field(default_factory=list)
     unknown_fields: list[str] = field(default_factory=list)
@@ -71,7 +80,7 @@ class WorkbookImport:
     skipped_not_gold: int = 0
     spurious_rows: int = 0
     human_rows: int = 0
-    counts: Counter = field(default_factory=Counter)
+    counts: Counter[str] = field(default_factory=Counter)
 
     @property
     def problems(self) -> list[str]:
@@ -101,6 +110,7 @@ def _verdict(value: Any, res: WorkbookImport, where: str) -> str:
 
 
 def _is_gold(value: Any) -> bool:
+    """IS_GOLD cell reads as true."""
     return _cell(value).casefold() in TRUTHY
 
 
@@ -117,7 +127,7 @@ def _doc_id_to_path(root: Path) -> dict[str, str]:
     return out
 
 
-def _offsets(row: tuple, index: dict[str, int]) -> dict[str, int]:
+def _offsets(row: Row, index: dict[str, int]) -> dict[str, int]:
     """Page and span. Both ends of the span or neither, never one."""
 
     def as_int(column: str) -> int | None:
@@ -138,34 +148,71 @@ def _offsets(row: tuple, index: dict[str, int]) -> dict[str, int]:
     return out
 
 
-def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> WorkbookImport:
-    """Read the reviewed workbook and emit one gold row per gold document."""
+@dataclass
+class _Tab:
+    """One tab of the workbook: header index and non empty rows."""
+
+    index: dict[str, int]
+    rows: list[Row]
+
+
+def _read_workbook(xlsx_path: str | Path) -> tuple[_Tab, _Tab, _Tab]:
+    """Read step: the Documents, Metadata and Tags tabs, workbook closed after."""
     import openpyxl
 
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
+    try:
+        return (
+            _Tab(*_read_tab(wb, "Documents")),
+            _Tab(*_read_tab(wb, "Metadata")),
+            _Tab(*_read_tab(wb, "Tags")),
+        )
+    finally:
+        wb.close()
+
+
+def _merge_gold(gold: dict[str, GoldRow], res: WorkbookImport) -> None:
+    """Merge step: sort each gold row's contents and the rows themselves."""
+    for row in gold.values():
+        row["tags"].sort()
+        row["metadata"].sort(key=_metadata_order)
+    res.rows = [gold[k] for k in sorted(gold)]
+
+
+def _metadata_order(entry: dict[str, Any]) -> tuple[str, str]:
+    """Sort key for gold metadata: field, then value."""
+    return entry["field"], entry["normalized_value"]
+
+
+def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> WorkbookImport:
+    """Read the reviewed workbook and emit one gold row per gold document.
+
+    Read, then parse each tab against the config, then merge into gold rows.
+
+    Args:
+        xlsx_path: The reviewed workbook.
+        root: Directory holding the documents, used to resolve doc_ids.
+        cfg: Config declaring the classes, fields and tags.
+
+    Returns:
+        The gold rows and everything the caller has to be told about.
+
+    Raises:
+        NotADirectoryError: `root` is not a directory.
+    """
     res = WorkbookImport()
     root = Path(root)
     if not root.is_dir():
         raise NotADirectoryError(f"--root is not a directory: {root}")
 
-    wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
-    try:
-        doc_i, doc_rows = _read_tab(wb, "Documents")
-        meta_i, meta_rows = _read_tab(wb, "Metadata")
-        tag_i, tag_rows = _read_tab(wb, "Tags")
-    finally:
-        wb.close()
-
-    if not doc_rows:
+    docs, meta, tags = _read_workbook(xlsx_path)
+    if not docs.rows:
         return res
 
-    gold = _import_documents(doc_i, doc_rows, _doc_id_to_path(root), cfg, res)
-    _import_metadata(meta_i, meta_rows, gold, cfg, res)
-    _import_tags(tag_i, tag_rows, gold, cfg, res)
-
-    for row in gold.values():
-        row["tags"].sort()
-        row["metadata"].sort(key=lambda e: (e["field"], e["normalized_value"]))
-    res.rows = [gold[k] for k in sorted(gold)]
+    gold = _import_documents(docs.index, docs.rows, _doc_id_to_path(root), cfg, res)
+    _import_metadata(meta.index, meta.rows, gold, cfg, res)
+    _import_tags(tags.index, tags.rows, gold, cfg, res)
+    _merge_gold(gold, res)
 
     if res.unresolved_doc_ids:
         log.warning("workbook rows whose doc_id is not under --root", extra={"count": len(res.unresolved_doc_ids)})
@@ -174,36 +221,45 @@ def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> Wor
     return res
 
 
+def _skip_not_gold(row: Row, index: dict[str, int], res: WorkbookImport) -> bool:
+    """True, and counted, when the tab has IS_GOLD and this row does not set it."""
+    if "IS_GOLD" in index and not _is_gold(_get(row, index, "IS_GOLD")):
+        res.skipped_not_gold += 1
+        return True
+    return False
+
+
+def _document_label(row: Row, doc_i: dict[str, int], doc_id: str, res: WorkbookImport) -> tuple[str, str] | None:
+    """(verdict, label) of a Documents row, or None when it states no truth."""
+    verdict = _verdict(_get(row, doc_i, "CLASS_VERDICT"), res, f"Documents/{doc_id}")
+    if verdict == "ok":
+        return verdict, _get(row, doc_i, "DOC_CLASS").casefold()
+    if verdict in ("wrong", "missing"):
+        label = _get(row, doc_i, "CLASS_CORRECTED").casefold()
+        if not label:
+            res.missing_correction.append(f"Documents/{doc_id}: {verdict} with no CLASS_CORRECTED")
+            return None
+        return verdict, label
+    # No usable verdict means nobody has said what the truth is.
+    return None
+
+
 def _import_documents(
-    doc_i: dict[str, int], doc_rows: list[tuple], by_id: dict[str, str], cfg: Config, res: WorkbookImport
-) -> dict[str, dict[str, Any]]:
+    doc_i: dict[str, int], doc_rows: list[Row], by_id: dict[str, str], cfg: Config, res: WorkbookImport
+) -> dict[str, GoldRow]:
     """The Documents tab: one gold row per document the reviewer gave a class."""
     classes = {c.casefold() for c in cfg.class_names}
     unknown_label = str(cfg.classify_opts().get("unknown_label", "unknown")).casefold()
 
-    gold: dict[str, dict[str, Any]] = {}
+    gold: dict[str, GoldRow] = {}
     for row in doc_rows:
         doc_id = _get(row, doc_i, "DOC_ID")
-        if not doc_id:
+        if not doc_id or _skip_not_gold(row, doc_i, res):
             continue
-        if "IS_GOLD" in doc_i and not _is_gold(_get(row, doc_i, "IS_GOLD")):
-            res.skipped_not_gold += 1
+        got = _document_label(row, doc_i, doc_id, res)
+        if got is None:
             continue
-
-        verdict = _verdict(_get(row, doc_i, "CLASS_VERDICT"), res, f"Documents/{doc_id}")
-        predicted = _get(row, doc_i, "DOC_CLASS").casefold()
-        corrected = _get(row, doc_i, "CLASS_CORRECTED").casefold()
-
-        if verdict == "ok":
-            label = predicted
-        elif verdict in ("wrong", "missing"):
-            label = corrected
-            if not label:
-                res.missing_correction.append(f"Documents/{doc_id}: {verdict} with no CLASS_CORRECTED")
-                continue
-        else:
-            # No usable verdict means nobody has said what the truth is.
-            continue
+        verdict, label = got
 
         # Confirming an abstention says the pipeline was right not to answer.
         # It does not say the document is of class "unknown", and no such class
@@ -232,12 +288,61 @@ def _import_documents(
     return gold
 
 
+def _typed_value(
+    row: Row, meta_i: dict[str, int], verdict: str, where: str, res: WorkbookImport
+) -> tuple[str, dict[str, int]] | None:
+    """The value a Metadata row stands behind, and its offsets when it has any."""
+    if verdict == "ok":
+        return _get(row, meta_i, "NORMALIZED_VALUE") or _get(row, meta_i, "VALUE"), _offsets(row, meta_i)
+    typed = _get(row, meta_i, "CORRECTED_VALUE")
+    if not typed:
+        res.missing_correction.append(f"{where}: {verdict} with no CORRECTED_VALUE")
+        return None
+    # No span: the reviewer supplied an answer, not a place in the text.
+    return typed, {}
+
+
+def _normalised(normalizer: Any, typed: str, norm_opts: dict[str, Any], res: WorkbookImport) -> str:
+    """Run the field's normalizer over a sheet value, keeping it raw if that fails.
+
+    Both confirmed and corrected values normalise. A correction is raw by
+    definition, and the sheet's NORMALIZED_VALUE column is only as normalised
+    as whoever filled it in, so several confirmed rows carry a typed value
+    too. The normalizers are idempotent, so a value the pipeline already
+    produced passes through untouched.
+    """
+    value, _extras = normalize(normalizer, typed, NormCtx(full=typed, start=0, end=len(typed), opts=norm_opts))
+    value = "" if value is None else str(value).strip()
+    if not value:
+        # The normalizer could not read it. The pipeline keeps such a field
+        # with a null normalized_value rather than dropping it, and the
+        # harness falls back to the raw value when scoring, so dropping it
+        # here would lose a real answer and make the round trip lossy.
+        res.counts["field_not_normalised"] += 1
+        return typed
+    if value != typed:
+        res.counts["field_normalised"] += 1
+    return value
+
+
+def _field_verdict(row: Row, meta_i: dict[str, int], where: str, res: WorkbookImport) -> str | None:
+    """Verdict of a Metadata row that can produce gold, else None."""
+    verdict = _verdict(_get(row, meta_i, "VERDICT"), res, where)
+    # A spurious row is a real statement: the truth is that this field is
+    # not there. It contributes nothing to gold, which is the whole point.
+    if verdict == "spurious":
+        res.spurious_rows += 1
+        return None
+    if verdict not in ("ok", "wrong", "missing"):
+        return None
+    return verdict
+
+
 def _import_metadata(
-    meta_i: dict[str, int], meta_rows: list[tuple], gold: dict[str, dict[str, Any]], cfg: Config, res: WorkbookImport
+    meta_i: dict[str, int], meta_rows: list[Row], gold: dict[str, GoldRow], cfg: Config, res: WorkbookImport
 ) -> None:
     """The Metadata tab: confirmed and corrected field values, normalised."""
     normalizers = {str(f.get("name", "")).casefold(): f.get("normalizer") for f in cfg.field_defs}
-    fields = set(normalizers)
     norm_opts = cfg.fields.get("normalizer_options", {}) or {}
 
     for row in meta_rows:
@@ -245,60 +350,26 @@ def _import_metadata(
         if doc_id not in gold:
             res.orphan_rows.append(f"Metadata/{doc_id or '<no doc_id>'}")
             continue
-        if "IS_GOLD" in meta_i and not _is_gold(_get(row, meta_i, "IS_GOLD")):
-            res.skipped_not_gold += 1
+        if _skip_not_gold(row, meta_i, res):
             continue
-
         name = _get(row, meta_i, "FIELD").casefold()
         if not name:
             continue
-        verdict = _verdict(_get(row, meta_i, "VERDICT"), res, f"Metadata/{doc_id}/{name}")
-
-        # A spurious row is a real statement: the truth is that this field is
-        # not there. It contributes nothing to gold, which is the whole point.
-        if verdict == "spurious":
-            res.spurious_rows += 1
+        where = f"Metadata/{doc_id}/{name}"
+        verdict = _field_verdict(row, meta_i, where, res)
+        if verdict is None:
             continue
-        if verdict not in ("ok", "wrong", "missing"):
-            continue
-        if name not in fields:
+        if name not in normalizers:
             res.unknown_fields.append(name)
             continue
-
-        if verdict == "ok":
-            typed = _get(row, meta_i, "NORMALIZED_VALUE") or _get(row, meta_i, "VALUE")
-            offsets = _offsets(row, meta_i)
-        else:
-            typed = _get(row, meta_i, "CORRECTED_VALUE")
-            if not typed:
-                res.missing_correction.append(f"Metadata/{doc_id}/{name}: {verdict} with no CORRECTED_VALUE")
-                continue
-            # No span: the reviewer supplied an answer, not a place in the text.
-            offsets = {}
-
-        # Both branches normalise. A correction is raw by definition, and the
-        # sheet's NORMALIZED_VALUE column is only as normalised as whoever
-        # filled it in, so several confirmed rows carry a typed value too. The
-        # normalizers are idempotent, so a value the pipeline already produced
-        # passes through untouched.
-        value, _extras = normalize(
-            normalizers.get(name),
-            typed,
-            NormCtx(full=typed, start=0, end=len(typed), opts=norm_opts),
-        )
-        value = "" if value is None else str(value).strip()
-        if not value:
-            # The normalizer could not read it. The pipeline keeps such a field
-            # with a null normalized_value rather than dropping it, and the
-            # harness falls back to the raw value when scoring, so dropping it
-            # here would lose a real answer and make the round trip lossy.
-            value = typed
-            res.counts["field_not_normalised"] += 1
-        elif value != typed:
-            res.counts["field_normalised"] += 1
+        got = _typed_value(row, meta_i, verdict, where, res)
+        if got is None:
+            continue
+        typed, offsets = got
+        value = _normalised(normalizers.get(name), typed, norm_opts, res)
         if not value:
             continue
-        entry = {"field": name, "normalized_value": value}
+        entry: dict[str, Any] = {"field": name, "normalized_value": value}
         entry.update(offsets)
 
         if _get(row, meta_i, "ROW_SOURCE").casefold() == "human":
@@ -308,7 +379,7 @@ def _import_metadata(
 
 
 def _import_tags(
-    tag_i: dict[str, int], tag_rows: list[tuple], gold: dict[str, dict[str, Any]], cfg: Config, res: WorkbookImport
+    tag_i: dict[str, int], tag_rows: list[Row], gold: dict[str, GoldRow], cfg: Config, res: WorkbookImport
 ) -> None:
     """The Tags tab: a tag is either on the document or it is not."""
     tags = {str(t.get("name", "")).casefold() for t in cfg.tag_defs}
@@ -318,8 +389,7 @@ def _import_tags(
         if doc_id not in gold:
             res.orphan_rows.append(f"Tags/{doc_id or '<no doc_id>'}")
             continue
-        if "IS_GOLD" in tag_i and not _is_gold(_get(row, tag_i, "IS_GOLD")):
-            res.skipped_not_gold += 1
+        if _skip_not_gold(row, tag_i, res):
             continue
 
         name = _get(row, tag_i, "TAG").casefold()
@@ -342,113 +412,3 @@ def _import_tags(
         res.counts[f"tag_{verdict}"] += 1
         if name not in gold[doc_id]["tags"]:
             gold[doc_id]["tags"].append(name)
-
-
-def render_summary(res: WorkbookImport, xlsx_path: str, root: str) -> str:
-    """What this gold file can and cannot be used to claim."""
-    with_spans = sum(1 for r in res.rows if any("char_start" in e for e in r["metadata"]))
-    lines = [
-        "# Imported workbook",
-        "",
-        f"Source: `{xlsx_path}`",
-        f"Root: `{root}`",
-        "",
-        f"- gold rows written: {len(res.rows)}",
-        f"- documents carrying at least one gold field: " f"{sum(1 for r in res.rows if r['metadata'])}",
-        f"- documents carrying character offsets: {with_spans}",
-        f"- gold fields: {sum(len(r['metadata']) for r in res.rows)}",
-        f"- gold tags: {sum(len(r['tags']) for r in res.rows)}",
-        f"- rows the reviewer marked as not belonging: {res.spurious_rows}",
-        f"- rows a human added rather than corrected: {res.human_rows}",
-        f"- confirmed abstentions, which carry no label: {len(res.confirmed_abstentions)}",
-    ]
-    if res.skipped_not_gold:
-        lines.append(f"- rows skipped because IS_GOLD was not set: {res.skipped_not_gold}")
-
-    verdicts = {k: v for k, v in sorted(res.counts.items())}
-    if verdicts:
-        lines += ["", "## Where the gold came from", "", "| row | verdict | count |", "| --- | --- | --- |"]
-        for key, count in verdicts.items():
-            kind, _, verdict = key.partition("_")
-            lines.append(f"| {kind} | `{verdict}` | {count} |")
-
-    lines += [
-        "",
-        "## What this gold cannot measure",
-        "",
-        "The workbook is an export of what the pipeline produced, so a row",
-        "exists only where the pipeline emitted something or a human added one",
-        "by hand. A field or tag the pipeline never found leaves no trace in",
-        "the sheet and therefore none in this gold.",
-        "",
-        f"**Precision over these documents is honest. Recall is not.** Only "
-        f"{res.human_rows} row(s) here were added by a human rather than "
-        "corrected, so a false negative is almost unrepresented. Treat the "
-        "metadata and tagging recall numbers from this file as an upper bound, "
-        "and do not quote them as the recall of the system.",
-        "",
-        "Classification is the exception. Every gold document carries exactly",
-        "one label and the reviewer either confirmed it or replaced it, so the",
-        "classification score over this file is a real score.",
-    ]
-
-    if res.unresolved_doc_ids:
-        lines += [
-            "",
-            "## Rows pointing at content that is not here",
-            "",
-            "The doc_id is the SHA-256 of the file's bytes, so these rows were",
-            "reviewed against a file that is not under `--root`. Same name is",
-            "not same file. They are still in the gold, without a path, and will",
-            "not join to any prediction until the content turns up.",
-            "",
-        ]
-        lines += [f"- `{d}`" for d in sorted(set(res.unresolved_doc_ids))]
-
-    if res.confirmed_abstentions:
-        lines += [
-            "",
-            "## Abstentions confirmed as correct",
-            "",
-            "The reviewer agreed the pipeline was right not to answer. That is",
-            "useful, but it is not a label: these documents still have a real",
-            "class that nobody has written down, so they carry no classification",
-            "gold. Put the true class in CLASS_CORRECTED to score them.",
-            "",
-            f"- {len(res.confirmed_abstentions)} document(s)",
-        ]
-
-    if res.missing_correction:
-        lines += [
-            "",
-            "## Rows marked wrong with nothing to replace them",
-            "",
-            "Nobody has said what the right answer is, so these produce no gold.",
-            "",
-        ]
-        lines += [f"- {d}" for d in sorted(set(res.missing_correction))]
-
-    if res.orphan_rows:
-        counts = Counter(res.orphan_rows)
-        lines += [
-            "",
-            "## Rows with no gold document",
-            "",
-            "A Metadata or Tags row whose DOC_ID is absent from the Documents",
-            "tab, or whose document produced no gold row.",
-            "",
-        ]
-        lines += [f"- {k} ({v})" if v > 1 else f"- {k}" for k, v in sorted(counts.items())]
-
-    if res.problems:
-        lines += [
-            "",
-            "## Names the config does not declare",
-            "",
-            "Nothing here was guessed at. Add the name to the relevant config",
-            "file, or correct it in the sheet.",
-            "",
-        ]
-        lines += [f"- {p}" for p in res.problems]
-
-    return "\n".join(lines) + "\n"

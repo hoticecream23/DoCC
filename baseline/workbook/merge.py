@@ -32,7 +32,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .columns import VERDICTS, _get, _read_tab
+from .columns import VERDICTS, Row, _get, _read_tab
+
+# Review cells after the pipeline columns: Documents and Metadata, then Tags.
+REVIEW_CELLS = 6
+TAG_REVIEW_CELLS = 4
 
 
 @dataclass
@@ -49,10 +53,11 @@ class PriorReview:
     tags: dict[tuple[str, str], dict[str, str]] = field(default_factory=dict)
     # Row ids already carried onto the new run, so nothing is used twice and
     # whatever is left over is exactly what the new run no longer produces.
-    matched: set[int] = field(default_factory=set)
+    matched: set[str] = field(default_factory=set)
     matched_tags: set[tuple[str, str]] = field(default_factory=set)
 
     def rows(self) -> list[dict[str, str]]:
+        """Every reviewed row, documents then fields then tags."""
         out: list[dict[str, str]] = list(self.documents.values())
         for rows in self.metadata_by_field.values():
             out.extend(rows)
@@ -71,8 +76,20 @@ def _reviewed(row: dict[str, str]) -> bool:
     )
 
 
+def _as_dict(row: Row, index: dict[str, int]) -> dict[str, str]:
+    """A row as header name to stripped cell."""
+    return {name: _get(row, index, name) for name in index}
+
+
 def load_prior_review(path: str | Path) -> PriorReview:
-    """Index the reviewed columns of an existing workbook."""
+    """Index the reviewed columns of an existing workbook.
+
+    Args:
+        path: The earlier, reviewed workbook.
+
+    Returns:
+        Its reviewed rows, keyed for lookup against a new run.
+    """
     import openpyxl
 
     prior = PriorReview()
@@ -84,25 +101,22 @@ def load_prior_review(path: str | Path) -> PriorReview:
     finally:
         wb.close()
 
-    def as_dict(row, index):
-        return {name: _get(row, index, name) for name in index}
-
     for row in doc_rows:
-        data = as_dict(row, doc_i)
+        data = _as_dict(row, doc_i)
         if data.get("DOC_ID") and _reviewed(data):
             prior.documents[data["DOC_ID"]] = data
 
     for n, row in enumerate(meta_rows):
-        data = as_dict(row, meta_i)
+        data = _as_dict(row, meta_i)
         doc_id, name = data.get("DOC_ID"), data.get("FIELD", "").casefold()
         if not doc_id or not name or not _reviewed(data):
             continue
-        data["_id"] = n
+        data["_id"] = str(n)
         prior.metadata[(doc_id, name, data.get("VALUE", ""))] = data
         prior.metadata_by_field.setdefault((doc_id, name), []).append(data)
 
     for row in tag_rows:
-        data = as_dict(row, tag_i)
+        data = _as_dict(row, tag_i)
         doc_id, name = data.get("DOC_ID"), data.get("TAG", "").casefold()
         if doc_id and name and _reviewed(data):
             prior.tags[(doc_id, name)] = data
@@ -115,7 +129,7 @@ def _note(prior_note: str, added: str) -> str:
     return f"{prior_note} | {added}" if prior_note else added
 
 
-def _carry_document(prior_row: dict[str, str], new_label: str, counts: Counter) -> list[Any]:
+def _carry_document(prior_row: dict[str, str], new_label: str, counts: Counter[str]) -> list[Any]:
     """The six review cells of a Documents row, carried or invalidated."""
     verdict = (prior_row.get("CLASS_VERDICT") or "").strip()
     corrected = (prior_row.get("CLASS_CORRECTED") or "").strip()
@@ -150,7 +164,12 @@ def _carry_document(prior_row: dict[str, str], new_label: str, counts: Counter) 
     return ["", verdict, prior_row.get("IS_GOLD", ""), who, when, notes]
 
 
-def _carry_metadata(prior: PriorReview, doc_id: str, name: str, value: str, counts: Counter) -> list[Any]:
+def _review_cells(row: dict[str, str], corrected: str, verdict: str, notes: str) -> list[Any]:
+    """Six review cells from a prior row, with the given correction, verdict and notes."""
+    return [corrected, verdict, row.get("IS_GOLD", ""), row.get("REVIEWED_BY", ""), row.get("REVIEW_DATE", ""), notes]
+
+
+def _carry_metadata(prior: PriorReview, doc_id: str, name: str, value: str, counts: Counter[str]) -> list[Any]:
     """The six review cells of a Metadata row.
 
     Exact match first, on the value the reviewer was actually looking at. Only
@@ -163,14 +182,7 @@ def _carry_metadata(prior: PriorReview, doc_id: str, name: str, value: str, coun
         verdict = (exact.get("VERDICT") or "").strip()
         corrected = (exact.get("CORRECTED_VALUE") or "").strip()
         counts["field_reviews_carried"] += 1
-        return [
-            corrected,
-            verdict,
-            exact.get("IS_GOLD", ""),
-            exact.get("REVIEWED_BY", ""),
-            exact.get("REVIEW_DATE", ""),
-            exact.get("NOTES", ""),
-        ]
+        return _review_cells(exact, corrected, verdict, exact.get("NOTES", ""))
 
     for row in prior.metadata_by_field.get((doc_id, name), []):
         if row["_id"] in prior.matched:
@@ -182,40 +194,35 @@ def _carry_metadata(prior: PriorReview, doc_id: str, name: str, value: str, coun
         if corrected == value:
             # The pipeline now produces what the reviewer asked for.
             counts["field_corrections_now_agreed"] += 1
-            return [
-                "",
-                "OK",
-                row.get("IS_GOLD", ""),
-                row.get("REVIEWED_BY", ""),
-                row.get("REVIEW_DATE", ""),
-                _note(row.get("NOTES", ""), f"pipeline now agrees, was {row.get('VALUE') or 'unset'}"),
-            ]
+            return _review_cells(
+                row, "", "OK", _note(row.get("NOTES", ""), f"pipeline now agrees, was {row.get('VALUE') or 'unset'}")
+            )
         counts["field_corrections_carried"] += 1
-        return [
+        return _review_cells(
+            row,
             corrected,
             row.get("VERDICT") or "wrong",
-            row.get("IS_GOLD", ""),
-            row.get("REVIEWED_BY", ""),
-            row.get("REVIEW_DATE", ""),
             _note(row.get("NOTES", ""), f"correction kept, pipeline was {row.get('VALUE') or 'unset'}"),
-        ]
+        )
 
-    return [""] * 6
+    return [""] * REVIEW_CELLS
 
 
-def _carry_tag(prior: PriorReview, doc_id: str, name: str, counts: Counter) -> list[Any]:
-    """The four review cells of a Tags row. A tag has no value, so the tag
-    name is the whole of what was reviewed and a match is always exact.
+def _carry_tag(prior: PriorReview, doc_id: str, name: str, counts: Counter[str]) -> list[Any]:
+    """The four review cells of a Tags row.
+
+    A tag has no value, so the tag name is the whole of what was reviewed and
+    a match is always exact.
     """
     row = prior.tags.get((doc_id, name))
     if row is None:
-        return [""] * 4
+        return [""] * TAG_REVIEW_CELLS
     prior.matched_tags.add((doc_id, name))
     counts["tag_reviews_carried"] += 1
     return [row.get("VERDICT", ""), row.get("IS_GOLD", ""), row.get("REVIEWED_BY", ""), row.get("REVIEW_DATE", "")]
 
 
-def _rescue_metadata(prior: PriorReview, doc_ids: set[str], counts: Counter) -> list[tuple[str, list[Any]]]:
+def _rescue_metadata(prior: PriorReview, doc_ids: set[str], counts: Counter[str]) -> list[tuple[str, list[Any]]]:
     """Reviewed field rows the new run no longer produces.
 
     Both a correction and a confirmation say something true about the document,
@@ -246,37 +253,37 @@ def _rescue_metadata(prior: PriorReview, doc_ids: set[str], counts: Counter) -> 
             if not value:
                 continue
             counts["field_reviews_rescued"] += 1
-            out.append(
-                (
-                    doc_id,
-                    [
-                        f"{doc_id}_human_{name}",
-                        doc_id,
-                        "human",
-                        name,
-                        value,
-                        value,
-                        "",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "human",
-                        "",
-                        "",
-                        value,
-                        "missing",
-                        row.get("IS_GOLD", ""),
-                        row.get("REVIEWED_BY", ""),
-                        row.get("REVIEW_DATE", ""),
-                        _note(row.get("NOTES", ""), "kept from an earlier review; the pipeline no longer finds this"),
-                    ],
-                )
-            )
+            out.append((doc_id, _rescued_field_row(doc_id, name, value, row)))
     return out
 
 
-def _rescue_tags(prior: PriorReview, doc_ids: set[str], counts: Counter) -> list[list[Any]]:
+def _rescued_field_row(doc_id: str, name: str, value: str, row: dict[str, str]) -> list[Any]:
+    """A human `missing` Metadata row standing behind a value the run lost."""
+    return [
+        f"{doc_id}_human_{name}",
+        doc_id,
+        "human",
+        name,
+        value,
+        value,
+        "",
+        "",
+        "",
+        "",
+        "",
+        "human",
+        "",
+        "",
+        value,
+        "missing",
+        row.get("IS_GOLD", ""),
+        row.get("REVIEWED_BY", ""),
+        row.get("REVIEW_DATE", ""),
+        _note(row.get("NOTES", ""), "kept from an earlier review; the pipeline no longer finds this"),
+    ]
+
+
+def _rescue_tags(prior: PriorReview, doc_ids: set[str], counts: Counter[str]) -> list[list[Any]]:
     """Confirmed tags the new run has stopped emitting.
 
     A confirmed tag is a statement that it belongs on the document, so it comes

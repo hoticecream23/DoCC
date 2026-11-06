@@ -8,16 +8,29 @@ every Word table in the corpus was invisible.
 
 from __future__ import annotations
 
+from typing import Any
+
 from ..schema import Table, TableCell, TableMethod
 from .assemble import _assemble
 
 
-def detect_tab_delimited(page: int, page_text: str, page_start: int, tcfg: dict) -> tuple[list[Table], list[str]]:
+def detect_tab_delimited(
+    page: int, page_text: str, page_start: int, tcfg: dict[str, Any]
+) -> tuple[list[Table], list[str]]:
     """Tables on one page from runs of lines that carry the same tab count.
 
     The structural check is the tab count itself: every row of a Word table
     has one cell per column, so a run ends at the first line whose count
     differs. Merged cells repeat their text across the columns they span.
+
+    Args:
+        page: Page number.
+        page_text: Canonical text of the page.
+        page_start: Offset of the page in the canonical text.
+        tcfg: Tables config.
+
+    Returns:
+        The tables found, and an always empty abstention list.
     """
     min_rows = int(tcfg.get("min_rows", 2))
     min_cols = int(tcfg.get("min_cols", 2))
@@ -45,8 +58,9 @@ def _run_to_table(
     min_rows: int,
     min_cols: int,
     min_cells: int,
-    tcfg: dict,
+    tcfg: dict[str, Any],
 ) -> Table | None:
+    """One run of equal tab count lines as a table, or None when too small."""
     if len(run) < min_rows:
         return None
     grid: list[list[TableCell | None]] = []
@@ -77,9 +91,10 @@ def _run_to_table(
     cells = []
     for row in grid:
         for new_c, c in enumerate(keep):
-            if row[c] is not None:
-                row[c].col = new_c
-                cells.append(row[c])
+            cell = row[c]
+            if cell is not None:
+                cell.col = new_c
+                cells.append(cell)
     if len(keep) < min_cols or len(cells) < min_cells:
         return None
     return _assemble(page, len(grid), len(keep), TableMethod.TAB_DELIMITED, cells, tcfg)

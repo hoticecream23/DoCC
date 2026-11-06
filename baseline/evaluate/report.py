@@ -2,25 +2,47 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 from ..logging_setup import get_logger
-from .scoring import (
-    BUCKETS,
-    covered_fields,
-    eval_calibration,
-    eval_classification,
-    eval_covered,
-    eval_extraction,
-    eval_metadata,
-    eval_tagging,
-    join,
-    load_jsonl,
-)
+from .calibration import BUCKETS, covered_fields, eval_calibration, eval_covered
+from .io import load_jsonl
+from .metadata_scores import eval_metadata
+from .scoring import eval_classification, eval_extraction, eval_tagging, join
 from .table_scores import eval_tables
 
 log = get_logger(__name__)
 
+PathLike = str | Path
+# Unmatched or unscored document keys listed in a result.
+MAX_LISTED_KEYS = 20
+# Metadata misses printed in the report.
+MAX_REPORTED_MISSES = 25
+# Error rates, in percent, shown in the coverage table.
+COVERAGE_PCTS = (1, 5, 10)
 
-def evaluate(gold_path, pred_path, unknown_label: str = "unknown", tables_path=None) -> dict:
+
+def evaluate(
+    gold_path: PathLike,
+    pred_path: PathLike,
+    unknown_label: str = "unknown",
+    tables_path: PathLike | None = None,
+) -> dict[str, Any]:
+    """Score a predictions file against a gold file, every component.
+
+    Args:
+        gold_path: Gold JSONL.
+        pred_path: Predictions JSONL.
+        unknown_label: Label the system uses to abstain.
+        tables_path: Optional tables JSONL to score against gold grids.
+
+    Returns:
+        Join counts and one result block per component.
+
+    Raises:
+        ValueError: An input line is not valid JSON.
+    """
     gold = load_jsonl(gold_path)
     pred = load_jsonl(pred_path)
     pairs, missing, extra = join(gold, pred)
@@ -39,8 +61,8 @@ def evaluate(gold_path, pred_path, unknown_label: str = "unknown", tables_path=N
         "gold_count": len(gold),
         "pred_count": len(pred),
         "matched": len(pairs),
-        "unmatched_gold": missing[:20],
-        "unscored_predictions": extra[:20],
+        "unmatched_gold": missing[:MAX_LISTED_KEYS],
+        "unscored_predictions": extra[:MAX_LISTED_KEYS],
         "extraction": eval_extraction(pairs),
         "classification": eval_classification(pairs, unknown_label),
         "metadata": eval_metadata(pairs),
@@ -57,9 +79,19 @@ def evaluate(gold_path, pred_path, unknown_label: str = "unknown", tables_path=N
 # --------------------------------------------------------------------------
 
 
-def render_report(res: dict, gold_path: str, pred_path: str) -> str:
-    L: list[str] = []
-    a = L.append
+def render_report(res: dict[str, Any], gold_path: str, pred_path: str) -> str:
+    """Render an `evaluate` result as markdown.
+
+    Args:
+        res: Result of `evaluate`.
+        gold_path: Gold path, shown in the header.
+        pred_path: Predictions path, shown in the header.
+
+    Returns:
+        The report text.
+    """
+    lines: list[str] = []
+    a = lines.append
     a("# Evaluation report")
     a("")
     a(f"gold: `{gold_path}`")
@@ -70,19 +102,20 @@ def render_report(res: dict, gold_path: str, pred_path: str) -> str:
         a(f"Unmatched gold rows: {', '.join(res['unmatched_gold'])}")
         a("")
 
-    L += _report_extraction(res["extraction"])
-    L += _report_classification(res["classification"])
-    L += _report_metadata(res["metadata"])
-    L += _report_covered(res.get("covered") or {})
-    L += _report_calibration(res.get("calibration") or {}, res.get("calibration_covered"))
-    L += _report_tagging(res["tagging"])
-    L += _report_tables(res.get("tables") or {})
-    return "\n".join(L)
+    lines += _report_extraction(res["extraction"])
+    lines += _report_classification(res["classification"])
+    lines += _report_metadata(res["metadata"])
+    lines += _report_covered(res.get("covered") or {})
+    lines += _report_calibration(res.get("calibration") or {}, res.get("calibration_covered"))
+    lines += _report_tagging(res["tagging"])
+    lines += _report_tables(res.get("tables") or {})
+    return "\n".join(lines)
 
 
-def _report_extraction(ex: dict) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _report_extraction(ex: dict[str, Any]) -> list[str]:
+    """Extraction section."""
+    lines: list[str] = []
+    a = lines.append
     a("## Extraction")
     a("")
     if ex.get("scored"):
@@ -95,12 +128,13 @@ def _report_extraction(ex: dict) -> list[str]:
     else:
         a("No gold text supplied, so extraction was not scored.")
     a("")
-    return L
+    return lines
 
 
-def _report_classification(c: dict) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _report_classification(c: dict[str, Any]) -> list[str]:
+    """Classification section."""
+    lines: list[str] = []
+    a = lines.append
     a("## Classification")
     a("")
     a("| metric | value |")
@@ -119,7 +153,7 @@ def _report_classification(c: dict) -> list[str]:
         a("")
         a("| max error | coverage | confidence threshold |")
         a("| --- | --- | --- |")
-        for pct in (1, 5, 10):
+        for pct in COVERAGE_PCTS:
             k, t = f"coverage_at_{pct}pct_error", f"threshold_at_{pct}pct_error"
             if k in c:
                 a(f"| {pct}% | {c[k]:.3f} | {c[t]:.3f} |")
@@ -139,12 +173,13 @@ def _report_classification(c: dict) -> list[str]:
         for k, v in c["confusion"].items():
             a(f"- {k}: {v}")
         a("")
-    return L
+    return lines
 
 
-def _report_metadata(m: dict) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _report_metadata(m: dict[str, Any]) -> list[str]:
+    """Metadata section."""
+    lines: list[str] = []
+    a = lines.append
     a("## Metadata")
     a("")
     a("Value scoring asks whether the answer was right. Span scoring asks")
@@ -176,18 +211,19 @@ def _report_metadata(m: dict) -> list[str]:
     if m["errors"]:
         a("### Misses")
         a("")
-        for e in m["errors"][:25]:
+        for e in m["errors"][:MAX_REPORTED_MISSES]:
             a(f"- {e}")
         a("")
-    return L
+    return lines
 
 
-def _bucket_table(stats: dict, metric: str) -> list[str]:
-    L = [f"| confidence | n | {metric} | mean confidence |", "| --- | --- | --- | --- |"]
+def _bucket_table(stats: dict[str, Any], metric: str) -> list[str]:
+    """Confidence bucket table with its ECE line."""
+    lines = [f"| confidence | n | {metric} | mean confidence |", "| --- | --- | --- | --- |"]
     for name, b in stats["buckets"].items():
-        L.append(f"| {name} | {b['n']} | {b[metric]:.3f} | {b['mean_confidence']:.3f} |")
+        lines.append(f"| {name} | {b['n']} | {b[metric]:.3f} | {b['mean_confidence']:.3f} |")
     ece = stats["ece"]
-    L += [
+    lines += [
         "",
         (
             f"ECE **{ece:.4f}** over {stats['n']} predictions " f"({stats['below_0.5']} below 0.5 not bucketed)"
@@ -196,14 +232,15 @@ def _bucket_table(stats: dict, metric: str) -> list[str]:
         ),
         "",
     ]
-    return L
+    return lines
 
 
-def _report_covered(c: dict) -> list[str]:
+def _report_covered(c: dict[str, Any]) -> list[str]:
+    """Gold-covered fields section, empty when not scored."""
     if not c:
         return []
     m = c["micro"]
-    L = [
+    lines = [
         "## Gold-covered fields",
         "",
         "Scores only fields the gold file labels at least once. A predicted field",
@@ -221,16 +258,17 @@ def _report_covered(c: dict) -> list[str]:
         "",
     ]
     if c["unscored_per_field"]:
-        L += ["| unscored field | predictions |", "| --- | --- |"]
-        L += [f"| {k} | {v} |" for k, v in c["unscored_per_field"].items()]
-        L.append("")
-    return L
+        lines += ["| unscored field | predictions |", "| --- | --- |"]
+        lines += [f"| {k} | {v} |" for k, v in c["unscored_per_field"].items()]
+        lines.append("")
+    return lines
 
 
-def _report_calibration(cal: dict, covered: dict | None = None) -> list[str]:
+def _report_calibration(cal: dict[str, Any], covered: dict[str, Any] | None = None) -> list[str]:
+    """Calibration section, empty when not scored."""
     if not cal:
         return []
-    L: list[str] = [
+    lines: list[str] = [
         "## Calibration",
         "",
         "A well calibrated 0.9 is right nine times in ten. ECE is the",
@@ -239,11 +277,11 @@ def _report_calibration(cal: dict, covered: dict | None = None) -> list[str]:
         "### Field values",
         "",
     ]
-    L += _bucket_table(cal["fields"]["overall"], "precision")
+    lines += _bucket_table(cal["fields"]["overall"], "precision")
     per = cal["fields"]["per_field"]
     if per:
         names = [b[0] for b in BUCKETS]
-        L += [
+        lines += [
             "Per field, n / precision:",
             "",
             "| field | " + " | ".join(names) + " | ECE |",
@@ -255,19 +293,20 @@ def _report_calibration(cal: dict, covered: dict | None = None) -> list[str]:
                 for n in names
             ]
             ece = f"{v['ece']:.3f}" if v["ece"] is not None else "-"
-            L.append(f"| {k} | " + " | ".join(cells) + f" | {ece} |")
-        L.append("")
+            lines.append(f"| {k} | " + " | ".join(cells) + f" | {ece} |")
+        lines.append("")
     if covered:
-        L += ["### Field values, gold-covered fields only", ""]
-        L += _bucket_table(covered["overall"], "precision")
-    L += ["### Classification (answered documents)", ""]
-    L += _bucket_table(cal["classification"], "accuracy")
-    return L
+        lines += ["### Field values, gold-covered fields only", ""]
+        lines += _bucket_table(covered["overall"], "precision")
+    lines += ["### Classification (answered documents)", ""]
+    lines += _bucket_table(cal["classification"], "accuracy")
+    return lines
 
 
-def _report_tagging(t: dict) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _report_tagging(t: dict[str, Any]) -> list[str]:
+    """Tagging section."""
+    lines: list[str] = []
+    a = lines.append
     a("## Tagging")
     a("")
     a(f"Micro F1 **{t['micro']['f1']:.3f}**, macro F1 **{t['macro_f1']:.3f}**")
@@ -277,12 +316,13 @@ def _report_tagging(t: dict) -> list[str]:
     for k, v in t["per_tag"].items():
         a(f"| {k} | {v['precision']:.3f} | {v['recall']:.3f} | {v['f1']:.3f} " f"| {v['tp']} | {v['fp']} | {v['fn']} |")
     a("")
-    return L
+    return lines
 
 
-def _report_tables(tb: dict) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _report_tables(tb: dict[str, Any]) -> list[str]:
+    """Tables section, empty when no tables were scored."""
+    lines: list[str] = []
+    a = lines.append
     if tb.get("scored"):
         a("## Tables")
         a("")
@@ -304,113 +344,4 @@ def _report_tables(tb: dict) -> list[str]:
         a("they came out next to the right neighbours, which is what separates")
         a("a real table from a bag of numbers.")
         a("")
-    return L
-
-
-# --------------------------------------------------------------------------
-# compare two runs
-# --------------------------------------------------------------------------
-
-
-def compare(gold_path, a_path, b_path, unknown_label: str = "unknown", a_tables=None, b_tables=None) -> dict:
-    """Score two prediction files against the same gold and diff them."""
-    ra = evaluate(gold_path, a_path, unknown_label, a_tables)
-    rb = evaluate(gold_path, b_path, unknown_label, b_tables)
-
-    fields = sorted(set(ra["metadata"]["value"]["per_field"]) | set(rb["metadata"]["value"]["per_field"]))
-    field_delta = {}
-    for f in fields:
-        fa = ra["metadata"]["value"]["per_field"].get(f, {}).get("f1", 0.0)
-        fb = rb["metadata"]["value"]["per_field"].get(f, {}).get("f1", 0.0)
-        field_delta[f] = {"a": fa, "b": fb, "delta": round(fb - fa, 4)}
-
-    tags = sorted(set(ra["tagging"]["per_tag"]) | set(rb["tagging"]["per_tag"]))
-    tag_delta = {}
-    for t in tags:
-        fa = ra["tagging"]["per_tag"].get(t, {}).get("f1", 0.0)
-        fb = rb["tagging"]["per_tag"].get(t, {}).get("f1", 0.0)
-        tag_delta[t] = {"a": fa, "b": fb, "delta": round(fb - fa, 4)}
-
-    headline = {
-        "classification_macro_f1": {
-            "a": ra["classification"]["macro_f1"],
-            "b": rb["classification"]["macro_f1"],
-            "delta": round(rb["classification"]["macro_f1"] - ra["classification"]["macro_f1"], 4),
-        },
-        "classification_coverage": {
-            "a": ra["classification"]["coverage"],
-            "b": rb["classification"]["coverage"],
-            "delta": round(rb["classification"]["coverage"] - ra["classification"]["coverage"], 4),
-        },
-        "metadata_micro_f1": {
-            "a": ra["metadata"]["value"]["micro"]["f1"],
-            "b": rb["metadata"]["value"]["micro"]["f1"],
-            "delta": round(rb["metadata"]["value"]["micro"]["f1"] - ra["metadata"]["value"]["micro"]["f1"], 4),
-        },
-        "tagging_micro_f1": {
-            "a": ra["tagging"]["micro"]["f1"],
-            "b": rb["tagging"]["micro"]["f1"],
-            "delta": round(rb["tagging"]["micro"]["f1"] - ra["tagging"]["micro"]["f1"], 4),
-        },
-    }
-    # Table metrics only join the gate when both runs actually scored tables,
-    # so a run without a tables file is not read as a regression to zero.
-    if ra["tables"].get("scored") and rb["tables"].get("scored"):
-        for key, path in (
-            ("tables_cell_f1", ("cells", "f1")),
-            ("tables_adjacency_f1", ("adjacency", "f1")),
-            ("tables_detection_recall", ("detection_recall",)),
-        ):
-            va = ra["tables"][path[0]][path[1]] if len(path) > 1 else ra["tables"][path[0]]
-            vb = rb["tables"][path[0]][path[1]] if len(path) > 1 else rb["tables"][path[0]]
-            headline[key] = {"a": va, "b": vb, "delta": round(vb - va, 4)}
-
-    regressions = (
-        [f"metadata {k}: {v['a']:.3f} -> {v['b']:.3f}" for k, v in field_delta.items() if v["delta"] < 0]
-        + [f"tag {k}: {v['a']:.3f} -> {v['b']:.3f}" for k, v in tag_delta.items() if v["delta"] < 0]
-        + [f"{k}: {v['a']:.3f} -> {v['b']:.3f}" for k, v in headline.items() if v["delta"] < 0]
-    )
-    return {"headline": headline, "field_delta": field_delta, "tag_delta": tag_delta, "regressions": regressions}
-
-
-def render_comparison(cmp: dict, a_path: str, b_path: str) -> str:
-    L: list[str] = []
-    a = L.append
-    a("# Comparison")
-    a("")
-    a(f"A: `{a_path}`")
-    a(f"B: `{b_path}`")
-    a("")
-    a("Positive delta means B is better.")
-    a("")
-    a("| metric | A | B | delta |")
-    a("| --- | --- | --- | --- |")
-    for k, v in cmp["headline"].items():
-        a(f"| {k} | {v['a']:.3f} | {v['b']:.3f} | {v['delta']:+.3f} |")
-    a("")
-
-    a("## Per field")
-    a("")
-    a("| field | A | B | delta |")
-    a("| --- | --- | --- | --- |")
-    for k, v in sorted(cmp["field_delta"].items(), key=lambda kv: kv[1]["delta"]):
-        a(f"| {k} | {v['a']:.3f} | {v['b']:.3f} | {v['delta']:+.3f} |")
-    a("")
-
-    a("## Per tag")
-    a("")
-    a("| tag | A | B | delta |")
-    a("| --- | --- | --- | --- |")
-    for k, v in sorted(cmp["tag_delta"].items(), key=lambda kv: kv[1]["delta"]):
-        a(f"| {k} | {v['a']:.3f} | {v['b']:.3f} | {v['delta']:+.3f} |")
-    a("")
-
-    a("## Regressions")
-    a("")
-    if cmp["regressions"]:
-        for r in cmp["regressions"]:
-            a(f"- {r}")
-    else:
-        a("None. B is at least as good as A everywhere.")
-    a("")
-    return "\n".join(L)
+    return lines
