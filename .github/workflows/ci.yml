@@ -31,4 +31,15 @@ jobs:
       - name: Install tesseract
         run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
       - name: pytest
-        run: python -m pytest
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest --tb=short -rfE 2>&1 | tee pytest.log
+      - name: Report test failures
+        if: failure()
+        shell: bash
+        run: |
+          # Surface failures as annotations so they are readable without opening the log.
+          grep -E "^(FAILED|ERROR) " pytest.log | head -10 | sed 's/^/::error::/'
+          tail -3 pytest.log | sed 's/^/::error::/'
+          { echo '```'; grep -E "^(FAILED|ERROR) |^E  " pytest.log | head -80; tail -5 pytest.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
