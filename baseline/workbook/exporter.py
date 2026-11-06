@@ -208,7 +208,6 @@ def export_workbook(
     counts: Counter[str] = Counter()
     seen_docs = _write_document_rows(records, sheets, prior, counts, run_id, extracted_at)
     _write_rescued(sheets, prior, seen_docs, counts)
-
     _write_taxonomy(sheets.taxonomy, cfg, counts)
     _write_line_items(sheets.items, tables, counts)
 
