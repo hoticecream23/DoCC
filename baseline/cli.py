@@ -1,5 +1,7 @@
 """Command line entry points.
 
+Over 400 lines: every CLI subparser and handler lives here so the whole command surface is in one place.
+
 baseline run             --input DIR --output results.jsonl [--workers N] [--no-resume]
 baseline train           --annotations FILE --output-model DIR
 baseline tune-thresholds --annotations FILE --predictions FILE
@@ -473,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         log.warning("interrupted")
         return EXIT_INTERRUPTED
-    except Exception:
+    except Exception:  # noqa: BLE001 - CLI top level: log any failure and exit 1, not a traceback
         log.exception("command failed", extra={"command": args.command})
         return 1
 

@@ -39,3 +39,11 @@ def test_resume_flag_is_positive_and_no_resume_still_works():
     for parser in (baseline_parser(), cascade_parser()):
         assert parser.parse_args(["run", "--input", "i", "--output", "o"]).resume is True
         assert parser.parse_args(["run", "--input", "i", "--output", "o", "--no-resume"]).resume is False
+
+
+def test_binary_mode_writes_bytes_atomically(tmp_path):
+    out = tmp_path / "model.bin"
+    with atomic_open(out, mode="wb") as fh:
+        fh.write(b"\x00\x01\r\n")
+    assert out.read_bytes() == b"\x00\x01\r\n"
+    assert list(tmp_path.iterdir()) == [out]

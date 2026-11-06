@@ -7,6 +7,7 @@ mode answers 503 until a model is configured. There is no default model.
 from __future__ import annotations
 
 import base64
+import http.client
 import io
 import json
 import logging
@@ -109,7 +110,7 @@ def reachable(settings: VLMSettings) -> bool:
     try:
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=PROBE_TIMEOUT_S):
             return True
-    except OSError as exc:  # URLError, HTTPError (a 401 still means unusable), timeouts
+    except (OSError, http.client.HTTPException) as exc:  # URLError, HTTPError (401 = unusable), timeouts, bad status
         log.warning("VLM probe failed", extra={"base_url": settings.base_url, "error": type(exc).__name__})
         return False
 

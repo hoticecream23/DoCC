@@ -316,7 +316,7 @@ def _process_or_count(
             stats["skipped"] += 1
             return None
         return process_document(path, cfg, ccfg, backend, models)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - per-document loop: one bad document must not stop the batch
         log.error("document failed", extra={"path": str(path), **_error_extra(exc)}, exc_info=isinstance(exc, _BUGS))
         stats["failed"] += 1
         return None

@@ -1,5 +1,7 @@
 """Knowledge graph v0, built over the JSONL.
 
+Over 400 lines: entity rules, merging and edge building share one narrow policy; splitting would scatter it.
+
 Deliberately narrow. Only fields whose format proves them may create or merge
 an entity, so every node here is one we can defend. Fuzzy name matching is
 where graphs quietly fill with wrong edges, so v0 does not do it at all.

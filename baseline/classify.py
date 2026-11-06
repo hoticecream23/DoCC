@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from .config import Config
 from .errors import ModelIntegrityError, summarize_exception
+from .io import atomic_open, atomic_write_text
 from .logging_setup import get_logger
 from .rules import best_marker_score
 from .schema import Classification, ClassifyMethod
@@ -77,7 +78,8 @@ def record_hash(path: str | Path) -> None:
     entries = _read_manifest(mf)
     entries[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     lines = "".join(f"{h}  {n}\n" for n, h in sorted(entries.items()))
-    mf.write_text(lines, encoding="utf-8", newline="\n")
+    with atomic_open(mf, newline="\n") as fh:
+        fh.write(lines)
 
 
 def load_verified(path: str | Path) -> Any:
@@ -238,7 +240,8 @@ def train(texts: list[str], labels: list[str], out_dir: str | Path) -> dict[str,
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    joblib.dump(pipe, out / MODEL_FILE)
+    with atomic_open(out / MODEL_FILE, mode="wb") as fh:
+        joblib.dump(pipe, fh)
     record_hash(out / MODEL_FILE)
     meta = {
         "kind": "classifier",
@@ -247,7 +250,7 @@ def train(texts: list[str], labels: list[str], out_dir: str | Path) -> dict[str,
         "n_samples": len(texts),
         "cv_folds": _cv_folds(smallest),
     }
-    (out / META_FILE).write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+    atomic_write_text(out / META_FILE, json.dumps(meta, indent=2, sort_keys=True))
     log.info("classifier trained", extra=meta)
     return meta
 

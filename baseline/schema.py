@@ -4,6 +4,7 @@ Anything that replaces a baseline component later must emit exactly this.
 Adding fields is a versioned change, not a casual one.
 """
 
+# Over 400 lines: one Pydantic model per record type; splitting would scatter the data contract.
 from __future__ import annotations
 
 import hashlib

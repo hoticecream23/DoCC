@@ -4,6 +4,7 @@ Every stage is wrapped. A stage that blows up records an error in diagnostics
 and the record still gets written, partial. One bad PDF never kills a batch.
 """
 
+# Over 400 lines: each stage wrapper sits beside the one flow it guards; splitting would hide the stage order.
 from __future__ import annotations
 
 import gzip

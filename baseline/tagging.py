@@ -4,6 +4,7 @@ A document has one class but many tags, so nothing here is a softmax.
 Vocabulary, patterns, thresholds and derived rules all live in tags.yaml.
 """
 
+# Over 400 lines: rule, model and derived tagging share thresholds and vocabulary; one module keeps them consistent.
 from __future__ import annotations
 
 import json
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from .classify import ModelIntegrityError, ProbaModel, load_verified, record_hash
 from .config import Config
 from .errors import summarize_exception
+from .io import atomic_open, atomic_write_text
 from .logging_setup import get_logger
 from .rules import best_marker_score
 from .schema import MetadataField, Tag, TagMethod
@@ -265,7 +267,8 @@ def train(texts: list[str], tag_lists: list[list[str]], out_dir: str | Path) -> 
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"pipeline": pipe, "tags": usable}, out / MODEL_FILE)
+    with atomic_open(out / MODEL_FILE, mode="wb") as fh:
+        joblib.dump({"pipeline": pipe, "tags": usable}, fh)
     record_hash(out / MODEL_FILE)
     meta = {
         "kind": "tagger",
@@ -275,7 +278,7 @@ def train(texts: list[str], tag_lists: list[list[str]], out_dir: str | Path) -> 
         "n_samples": n,
         "cv_folds": max(MIN_CV_FOLDS, folds),
     }
-    (out / META_FILE).write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+    atomic_write_text(out / META_FILE, json.dumps(meta, indent=2, sort_keys=True))
     log.info("tagger trained", extra=meta)
     return meta
 

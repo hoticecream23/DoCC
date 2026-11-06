@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         log.warning("interrupted")
         return EXIT_INTERRUPTED
-    except Exception:
+    except Exception:  # noqa: BLE001 - CLI top level: log any failure and exit 1, not a traceback
         log.exception("command failed", extra={"command": args.command})
         return 1
 

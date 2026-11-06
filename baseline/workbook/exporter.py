@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..config import Config
+from ..io import atomic_open
 
 if TYPE_CHECKING:
     from openpyxl.workbook.workbook import Workbook
@@ -212,7 +213,8 @@ def export_workbook(
     _write_line_items(sheets.items, tables, counts)
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(out)
+    with atomic_open(out, mode="wb") as fh:
+        wb.save(fh)
     return dict(counts)
 
 

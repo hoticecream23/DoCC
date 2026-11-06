@@ -4,6 +4,7 @@ Three strategies per field, applied in the order listed in fields.yaml,
 first hit wins. Offsets are always against the canonical text.
 """
 
+# Over 400 lines: the candidate strategies and their dispatcher must agree on offsets, so they stay together.
 from __future__ import annotations
 
 import functools

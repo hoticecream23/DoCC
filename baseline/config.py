@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+from .io import atomic_open
+
 DEFAULT_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
 
@@ -213,5 +215,5 @@ def save_yaml(path: str | Path, data: dict[str, Any]) -> None:
         path: Output file.
         data: Mapping to write.
     """
-    with open(path, "w", encoding="utf-8") as fh:
+    with atomic_open(path) as fh:
         yaml.safe_dump(data, fh, sort_keys=False, allow_unicode=True, width=100)

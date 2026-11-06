@@ -28,5 +28,7 @@ jobs:
         run: mypy
       - name: bandit
         run: bandit -q -r baseline cascade demo scripts
+      - name: Install tesseract
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
       - name: pytest
         run: python -m pytest

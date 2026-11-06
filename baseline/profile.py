@@ -14,6 +14,7 @@ from typing import Any
 from .classify import classify
 from .config import Config, load_config_cached
 from .extract import ExtractionResult, extract
+from .io import atomic_open
 from .logging_setup import get_logger
 from .metadata.fields import _pattern_candidates
 from .scan import scan_documents
@@ -376,6 +377,7 @@ def run_profile(input_dir: str | Path, output: str | Path, config_dir: str | Non
     md = render_markdown(stats, str(input_dir), cfg)
     out = Path(output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(md, encoding="utf-8", newline="\n")
+    with atomic_open(out, newline="\n") as fh:
+        fh.write(md)
     log.info("profile written", extra={"output": str(out), "documents": stats["n_documents"]})
     return stats
