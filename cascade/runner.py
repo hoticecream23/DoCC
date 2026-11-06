@@ -3,6 +3,13 @@
 The baseline runs first and its record is the fallback. If the model cannot
 be reached, or its answer is not the shape asked for, the document gets the
 baseline's answer and an error saying so, never an empty record.
+
+Batch output is appended one document at a time so a run can resume, so it
+is not written to a temp file and renamed. Instead each document writes its
+provenance line, then its results line; the results line is the commit
+marker. On resume a trailing partial line is cut from both files and any
+provenance line without a results line is dropped, so the pair never
+diverges. A run with resume off truncates both files up front.
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ from typing import Any
 from baseline import pipeline as baseline_pipeline
 from baseline.classify import rule_scores
 from baseline.config import Config
+from baseline.io import atomic_open
 from baseline.logging_setup import get_logger
 from baseline.scan import scan_documents
 from baseline.schema import BBoxSidecar, Diagnostics, DocumentRecord, MetadataField, compute_doc_id
@@ -29,6 +37,14 @@ from .render import render_pages
 from .vlm import Backend, VLMBadRequest
 
 log = get_logger(__name__)
+
+# Errors that mean a bug here, not a bad document, so the traceback is worth logging.
+_BUGS = (TypeError, AttributeError, NameError, AssertionError)
+
+
+def _error_extra(exc: Exception) -> dict[str, str]:
+    """Exception type and a short message; the full text can quote the document."""
+    return {"error_type": type(exc).__name__, "error": str(exc)[:200]}
 
 
 @dataclass
@@ -147,7 +163,11 @@ def process_document(
         tags = apply_tags(full, pages, cfg, meta, facts, models.tagger if models else None)
     except Exception as exc:
         msg = f"cascade: {type(exc).__name__}: {exc}"
-        log.error("cascade fell back to the baseline", extra={"doc_id": base.doc_id, "error": msg}, exc_info=True)
+        log.error(
+            "cascade fell back to the baseline",
+            extra={"doc_id": base.doc_id, **_error_extra(exc)},
+            exc_info=isinstance(exc, _BUGS),
+        )
         prov["fallback"] = True
         prov["errors"].append(msg)
         meta, problems = _drop_bad_offsets(base.metadata, full)
@@ -159,6 +179,41 @@ def process_document(
     prov["errors"].extend(problems)
     record = _record(base, decision.classification, meta, tags, _diagnostics(base, timings, problems))
     return Result(record, sidecar, prov)
+
+
+def _cut_partial_tail(path: Path) -> None:
+    """Drop a last line a crash left without its newline."""
+    if not path.exists():
+        return
+    # ponytail: reads the whole file once per resume; seek from the end if outputs reach GBs.
+    content = path.read_bytes()
+    cut = content.rfind(b"\n") + 1
+    if cut < len(content):
+        log.warning("dropping a partial last line", extra={"path": str(path)})
+        with open(path, "r+b") as fh:
+            fh.truncate(cut)
+
+
+def _prepare_resume(out_path: Path, prov_path: Path) -> set[str]:
+    """Repair the output pair after a crash and return the doc_ids already done."""
+    _cut_partial_tail(out_path)
+    _cut_partial_tail(prov_path)
+    done = baseline_pipeline.existing_doc_ids(out_path)
+    if prov_path.exists():
+        lines = prov_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        kept = [line for line in lines if _prov_doc_id(line) in done]
+        if len(kept) != len(lines):
+            log.warning("dropping provenance lines with no result", extra={"count": len(lines) - len(kept)})
+            with atomic_open(prov_path, newline="\n") as prov_fh:
+                prov_fh.writelines(kept)
+    return done
+
+
+def _prov_doc_id(line: str) -> str | None:
+    try:
+        return json.loads(line)["doc_id"]
+    except (ValueError, KeyError, TypeError):
+        return None
 
 
 def run_batch(
@@ -179,7 +234,7 @@ def run_batch(
     bdir = Path(bbox_dir) if bbox_dir else out_path.with_name(out_path.name + ".bboxes")
 
     paths, excluded = scan_documents(input_dir)
-    skip = baseline_pipeline.existing_doc_ids(out_path) if resume else set()
+    skip = _prepare_resume(out_path, prov_path) if resume else set()
     stats = {
         "found": len(paths),
         "skipped": 0,
@@ -191,26 +246,29 @@ def run_batch(
     mode = "a" if resume else "w"
 
     with (
-        open(out_path, mode, encoding="utf-8", newline="\n") as fh,
-        open(prov_path, mode, encoding="utf-8", newline="\n") as ph,
+        open(out_path, mode, encoding="utf-8", newline="\n") as results_fh,
+        open(prov_path, mode, encoding="utf-8", newline="\n") as prov_fh,
     ):
         for p in paths:
             try:
                 if compute_doc_id(p) in skip:
                     stats["skipped"] += 1
                     continue
-                result = process_document(p, cfg, ccfg, backend, models)
+                outcome = process_document(p, cfg, ccfg, backend, models)
             except Exception as exc:
-                log.error("document failed", extra={"path": str(p), "error": str(exc)})
+                log.error(
+                    "document failed", extra={"path": str(p), **_error_extra(exc)}, exc_info=isinstance(exc, _BUGS)
+                )
                 stats["failed"] += 1
                 continue
-            baseline_pipeline.write_sidecar(result.sidecar, bdir)
-            fh.write(baseline_pipeline.dumps(result.record) + "\n")
-            ph.write(json.dumps(result.provenance, ensure_ascii=False) + "\n")
-            fh.flush()
-            ph.flush()
+            baseline_pipeline.write_sidecar(outcome.sidecar, bdir)
+            # Provenance first: the results line marks the document done.
+            prov_fh.write(json.dumps(outcome.provenance, ensure_ascii=False) + "\n")
+            prov_fh.flush()
+            results_fh.write(baseline_pipeline.dumps(outcome.record) + "\n")
+            results_fh.flush()
             stats["written"] += 1
-            stats["fallback"] += int(result.provenance["fallback"])
+            stats["fallback"] += int(outcome.provenance["fallback"])
 
     log.info("cascade batch done", extra=stats)
     return stats

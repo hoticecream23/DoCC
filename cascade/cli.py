@@ -1,6 +1,7 @@
 """Command line entry point.
 
   cascade run --input DIR --output results.jsonl [--model NAME] [--base-url URL]
+              [--no-resume] [--dry-run]
 
 Writes results.jsonl, results.jsonl.provenance and results.jsonl.bboxes/.
 Score with `baseline eval` and gate with `baseline compare`, as for any run.
@@ -13,8 +14,10 @@ import sys
 from pathlib import Path
 
 from baseline.config import load_config_cached
+from baseline.io import report_dry_run
 from baseline.logging_setup import get_logger, setup_logging
 from baseline.pipeline import Models
+from baseline.scan import scan_documents
 
 from .config import load_cascade_config
 from .runner import run_batch
@@ -24,6 +27,11 @@ log = get_logger(__name__)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    if args.dry_run:
+        out = Path(args.output)
+        paths, _ = scan_documents(args.input)
+        outputs = [out, f"{out}.provenance", args.bbox_dir or f"{out}.bboxes"]
+        return report_dry_run(outputs, len(paths))
     cfg = load_config_cached(args.config)
     ccfg = load_cascade_config(args.config)
     overrides = {k: v for k, v in (("model", args.model), ("base_url", args.base_url)) if v}
@@ -38,7 +46,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         backend,
         models=Models.load(cfg, Path(args.root)),
         bbox_dir=args.bbox_dir,
-        resume=not args.no_resume,
+        resume=args.resume,
     )
     log.info("run complete", extra=stats)
     return 0
@@ -57,7 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--model", default=None, help="overrides vlm.model in cascade.yaml")
     r.add_argument("--base-url", default=None, help="overrides vlm.base_url in cascade.yaml")
     r.add_argument("--bbox-dir", default=None, help="defaults to <output>.bboxes")
-    r.add_argument("--no-resume", action="store_true", help="reprocess everything")
+    r.add_argument(
+        "--resume", action=argparse.BooleanOptionalAction, default=True, help="skip documents already written"
+    )
+    r.add_argument("--dry-run", action="store_true", help="log what would be written and stop")
     r.set_defaults(func=cmd_run)
     return p
 

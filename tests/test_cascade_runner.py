@@ -216,3 +216,20 @@ def test_a_second_400_falls_back(corpus, cfg, ccfg):
     assert len(reqs) == 2
     assert r.provenance["fallback"] is True
     assert any(e.startswith("cascade: VLMBadRequest: HTTP 400") for e in r.record.diagnostics.errors)
+
+
+def test_resume_repairs_a_crash_between_the_provenance_and_results_lines(corpus, cfg, ccfg, tmp_path):
+    from cascade.runner import run_batch
+
+    out = tmp_path / "cascade.jsonl"
+    prov = tmp_path / "cascade.jsonl.provenance"
+    first = run_batch(corpus, out, cfg, ccfg, FakeBackend(_invoice_or_nothing))
+    records = out.read_text(encoding="utf-8").splitlines(keepends=True)
+    # Crash after the last document's provenance line, halfway through its results line.
+    out.write_text("".join(records[:-1]) + records[-1][:20], encoding="utf-8", newline="")
+
+    again = run_batch(corpus, out, cfg, ccfg, FakeBackend(_invoice_or_nothing))
+    assert again["written"] == 1 and again["skipped"] == first["written"] - 1
+    ids = [json.loads(line)["doc_id"] for line in out.read_text(encoding="utf-8").splitlines()]
+    prov_ids = [json.loads(line)["doc_id"] for line in prov.read_text(encoding="utf-8").splitlines()]
+    assert sorted(ids) == sorted(prov_ids) and len(set(ids)) == len(ids) == first["written"]

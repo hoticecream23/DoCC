@@ -1,6 +1,6 @@
 """Command line entry points.
 
-baseline run             --input DIR --output results.jsonl [--workers N]
+baseline run             --input DIR --output results.jsonl [--workers N] [--no-resume]
 baseline train           --annotations FILE --output-model DIR
 baseline tune-thresholds --annotations FILE --predictions FILE
 baseline profile         --input DIR --output profile.md
@@ -11,6 +11,8 @@ baseline eval            --gold FILE --pred FILE [--output report.md]
 baseline compare         --gold FILE --a FILE --b FILE [--output cmp.md]
 baseline graph           --input results.jsonl --output graph.json
 baseline tables          --input results.jsonl --output tables.jsonl
+
+Every command that writes takes --dry-run: it logs the paths and document count, then stops.
 """
 
 from __future__ import annotations
@@ -26,10 +28,12 @@ from .config import load_config_cached, save_yaml
 from .evaluate import compare, evaluate, render_comparison, render_report
 from .extract import extract
 from .graph import build as build_graph
+from .io import atomic_open, atomic_write_text, report_dry_run
 from .labels import import_labels, render_summary
 from .logging_setup import get_logger, setup_logging
 from .pipeline import run_batch
 from .profile import run_profile
+from .scan import scan_documents
 from .schema import build_canonical_text, read_jsonl
 from .tables import build as build_tables
 from .workbook import export_workbook, import_workbook
@@ -71,7 +75,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         config_dir=args.config,
         workers=args.workers,
         bbox_dir=args.bbox_dir,
-        resume=not args.no_resume,
+        resume=args.resume,
         root=args.root,
     )
     log.info("run complete", extra=stats)
@@ -193,12 +197,12 @@ def cmd_tune_thresholds(args: argparse.Namespace) -> int:
         return 0
 
     # Write the tuned values straight back into the config.
-    data = dict(cfg.tags)
-    for entry in data.get("tags", []):
+    tags_doc = dict(cfg.tags)
+    for entry in tags_doc.get("tags", []):
         info = tuned.get(entry.get("name"))
         if info:
             entry["threshold"] = info["threshold"]
-    save_yaml(Path(cfg.config_dir) / "tags.yaml", data)
+    save_yaml(Path(cfg.config_dir) / "tags.yaml", tags_doc)
     log.info("tags.yaml updated", extra={"path": str(Path(cfg.config_dir) / "tags.yaml")})
     return 0
 
@@ -214,14 +218,14 @@ def cmd_import_labels(args: argparse.Namespace) -> int:
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w", encoding="utf-8", newline="\n") as fh:
+    with atomic_open(out, newline="\n") as fh:
         for row in res.rows:
             fh.write(json.dumps(row, sort_keys=True) + "\n")
     log.info("gold written", extra={"output": str(out), "rows": len(res.rows)})
 
     summary = render_summary(res, str(args.csv), str(args.root))
     if args.report:
-        Path(args.report).write_text(summary, encoding="utf-8")
+        atomic_write_text(args.report, summary)
     else:
         print(summary)
     return 0
@@ -269,7 +273,7 @@ def cmd_import_workbook(args: argparse.Namespace) -> int:
     # A name the config does not declare is never guessed at, so the report is
     # still written and the exit code says the file is not fit to score with.
     if args.report:
-        Path(args.report).write_text(summary, encoding="utf-8")
+        atomic_write_text(args.report, summary)
     else:
         print(summary)
     if res.problems:
@@ -280,7 +284,7 @@ def cmd_import_workbook(args: argparse.Namespace) -> int:
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w", encoding="utf-8", newline="\n") as fh:
+    with atomic_open(out, newline="\n") as fh:
         for row in res.rows:
             fh.write(json.dumps(row, sort_keys=True) + "\n")
     log.info("gold written", extra={"output": str(out), "rows": len(res.rows)})
@@ -299,10 +303,10 @@ def cmd_eval(args: argparse.Namespace) -> int:
     if args.output:
         out = Path(args.output)
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(report, encoding="utf-8")
+        atomic_write_text(out, report)
         log.info("report written", extra={"output": str(out)})
     if args.json:
-        Path(args.json).write_text(json.dumps(res, indent=2, sort_keys=True), encoding="utf-8")
+        atomic_write_text(args.json, json.dumps(res, indent=2, sort_keys=True))
 
     log.info(
         "scores",
@@ -340,7 +344,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
     if args.output:
         out = Path(args.output)
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(report, encoding="utf-8")
+        atomic_write_text(out, report)
         log.info("comparison written", extra={"output": str(out)})
     for k, v in cmp["headline"].items():
         log.info("delta", extra={"metric": k, "a": v["a"], "b": v["b"], "delta": v["delta"]})
@@ -431,7 +435,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--output", required=True)
     r.add_argument("--workers", type=int, default=1)
     r.add_argument("--bbox-dir", default=None, help="defaults to <output>.bboxes")
-    r.add_argument("--no-resume", action="store_true", help="reprocess everything")
+    r.add_argument(
+        "--resume", action=argparse.BooleanOptionalAction, default=True, help="skip documents already written"
+    )
     r.set_defaults(func=cmd_run)
 
     t = sub.add_parser("train", help="fit and persist the classifier and tagger")
@@ -516,13 +522,33 @@ def build_parser() -> argparse.ArgumentParser:
     tb.add_argument("--report", default=None, help="also write a markdown summary")
     tb.set_defaults(func=cmd_tables)
 
+    for name, command in sub.choices.items():
+        if name != "tune-thresholds":  # has its own --dry-run that still fits and logs the thresholds
+            command.add_argument("--dry-run", action="store_true", help="log what would be written and stop")
     return p
+
+
+def _dry_run(args: argparse.Namespace) -> int:
+    """Log the files a command would write, and how many documents it would read."""
+    outputs = [getattr(args, k, None) for k in ("output", "output_model", "report", "json", "dot")]
+    if args.command == "run":
+        outputs.append(args.bbox_dir or f"{args.output}.bboxes")
+    source = Path(getattr(args, "input", None) or getattr(args, "annotations", None) or "")
+    documents = None
+    if source.is_dir():
+        documents = len(scan_documents(source)[0])
+    elif source.is_file():
+        with open(source, encoding="utf-8") as fh:
+            documents = sum(1 for line in fh if line.strip())
+    return report_dry_run(outputs, documents)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     setup_logging(args.log_level)
     try:
+        if getattr(args, "dry_run", False) and args.command != "tune-thresholds":
+            return _dry_run(args)
         args.cfg = load_config_cached(args.config)
         return int(args.func(args))
     except KeyboardInterrupt:

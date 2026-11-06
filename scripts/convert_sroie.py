@@ -15,7 +15,7 @@ gold file. Field values go through the baseline's own normalizers, so a date
 or amount is compared in the same form the pipeline emits it.
 
 Usage:
-  python scripts/convert_sroie.py --parquet datasets/sroie/test.parquet --split test
+  python scripts/convert_sroie.py --parquet datasets/sroie/test.parquet --split test [--dry-run]
 """
 
 from __future__ import annotations
@@ -27,6 +27,8 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from baseline.config import load_config
+from baseline.io import atomic_open, report_dry_run
+from baseline.logging_setup import setup_logging
 from baseline.metadata.normalizers import NormCtx, normalize
 from baseline.schema import compute_doc_id
 
@@ -43,14 +45,14 @@ def gold_fields(entities: dict, norm_opts: dict) -> tuple[list[dict], list[str]]
     """Map SROIE entities to gold metadata rows. Returns rows and skipped fields."""
     rows, skipped = [], []
     for sroie_name, (field, normalizer) in FIELDS.items():
-        value = (entities.get(sroie_name) or "").strip()
-        if not value:
+        raw = (entities.get(sroie_name) or "").strip()
+        if not raw:
             continue
-        ctx = NormCtx(full=value, start=0, end=len(value), opts=norm_opts)
-        normalized, _ = normalize(normalizer, value, ctx)
+        ctx = NormCtx(full=raw, start=0, end=len(raw), opts=norm_opts)
+        normalized, _ = normalize(normalizer, raw, ctx)
         if normalized is None:
             # A date our normalizer cannot parse cannot be compared fairly.
-            skipped.append(f"{field}={value!r}")
+            skipped.append(f"{field}={raw!r}")
             continue
         rows.append({"field": field, "normalized_value": normalized})
     return rows, skipped
@@ -78,8 +80,8 @@ def convert(parquet: Path, split: str, out: Path) -> None:
     table = pq.read_table(parquet, columns=["key", "image", "entities", "words"])
     n_docs, all_skipped = 0, []
     with (
-        open(out / split / "gold_images.jsonl", "w", encoding="utf-8") as gold_images,
-        open(out / split / "gold_text.jsonl", "w", encoding="utf-8") as gold_text,
+        atomic_open(out / split / "gold_images.jsonl") as gold_images,
+        atomic_open(out / split / "gold_text.jsonl") as gold_text,
     ):
         for batch in table.to_batches(max_chunksize=64):
             for row in batch.to_pylist():
@@ -107,7 +109,19 @@ def main() -> None:
     ap.add_argument("--parquet", required=True, type=Path)
     ap.add_argument("--split", required=True)
     ap.add_argument("--out", default=Path("datasets/sroie"), type=Path)
+    ap.add_argument("--dry-run", action="store_true", help="log what would be written and stop")
     args = ap.parse_args()
+    setup_logging()
+    if args.dry_run:
+        split_dir = args.out / args.split
+        outputs = [
+            split_dir / "images",
+            split_dir / "text",
+            split_dir / "gold_images.jsonl",
+            split_dir / "gold_text.jsonl",
+        ]
+        report_dry_run(outputs, pq.read_metadata(args.parquet).num_rows)
+        return
     convert(args.parquet, args.split, args.out)
 
 

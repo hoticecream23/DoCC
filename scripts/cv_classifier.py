@@ -12,7 +12,7 @@ models/ holds the model fitted on these same docs.
 A doc_id filed under two folders is kept once (first by source_path), so no
 copy is trained on while its twin is tested.
 
-    python scripts/cv_classifier.py results_classification.jsonl OUT_DIR [--baseline-models DIR]
+    python scripts/cv_classifier.py results_classification.jsonl OUT_DIR [--baseline-models DIR] [--dry-run]
 """
 
 from __future__ import annotations
@@ -27,11 +27,14 @@ sys.path.insert(0, str(ROOT))
 
 from baseline import classify as C  # noqa: E402
 from baseline.config import load_config_cached  # noqa: E402
+from baseline.io import atomic_open, atomic_write_text, report_dry_run  # noqa: E402
+from baseline.logging_setup import setup_logging  # noqa: E402
 
 
 def load_docs(path, label_map):
     docs, dropped, seen, dupes = [], collections.Counter(), set(), []
-    rows = [json.loads(line) for line in open(path, encoding="utf-8")]
+    with open(path, encoding="utf-8") as fh:
+        rows = [json.loads(line) for line in fh]
     for r in sorted(rows, key=lambda r: r["source_path"]):
         if r.get("doc_id") in seen:
             dupes.append(r["source_path"])
@@ -110,7 +113,7 @@ def main(results, out_dir, baseline_models, folds=5, seed=0):
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    with open(out / "cv_preds.jsonl", "w", encoding="utf-8") as fh:
+    with atomic_open(out / "cv_preds.jsonl") as fh:
         for r in preds:
             fh.write(json.dumps(r) + "\n")
 
@@ -132,7 +135,7 @@ def main(results, out_dir, baseline_models, folds=5, seed=0):
         report["per_fold"].append({key: score([(r["gold"], r[key]) for r in rows], unknown) for key in keys})
     for key in keys:
         report["pooled"][key] = score([(r["gold"], r[key]) for r in preds], unknown)
-    (out / "cv_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    atomic_write_text(out / "cv_report.json", json.dumps(report, indent=2))
 
     print("docs", len(docs), "classes", report["class_counts"], "dropped", report["dropped"])
     print("duplicate doc_id copies dropped:", dupes)
@@ -167,5 +170,12 @@ if __name__ == "__main__":
     ap.add_argument("results")
     ap.add_argument("out_dir")
     ap.add_argument("--baseline-models", default=str(ROOT / "models" / "previous"))
+    ap.add_argument("--dry-run", action="store_true", help="log what would be written and stop")
     a = ap.parse_args()
-    main(a.results, a.out_dir, a.baseline_models)
+    setup_logging()
+    if a.dry_run:
+        with open(a.results, encoding="utf-8") as fh:
+            n_docs = sum(1 for line in fh if line.strip())
+        report_dry_run([Path(a.out_dir) / "cv_preds.jsonl", Path(a.out_dir) / "cv_report.json"], n_docs)
+    else:
+        main(a.results, a.out_dir, a.baseline_models)

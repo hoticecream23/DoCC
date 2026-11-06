@@ -7,6 +7,7 @@ import json
 import time
 from pathlib import Path
 
+from ..io import atomic_open, atomic_write_text
 from ..logging_setup import get_logger
 from ..schema import Table, TableDiagnostics, TableRecord, page_spans, read_jsonl
 from .geometry import detect_geometry
@@ -232,13 +233,13 @@ def build(
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w", encoding="utf-8", newline="\n") as fh:
+    with atomic_open(out, newline="\n") as fh:
         for r in records:
             fh.write(json.dumps(r.model_dump(mode="json"), ensure_ascii=False) + "\n")
 
     if report_path:
         rp = Path(report_path)
         rp.parent.mkdir(parents=True, exist_ok=True)
-        rp.write_text(render_report(records, stats, str(inp)), encoding="utf-8")
+        atomic_write_text(rp, render_report(records, stats, str(inp)))
 
     return {"stats": stats, "records": records}
