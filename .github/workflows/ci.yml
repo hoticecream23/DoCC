@@ -40,6 +40,6 @@ jobs:
         shell: bash
         run: |
           # Surface failures as annotations so they are readable without opening the log.
-          grep -E "^(FAILED|ERROR) " pytest.log | head -10 | sed 's/^/::error::/'
-          tail -3 pytest.log | sed 's/^/::error::/'
+          tail -1 pytest.log | sed 's/^/::error::/'
+          grep -E "^(FAILED|ERROR) " pytest.log | head -9 | sed 's/^/::error::/'
           { echo '```'; grep -E "^(FAILED|ERROR) |^E  " pytest.log | head -80; tail -5 pytest.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
