@@ -8,6 +8,7 @@ from __future__ import annotations
 import functools
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from types import ModuleType
 from typing import Any
 
 from .errors import summarize_exception
@@ -15,9 +16,13 @@ from .logging_setup import get_logger
 
 log = get_logger(__name__)
 
+TESSERACT_WORD_LEVEL = 5  # image_to_data level: 1 page, 2 block, 3 para, 4 line, 5 word
+
 
 @dataclass
 class OCRWord:
+    """One recognised word, its box in pixels, and its span in the page text."""
+
     text: str
     x0: float
     y0: float
@@ -30,27 +35,55 @@ class OCRWord:
 
 @dataclass
 class OCRPage:
+    """Page text plus the word boxes it was built from."""
+
     text: str = ""
     words: list[OCRWord] = field(default_factory=list)
     engine: str = "none"
 
 
 class OCREngine(ABC):
+    """Interface every OCR engine implements."""
+
     name: str = "abstract"
 
-    def configure(self, opts: dict[str, Any]) -> None:
-        """Apply engine settings before use. Default is a no op."""
+    def configure(self, opts: dict[str, Any]) -> None:  # noqa: B027 - optional hook, a no op unless overridden
+        """Apply engine settings before use. Default is a no op.
+
+        Args:
+            opts: Engine options from config.
+        """
 
     @abstractmethod
     def available(self) -> bool:
-        """Can this engine actually run right now."""
+        """Can this engine actually run right now.
+
+        Returns:
+            True when the engine can run.
+        """
 
     @abstractmethod
     def recognize(self, image: Any, opts: dict[str, Any]) -> OCRPage:
-        """Take a PIL image, return page text plus word boxes with offsets."""
+        """Take a PIL image, return page text plus word boxes with offsets.
+
+        Args:
+            image: A PIL image.
+            opts: Engine options from config.
+
+        Returns:
+            The recognised page.
+        """
 
     def orientation(self, image: Any, opts: dict[str, Any]) -> tuple[int, float]:
-        """Clockwise degrees that would set the page upright, and confidence."""
+        """Clockwise degrees that would set the page upright, and confidence.
+
+        Args:
+            image: A PIL image.
+            opts: Engine options from config.
+
+        Returns:
+            (degrees, confidence). The default is (0, 0.0).
+        """
         return 0, 0.0
 
 
@@ -60,12 +93,19 @@ class TesseractEngine(OCREngine):
     name = "tesseract"
 
     @functools.cached_property
-    def _pytesseract(self):
+    def _pytesseract(self) -> ModuleType:
+        """The pytesseract module, imported on first use."""
         import pytesseract
 
-        return pytesseract
+        module: ModuleType = pytesseract
+        return module
 
     def configure(self, opts: dict[str, Any]) -> None:
+        """Point pytesseract at an explicit binary when config names one.
+
+        Args:
+            opts: Engine options; "binary" is the tesseract executable path.
+        """
         # Windows installers do not put tesseract on PATH, so allow an
         # explicit binary. Null in config means "just use PATH".
         binary = opts.get("binary")
@@ -73,6 +113,11 @@ class TesseractEngine(OCREngine):
             self._pytesseract.pytesseract.tesseract_cmd = str(binary)
 
     def available(self) -> bool:
+        """Check that the tesseract binary runs.
+
+        Returns:
+            True when tesseract reports a version.
+        """
         try:
             self._pytesseract.get_tesseract_version()
             return True
@@ -81,6 +126,15 @@ class TesseractEngine(OCREngine):
             return False
 
     def recognize(self, image: Any, opts: dict[str, Any]) -> OCRPage:
+        """Run tesseract word-level OCR.
+
+        Args:
+            image: A PIL image.
+            opts: psm, lang and timeout_s.
+
+        Returns:
+            The recognised page.
+        """
         pt = self._pytesseract
         cfg = f"--psm {int(opts.get('psm', 3))}"
         data = pt.image_to_data(
@@ -93,17 +147,26 @@ class TesseractEngine(OCREngine):
         return _assemble(data, self.name)
 
     def orientation(self, image: Any, opts: dict[str, Any]) -> tuple[int, float]:
+        """Run tesseract OSD.
+
+        Args:
+            image: A PIL image.
+            opts: timeout_s.
+
+        Returns:
+            (clockwise degrees to rotate, OSD confidence).
+        """
         pt = self._pytesseract
         osd = pt.image_to_osd(image, output_type=pt.Output.DICT, timeout=opts.get("timeout_s", 120))
         return int(osd["rotate"]), float(osd["orientation_conf"])
 
 
-def _assemble(data: dict[str, list], engine: str) -> OCRPage:
+def _assemble(data: dict[str, list[Any]], engine: str) -> OCRPage:
     """Build page text from word boxes so offsets are exact by construction."""
     n = len(data.get("text", []))
     lines: dict[tuple[int, int, int], list[int]] = {}
     for i in range(n):
-        if int(data["level"][i]) != 5:
+        if int(data["level"][i]) != TESSERACT_WORD_LEVEL:
             continue
         if not str(data["text"][i]).strip():
             continue
@@ -147,9 +210,23 @@ class NullEngine(OCREngine):
     name = "null"
 
     def available(self) -> bool:
+        """Never available.
+
+        Returns:
+            False.
+        """
         return False
 
     def recognize(self, image: Any, opts: dict[str, Any]) -> OCRPage:
+        """Return an empty page.
+
+        Args:
+            image: Ignored.
+            opts: Ignored.
+
+        Returns:
+            An empty OCRPage.
+        """
         return OCRPage(engine=self.name)
 
 
@@ -161,6 +238,17 @@ _REGISTRY: dict[str, type[OCREngine]] = {
 
 @functools.lru_cache(maxsize=8)
 def get_engine(name: str) -> OCREngine:
+    """Return the cached engine instance registered under name.
+
+    Args:
+        name: Registry key, such as "tesseract" or "null".
+
+    Returns:
+        The engine.
+
+    Raises:
+        KeyError: No engine has that name.
+    """
     if name not in _REGISTRY:
         raise KeyError(f"unknown ocr engine {name!r}, have {sorted(_REGISTRY)}")
     return _REGISTRY[name]()
@@ -170,6 +258,12 @@ def ocr_confidence(words: list[OCRWord]) -> float:
     """Mean per-word confidence, weighted by word length.
 
     Long words carry more signal than stray one char noise.
+
+    Args:
+        words: Recognised words.
+
+    Returns:
+        Confidence in 0..1; 0.0 when there are no characters.
     """
     num = 0.0
     den = 0.0

@@ -9,10 +9,11 @@ from __future__ import annotations
 import collections
 import statistics
 from pathlib import Path
+from typing import Any
 
 from .classify import classify
 from .config import Config, load_config_cached
-from .extract import extract
+from .extract import ExtractionResult, extract
 from .logging_setup import get_logger
 from .metadata.fields import _pattern_candidates
 from .scan import scan_documents
@@ -20,12 +21,16 @@ from .schema import ExtractionMethod, build_canonical_text, compute_doc_id
 
 log = get_logger(__name__)
 
+LOW_CONFIDENCE = 0.6  # documents below this extraction confidence get counted
+
 
 def _pct(n: int, d: int) -> str:
+    """Format n/d as a percentage, or n/a when d is zero."""
     return f"{100.0 * n / d:.1f}%" if d else "n/a"
 
 
-def _dist(values: list[int]) -> dict:
+def _dist(values: list[int]) -> dict[str, float]:
+    """Min, p50, p90, max and mean of values; empty dict when there are none."""
     if not values:
         return {}
     s = sorted(values)
@@ -38,10 +43,9 @@ def _dist(values: list[int]) -> dict:
     }
 
 
-def profile_corpus(input_dir: str | Path, cfg: Config) -> dict:
-    """Walk the corpus and count things. Nothing here needs a trained model."""
-    paths, excluded = scan_documents(input_dir)
-    stats: dict = {
+def _new_stats(paths: list[Path], excluded: dict[str, list[str]]) -> dict[str, Any]:
+    """Empty counters for profile_corpus, seeded with the scan totals."""
+    return {
         "n_documents": len(paths),
         # What the corpus holds that is not a document, so the count above can
         # be checked against the file count on disk rather than trusted.
@@ -67,6 +71,63 @@ def profile_corpus(input_dir: str | Path, cfg: Config) -> dict:
         "hybrid_deltas": [],
     }
 
+
+def _count_extraction(stats: dict[str, Any], name: str, res: ExtractionResult, full: str) -> None:
+    """Add one document's extraction routing, sizes and confidences to stats."""
+    stats["methods"][res.method.value] += 1
+    for pm in res.page_methods:
+        stats["page_methods"][pm.value] += 1
+    stats["page_counts"].append(res.page_count)
+    stats["char_counts"].append(len(full))
+    stats["extraction_confidence"].append(res.confidence())
+    # parallel lists in practice; strict=False keeps the old truncate-on-mismatch behaviour
+    pairs = list(zip(res.page_methods, res.page_confidences, strict=False))
+    for pm, pc in pairs:
+        stats["conf_by_method"][pm.value].append(pc)
+    if res.method == ExtractionMethod.HYBRID:
+        # Same document, both routes. This is the cleanest comparison there is.
+        nat = [c for m, c in pairs if m == ExtractionMethod.NATIVE]
+        ocr = [c for m, c in pairs if m == ExtractionMethod.OCR]
+        if nat and ocr:
+            stats["hybrid_deltas"].append((name, statistics.fmean(nat), statistics.fmean(ocr)))
+    if res.has_native_text:
+        stats["with_native_text"] += 1
+    if res.is_scanned:
+        stats["scanned"] += 1
+    if not full.strip():
+        stats["empty"] += 1
+
+
+def _count_layers(
+    stats: dict[str, Any], full: str, pages: list[str], cfg: Config, pattern_fields: list[dict[str, Any]], limit: int
+) -> None:
+    """Add one document's rule-layer label and pattern-layer field hits to stats."""
+    # Rule layer only, so this is the no-model classification floor.
+    c = classify(full, pages, cfg, model=None)
+    stats["rule_labels"][c.label] += 1
+    stats["rule_methods"][c.method.value] += 1
+
+    # Pattern layer only, per field, so anchors do not flatter the numbers.
+    for fdef in pattern_fields:
+        cands = _pattern_candidates(full, fdef, limit)
+        if cands:
+            stats["field_hits"][fdef["name"]] += 1
+            if any(c2.validated for c2 in cands):
+                stats["field_validated"][fdef["name"]] += 1
+
+
+def profile_corpus(input_dir: str | Path, cfg: Config) -> dict[str, Any]:
+    """Walk the corpus and count things. Nothing here needs a trained model.
+
+    Args:
+        input_dir: Corpus root.
+        cfg: Loaded configuration.
+
+    Returns:
+        The raw counters that render_markdown() turns into a report.
+    """
+    paths, excluded = scan_documents(input_dir)
+    stats = _new_stats(paths, excluded)
     pattern_fields = [f for f in cfg.field_defs if "pattern" in f.get("strategies", [])]
     limit = int(cfg.metadata_opts().get("max_candidates_per_field", 25))
 
@@ -81,46 +142,24 @@ def profile_corpus(input_dir: str | Path, cfg: Config) -> dict:
         res = extract(p, cfg)
         for e in res.errors:
             stats["errors"][e.split(":")[0]] += 1
-
         full = build_canonical_text(res.pages)
-        stats["methods"][res.method.value] += 1
-        for pm in res.page_methods:
-            stats["page_methods"][pm.value] += 1
-        stats["page_counts"].append(res.page_count)
-        stats["char_counts"].append(len(full))
-        stats["extraction_confidence"].append(res.confidence())
-        for pm, pc in zip(res.page_methods, res.page_confidences):
-            stats["conf_by_method"][pm.value].append(pc)
-        if res.method == ExtractionMethod.HYBRID:
-            # Same document, both routes. This is the cleanest comparison there is.
-            nat = [c for m, c in zip(res.page_methods, res.page_confidences) if m == ExtractionMethod.NATIVE]
-            ocr = [c for m, c in zip(res.page_methods, res.page_confidences) if m == ExtractionMethod.OCR]
-            if nat and ocr:
-                stats["hybrid_deltas"].append((p.name, statistics.fmean(nat), statistics.fmean(ocr)))
-        if res.has_native_text:
-            stats["with_native_text"] += 1
-        if res.is_scanned:
-            stats["scanned"] += 1
-        if not full.strip():
-            stats["empty"] += 1
-
-        # Rule layer only, so this is the no-model classification floor.
-        c = classify(full, res.pages, cfg, model=None)
-        stats["rule_labels"][c.label] += 1
-        stats["rule_methods"][c.method.value] += 1
-
-        # Pattern layer only, per field, so anchors do not flatter the numbers.
-        for fdef in pattern_fields:
-            cands = _pattern_candidates(full, fdef, limit)
-            if cands:
-                stats["field_hits"][fdef["name"]] += 1
-                if any(c2.validated for c2 in cands):
-                    stats["field_validated"][fdef["name"]] += 1
+        _count_extraction(stats, p.name, res, full)
+        _count_layers(stats, full, res.pages, cfg, pattern_fields, limit)
 
     return stats
 
 
-def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
+def render_markdown(stats: dict[str, Any], input_dir: str, cfg: Config) -> str:
+    """Render profile_corpus() counters as a Markdown report.
+
+    Args:
+        stats: Output of profile_corpus().
+        input_dir: Corpus root, for the header.
+        cfg: Loaded configuration.
+
+    Returns:
+        The Markdown text.
+    """
     n = stats["n_documents"]
     lines = (
         _md_header(stats, input_dir, n)
@@ -135,9 +174,9 @@ def render_markdown(stats: dict, input_dir: str, cfg: Config) -> str:
     return "\n".join(lines)
 
 
-def _md_header(stats: dict, input_dir: str, n: int) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _md_header(stats: dict[str, Any], input_dir: str, n: int) -> list[str]:
+    lines: list[str] = []
+    a = lines.append
     a("# Corpus profile")
     a("")
     a(f"Source: `{input_dir}`")
@@ -163,12 +202,12 @@ def _md_header(stats: dict, input_dir: str, n: int) -> list[str]:
     a("")
     a("No models were used. Everything below is the deterministic floor.")
     a("")
-    return L
+    return lines
 
 
-def _md_extraction(stats: dict, n: int) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _md_extraction(stats: dict[str, Any], n: int) -> list[str]:
+    lines: list[str] = []
+    a = lines.append
     a("## Extraction")
     a("")
     a("| metric | value |")
@@ -191,12 +230,12 @@ def _md_extraction(stats: dict, n: int) -> list[str]:
     for k, v in sorted(stats["page_methods"].items()):
         a(f"| {k} | {v} |")
     a("")
-    return L
+    return lines
 
 
-def _md_sizes(stats: dict, n: int) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _md_sizes(stats: dict[str, Any], n: int) -> list[str]:
+    lines: list[str] = []
+    a = lines.append
     a("## Size distribution")
     a("")
     pc = _dist(stats["page_counts"])
@@ -213,15 +252,15 @@ def _md_sizes(stats: dict, n: int) -> list[str]:
     if conf:
         a(f"Mean extraction confidence: **{statistics.fmean(conf):.3f}**")
         a("")
-        low = sum(1 for c in conf if c < 0.6)
-        a(f"Documents below 0.6 confidence: {low} ({_pct(low, n)})")
+        low = sum(1 for c in conf if c < LOW_CONFIDENCE)
+        a(f"Documents below {LOW_CONFIDENCE} confidence: {low} ({_pct(low, n)})")
         a("")
-    return L
+    return lines
 
 
-def _md_ocr(stats: dict) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _md_ocr(stats: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    a = lines.append
     a("## OCR quality proxy")
     a("")
     by_method = stats["conf_by_method"]
@@ -251,12 +290,12 @@ def _md_ocr(stats: dict) -> list[str]:
         a("No document produced both a native and an OCR page, so there is no")
         a("like for like comparison. The table above is still indicative.")
         a("")
-    return L
+    return lines
 
 
-def _md_classification(stats: dict, n: int, cfg: Config) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _md_classification(stats: dict[str, Any], n: int, cfg: Config) -> list[str]:
+    lines: list[str] = []
+    a = lines.append
     a("## Classification, rule layer only")
     a("")
     a("| label | docs | share |")
@@ -267,12 +306,12 @@ def _md_classification(stats: dict, n: int, cfg: Config) -> list[str]:
     unknown = stats["rule_labels"].get(str(cfg.classify_opts().get("unknown_label", "unknown")), 0)
     a(f"Rule layer coverage: **{_pct(n - unknown, n)}**. The rest need the model.")
     a("")
-    return L
+    return lines
 
 
-def _md_metadata(stats: dict, n: int, cfg: Config) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _md_metadata(stats: dict[str, Any], n: int, cfg: Config) -> list[str]:
+    lines: list[str] = []
+    a = lines.append
     a("## Metadata, pattern layer only")
     a("")
     a("Anchors and templates are excluded, so this is the regex plus checksum floor.")
@@ -285,12 +324,12 @@ def _md_metadata(stats: dict, n: int, cfg: Config) -> list[str]:
         v = stats["field_validated"].get(name, 0)
         a(f"| {name} | {h} | {_pct(h, n)} | {v} | {_pct(v, h)} |")
     a("")
-    return L
+    return lines
 
 
-def _md_errors(stats: dict) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _md_errors(stats: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    a = lines.append
     if stats["errors"]:
         a("## Errors")
         a("")
@@ -305,12 +344,12 @@ def _md_errors(stats: dict) -> list[str]:
         for u in stats["unreadable"][:20]:
             a(f"- {u}")
         a("")
-    return L
+    return lines
 
 
-def _md_extensions(stats: dict) -> list[str]:
-    L: list[str] = []
-    a = L.append
+def _md_extensions(stats: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    a = lines.append
     a("## Extensions")
     a("")
     a("| ext | count |")
@@ -318,10 +357,20 @@ def _md_extensions(stats: dict) -> list[str]:
     for k, v in sorted(stats["by_extension"].items()):
         a(f"| {k} | {v} |")
     a("")
-    return L
+    return lines
 
 
-def run_profile(input_dir: str | Path, output: str | Path, config_dir: str | None = None) -> dict:
+def run_profile(input_dir: str | Path, output: str | Path, config_dir: str | None = None) -> dict[str, Any]:
+    """Profile a corpus and write the Markdown report.
+
+    Args:
+        input_dir: Corpus root.
+        output: Report path.
+        config_dir: Config directory; None for the default.
+
+    Returns:
+        The raw counters.
+    """
     cfg = load_config_cached(config_dir)
     stats = profile_corpus(input_dir, cfg)
     md = render_markdown(stats, str(input_dir), cfg)

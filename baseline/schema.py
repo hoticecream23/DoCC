@@ -26,10 +26,14 @@ Confidence = Annotated[float, Field(ge=0.0, le=1.0)]
 
 
 class Strict(BaseModel):
+    """Base model: unknown keys are rejected and assignment is validated."""
+
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
 
 class ExtractionMethod(str, Enum):
+    """How a page or document got its text."""
+
     NATIVE = "native"
     OCR = "ocr"
     HYBRID = "hybrid"
@@ -42,6 +46,8 @@ class ExtractionMethod(str, Enum):
 
 
 class ClassifyMethod(str, Enum):
+    """Which layer decided the document class."""
+
     TFIDF_SVM = "tfidf_svm"
     RULE = "rule"
     FALLBACK = "fallback"
@@ -50,6 +56,8 @@ class ClassifyMethod(str, Enum):
 
 
 class MetadataMethod(str, Enum):
+    """How a metadata value was found."""
+
     REGEX_CHECKSUM = "regex_checksum"
     REGEX_FORMAT = "regex_format"
     ANCHOR = "anchor"
@@ -62,12 +70,16 @@ class MetadataMethod(str, Enum):
 
 
 class TagMethod(str, Enum):
+    """Which source produced a tag."""
+
     KEYWORD = "keyword"
     TFIDF_SVM = "tfidf_svm"
     DERIVED = "derived"
 
 
 class TextRecord(Strict):
+    """Canonical text of a document plus how it was extracted."""
+
     full: str
     pages: list[str]
     method: ExtractionMethod
@@ -86,7 +98,11 @@ class TextRecord(Strict):
         return v
 
     def check_consistent(self) -> None:
-        """Full text must be exactly the pages joined by PAGE_SEP."""
+        """Full text must be exactly the pages joined by PAGE_SEP.
+
+        Raises:
+            ValueError: full or char_count disagrees with pages.
+        """
         expected = PAGE_SEP.join(self.pages)
         if self.full != expected:
             raise ValueError("text.full is not pages joined by PAGE_SEP")
@@ -95,6 +111,8 @@ class TextRecord(Strict):
 
 
 class Classification(Strict):
+    """Document class, its confidence and the full score distribution."""
+
     label: str
     confidence: Confidence
     all_scores: dict[str, Confidence] = Field(default_factory=dict)
@@ -102,6 +120,8 @@ class Classification(Strict):
 
 
 class MetadataField(Strict):
+    """One extracted metadata value with its offsets into the canonical text."""
+
     field: str
     value: str
     normalized_value: str | None
@@ -126,12 +146,16 @@ class MetadataField(Strict):
 
 
 class Tag(Strict):
+    """One document tag and its confidence."""
+
     tag: str
     confidence: Confidence
     method: TagMethod
 
 
 class Diagnostics(Strict):
+    """Per-document run facts: page count, scan status, timings and errors."""
+
     page_count: int = Field(ge=0)
     is_scanned: bool
     has_native_text: bool
@@ -140,6 +164,8 @@ class Diagnostics(Strict):
 
 
 class DocumentRecord(Strict):
+    """One line of the results file. The contract the harness scores against."""
+
     doc_id: str = Field(min_length=DOC_ID_LEN, max_length=DOC_ID_LEN)
     source_path: str
     # Kept separate from source_path so a moved corpus stays comparable.
@@ -160,7 +186,8 @@ class DocumentRecord(Strict):
     def verify_offsets(self) -> list[str]:
         """Every offset must slice the canonical text back to its raw value.
 
-        Returns a list of problems. Empty means clean.
+        Returns:
+            A list of problems. Empty means clean.
         """
         problems = []
         full = self.text.full
@@ -193,13 +220,22 @@ class WordBox(Strict):
 
 
 class BBoxSidecar(Strict):
+    """Word boxes for one document, stored beside the record."""
+
     doc_id: str
     page_sizes: list[tuple[float, float]] = Field(default_factory=list)
     words: list[WordBox] = Field(default_factory=list)
 
 
 def compute_doc_id(path: str | Path) -> str:
-    """SHA-256 of file bytes, first 16 hex chars. Content addressed."""
+    """SHA-256 of file bytes, first 16 hex chars. Content addressed.
+
+    Args:
+        path: File to hash.
+
+    Returns:
+        The doc_id.
+    """
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
@@ -208,11 +244,26 @@ def compute_doc_id(path: str | Path) -> str:
 
 
 def build_canonical_text(pages: list[str]) -> str:
+    """Join pages with PAGE_SEP into the canonical text every offset points into.
+
+    Args:
+        pages: Per-page texts.
+
+    Returns:
+        The canonical text.
+    """
     return PAGE_SEP.join(pages)
 
 
 def page_spans(pages: list[str]) -> list[tuple[int, int]]:
-    """Start/end offset of each page inside the canonical text."""
+    """Start/end offset of each page inside the canonical text.
+
+    Args:
+        pages: Per-page texts.
+
+    Returns:
+        (start, end) per page.
+    """
     spans = []
     cursor = 0
     for p in pages:
@@ -222,7 +273,15 @@ def page_spans(pages: list[str]) -> list[tuple[int, int]]:
 
 
 def page_for_offset(spans: list[tuple[int, int]], offset: int) -> int:
-    """Which page an offset falls in. Separators bind to the preceding page."""
+    """Which page an offset falls in. Separators bind to the preceding page.
+
+    Args:
+        spans: Output of page_spans().
+        offset: Char offset in the canonical text.
+
+    Returns:
+        Zero-based page index; the last page when offset is past the end.
+    """
     for i, (s, e) in enumerate(spans):
         if s <= offset <= e:
             return i
@@ -241,6 +300,8 @@ TABLES_SCHEMA_VERSION = "1.1.0"
 
 
 class TableMethod(str, Enum):
+    """How a table's column structure was recovered."""
+
     # Column structure recovered from word bounding boxes.
     GEOMETRY = "geometry"
     # Column structure recovered from whitespace columns in the canonical text.
@@ -250,6 +311,8 @@ class TableMethod(str, Enum):
 
 
 class TableCell(Strict):
+    """One table cell, with offsets and geometry when known."""
+
     row: int = Field(ge=0)
     col: int = Field(ge=0)
     # v0 never merges cells, so both are always 1. They are here so that a
@@ -274,6 +337,8 @@ class TableCell(Strict):
 
 
 class Table(Strict):
+    """One detected table."""
+
     table_id: str
     page: int = Field(ge=0)
     n_rows: int = Field(ge=0)
@@ -290,11 +355,14 @@ class Table(Strict):
 
     @property
     def fill(self) -> float:
+        """Share of the n_rows x n_cols grid that holds a cell; 0.0 for an empty grid."""
         n = self.n_rows * self.n_cols
         return round(len(self.cells) / n, 4) if n else 0.0
 
 
 class TableDiagnostics(Strict):
+    """Per-document table pass facts: abstentions, strategies, timings and errors."""
+
     # Bands that looked like a table but failed a structural check. Each entry
     # says why, because an abstention is a finding, not a silence.
     abstained: list[str] = Field(default_factory=list)
@@ -320,6 +388,12 @@ class TableRecord(Strict):
 
         Same contract as DocumentRecord.verify_offsets. A cell that cannot
         honour it is a bug, not a rounding error.
+
+        Args:
+            full: The record's canonical text.
+
+        Returns:
+            A list of problems. Empty means clean.
         """
         problems = []
         for t in self.tables:
@@ -337,10 +411,21 @@ class TableRecord(Strict):
         return problems
 
 
-def read_jsonl(path: str | Path) -> list[dict]:
-    """One record per line. Iterating the handle rather than splitlines() is
-    deliberate: splitlines() also breaks on the form feed inside PAGE_SEP and
-    on U+2028, either of which would cut a record in half.
+def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    """Read one JSON record per line, skipping blank lines.
+
+    Iterating the handle rather than splitlines() is deliberate: splitlines()
+    also breaks on the form feed inside PAGE_SEP and on U+2028, either of which
+    would cut a record in half.
+
+    Args:
+        path: JSONL file.
+
+    Returns:
+        The parsed records.
+
+    Raises:
+        ValueError: A line is not valid JSON.
     """
     rows = []
     with open(path, encoding="utf-8") as fh:

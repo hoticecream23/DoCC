@@ -21,6 +21,14 @@ class JsonFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
+        """Render one record as a JSON line.
+
+        Args:
+            record: The log record.
+
+        Returns:
+            The JSON text.
+        """
         payload: dict[str, Any] = {
             "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
             "level": record.levelname,
@@ -37,6 +45,11 @@ class JsonFormatter(logging.Formatter):
 
 
 def setup_logging(level: str = "INFO") -> None:
+    """Send every log record to stderr as JSON, replacing existing handlers.
+
+    Args:
+        level: Root level name; unknown names fall back to INFO.
+    """
     # Windows consoles default to cp1252 and would blow up on rupee signs.
     stream = sys.stderr
     reconfigure_error = None
@@ -55,4 +68,12 @@ def setup_logging(level: str = "INFO") -> None:
 
 
 def get_logger(name: str) -> logging.Logger:
+    """Return the named logger.
+
+    Args:
+        name: Logger name, normally __name__.
+
+    Returns:
+        The logger.
+    """
     return logging.getLogger(name)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from decimal import Decimal
+from typing import Any
 
 from ..errors import summarize_exception
 from ..logging_setup import get_logger
@@ -52,9 +53,27 @@ _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 # Valid GST state codes: 01-38 plus the two special ones.
 _GST_STATES = {f"{i:02d}" for i in range(1, 39)} | {"97", "99"}
 
+# Payment card numbers run from 12 to 19 digits.
+LUHN_MIN_DIGITS = 12
+LUHN_MAX_DIGITS = 19
+GSTIN_LENGTH = 15
+AADHAAR_LENGTH = 12
+# Indian mobile numbers: 10 digits, or 12 with the 91 country code.
+PHONE_IN_LENGTH = 10
+PHONE_IN_WITH_CC_LENGTH = 12
+INVOICE_NUMBER_MIN_LEN = 3
+INVOICE_NUMBER_MAX_LEN = 30
+
 
 def verhoeff_check(digits: str) -> bool:
-    """True if the trailing digit is a valid Verhoeff checksum for the rest."""
+    """Check a Verhoeff checksum.
+
+    Args:
+        digits: Digit string whose last digit is the check digit.
+
+    Returns:
+        True if the trailing digit is a valid Verhoeff checksum for the rest.
+    """
     if not digits.isdigit():
         return False
     c = 0
@@ -64,7 +83,17 @@ def verhoeff_check(digits: str) -> bool:
 
 
 def verhoeff_digit(payload: str) -> str:
-    """Check digit for a payload that does not yet carry one. Test helper."""
+    """Check digit for a payload that does not yet carry one. Test helper.
+
+    Args:
+        payload: Digit string without a check digit.
+
+    Returns:
+        The Verhoeff check digit as a one character string.
+
+    Raises:
+        ValueError: If the payload is not all digits.
+    """
     if not payload.isdigit():
         raise ValueError("payload must be digits")
     c = 0
@@ -74,24 +103,39 @@ def verhoeff_digit(payload: str) -> str:
 
 
 def luhn_check(digits: str) -> bool:
+    """Luhn checksum for payment card numbers. Non-digits are ignored.
+
+    Args:
+        digits: Card number, separators allowed.
+
+    Returns:
+        True if the number has a valid length and Luhn checksum.
+    """
     d = re.sub(r"\D", "", digits)
-    if len(d) < 12 or len(d) > 19:
+    if len(d) < LUHN_MIN_DIGITS or len(d) > LUHN_MAX_DIGITS:
         return False
     total = 0
     for i, ch in enumerate(reversed(d)):
         n = int(ch)
         if i % 2 == 1:
             n *= 2
-            if n > 9:
+            if n > 9:  # noqa: PLR2004 - Luhn folds a doubled digit back to one digit
                 n -= 9
         total += n
     return total % 10 == 0
 
 
 def gstin_check(value: str) -> bool:
-    """15 char GSTIN: state code, PAN, entity number, Z, base 36 check digit."""
+    """15 char GSTIN: state code, PAN, entity number, Z, base 36 check digit.
+
+    Args:
+        value: Candidate GSTIN.
+
+    Returns:
+        True if format, state code, embedded PAN and check digit all pass.
+    """
     v = value.strip().upper()
-    if len(v) != 15 or not re.fullmatch(r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]", v):
+    if len(v) != GSTIN_LENGTH or not re.fullmatch(r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]", v):
         return False
     if v[:2] not in _GST_STATES:
         return False
@@ -101,16 +145,23 @@ def gstin_check(value: str) -> bool:
     factor = 2
     for ch in reversed(v[:14]):
         prod = factor * _B36.index(ch)
-        factor = 1 if factor == 2 else 2
+        factor = 1 if factor == 2 else 2  # noqa: PLR2004 - alternating weights 2, 1
         total += prod // 36 + prod % 36
     return _B36[(36 - total % 36) % 36] == v[14]
 
 
-def pan_check(value: str, args: dict | None = None) -> bool:
+def pan_check(value: str, args: dict[str, Any] | None = None) -> bool:
     """PAN has no public checksum, so this is format plus structural rules.
 
     The 4th char must be a real holder type code. Override the set from
     fields.yaml via validator_args.entity_types if your corpus needs it.
+
+    Args:
+        value: Candidate PAN.
+        args: Validator args; ``entity_types`` overrides the holder type codes.
+
+    Returns:
+        True if the format and holder type code pass.
     """
     v = value.strip().upper()
     if not re.fullmatch(r"[A-Z]{5}[0-9]{4}[A-Z]", v):
@@ -120,19 +171,42 @@ def pan_check(value: str, args: dict | None = None) -> bool:
 
 
 def aadhaar_check(value: str) -> bool:
+    """Aadhaar: 12 digits, not starting with 0 or 1, valid Verhoeff checksum.
+
+    Args:
+        value: Candidate Aadhaar number, separators allowed.
+
+    Returns:
+        True if length, first digit and checksum pass.
+    """
     d = re.sub(r"\D", "", value)
-    if len(d) != 12 or d[0] in "01":
+    if len(d) != AADHAAR_LENGTH or d[0] in "01":
         return False
     return verhoeff_check(d)
 
 
 def ifsc_check(value: str) -> bool:
-    """No checksum exists. Format plus the mandatory zero in position five."""
+    """No checksum exists. Format plus the mandatory zero in position five.
+
+    Args:
+        value: Candidate IFSC code.
+
+    Returns:
+        True if the format matches.
+    """
     v = value.strip().upper()
     return bool(re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", v))
 
 
 def email_check(value: str) -> bool:
+    """Loose structural email check: one @, a dotted domain, no "..".
+
+    Args:
+        value: Candidate email address.
+
+    Returns:
+        True if the structure passes.
+    """
     v = value.strip()
     if v.count("@") != 1 or ".." in v:
         return False
@@ -141,13 +215,30 @@ def email_check(value: str) -> bool:
 
 
 def phone_in_check(value: str) -> bool:
+    """Indian mobile number: 10 digits starting 6-9, optional 91 prefix.
+
+    Args:
+        value: Candidate phone number, separators allowed.
+
+    Returns:
+        True if the digits form a valid Indian mobile number.
+    """
     d = re.sub(r"\D", "", value)
-    if len(d) == 12 and d.startswith("91"):
+    if len(d) == PHONE_IN_WITH_CC_LENGTH and d.startswith("91"):
         d = d[2:]
-    return len(d) == 10 and d[0] in "6789"
+    return len(d) == PHONE_IN_LENGTH and d[0] in "6789"
 
 
-def date_sane_check(value: str, args: dict | None = None) -> bool:
+def date_sane_check(value: str, args: dict[str, Any] | None = None) -> bool:
+    """Date parses and falls in a sane year range.
+
+    Args:
+        value: Candidate date text.
+        args: Validator args: ``dayfirst``, ``min_year``, ``max_year``.
+
+    Returns:
+        True if the date parses and its year is in range.
+    """
     args = args or {}
     parsed = _parse_date(value, bool(args.get("dayfirst", True)))
     if parsed is None:
@@ -155,7 +246,16 @@ def date_sane_check(value: str, args: dict | None = None) -> bool:
     return int(args.get("min_year", 1990)) <= parsed.year <= int(args.get("max_year", 2035))
 
 
-def amount_sane_check(value: str, args: dict | None = None) -> bool:
+def amount_sane_check(value: str, args: dict[str, Any] | None = None) -> bool:
+    """Amount parses and falls in a sane range.
+
+    Args:
+        value: Candidate amount text.
+        args: Validator args: ``min`` and ``max``.
+
+    Returns:
+        True if the amount parses and is in range.
+    """
     args = args or {}
     dec = _to_decimal(value)
     if dec is None:
@@ -163,10 +263,19 @@ def amount_sane_check(value: str, args: dict | None = None) -> bool:
     return Decimal(str(args.get("min", 0))) <= dec <= Decimal(str(args.get("max", 10**12)))
 
 
-def invoice_number_check(value: str, args: dict | None = None) -> bool:
+def invoice_number_check(value: str, args: dict[str, Any] | None = None) -> bool:
+    """Invoice number has a sane length and at least one digit.
+
+    Args:
+        value: Candidate invoice number.
+        args: Unused; accepted for a uniform validator signature.
+
+    Returns:
+        True if the length is in range and the value holds a digit.
+    """
     v = value.strip()
     # An invoice number with no digit in it is almost always a bad capture.
-    return 3 <= len(v) <= 30 and any(c.isdigit() for c in v)
+    return INVOICE_NUMBER_MIN_LEN <= len(v) <= INVOICE_NUMBER_MAX_LEN and any(c.isdigit() for c in v)
 
 
 # Validators whose format alone proves the value. Everything else is a
@@ -187,7 +296,18 @@ VALIDATORS: dict[str, Callable[..., bool]] = {
 }
 
 
-def run_validator(name: str | None, value: str, args: dict | None = None) -> bool:
+def run_validator(name: str | None, value: str, args: dict[str, Any] | None = None) -> bool:
+    """Run the named validator on a value. Never raises on a bad value.
+
+    Args:
+        name: Validator name from fields.yaml, or None.
+        value: Raw matched text.
+        args: Validator args from fields.yaml.
+
+    Returns:
+        True if the validator passes. False for no name, an unknown name, or
+        a validator that raises.
+    """
     if not name:
         return False
     fn = VALIDATORS.get(name)

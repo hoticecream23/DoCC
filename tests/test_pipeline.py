@@ -217,6 +217,19 @@ def test_resume_picks_up_only_the_new_document(corpus, default_serial_run, tmp_p
         (corpus / "extra.txt").unlink()
 
 
+def test_resume_cuts_a_partial_last_line_before_appending(corpus, default_serial_run, tmp_path):
+    """A crash mid-write leaves half a line; resume must not glue the next record onto it."""
+    out = _copy_run(default_serial_run, tmp_path)
+    lines = out.read_text(encoding="utf-8").splitlines()
+    # Drop the last record and leave half of it behind, as a crash would.
+    out.write_text("\n".join(lines[:-1]) + "\n" + lines[-1][:20], encoding="utf-8", newline="\n")
+    stats = run_batch(corpus, out, workers=1)
+    assert stats["written"] == 1
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == len(lines)
+    assert len({r["doc_id"] for r in rows}) == len(lines)
+
+
 def test_no_resume_reprocesses_everything(corpus, tmp_path):
     # A small subset is enough: the behaviour is per document, not per corpus.
     src = tmp_path / "in"

@@ -2,6 +2,11 @@
 
 Rule: never OCR a page that already has a text layer. A document may be
 hybrid, and we record which pages went which way.
+
+Kept as one module on purpose: the PDF, image, DOCX and text routes share
+the OCR helpers (_ocr_image, _ocr_words, rotation, upscaling) and the
+ExtractionResult they fill, so a split by route would only move those
+shared helpers into a third module that every route imports.
 """
 
 from __future__ import annotations
@@ -10,14 +15,17 @@ import os
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .config import Config
 from .errors import summarize_exception
 from .logging_setup import get_logger
-from .ocr import OCRPage, get_engine, ocr_confidence
+from .ocr import OCRPage, OCRWord, get_engine, ocr_confidence
 from .schema import ExtractionMethod, WordBox, page_spans
 from .textquality import prefer, score_text
+
+if TYPE_CHECKING:
+    from PIL import Image as PILImage
 
 log = get_logger(__name__)
 
@@ -30,6 +38,17 @@ SUPPORTED_EXT = PDF_EXT | DOCX_EXT | TEXT_EXT | IMAGE_EXT
 
 @dataclass
 class ExtractionResult:
+    """Everything extraction learned about one file, page by page.
+
+    Attributes:
+        pages: Page texts, each free of PAGE_SEP.
+        page_methods: How each page's text was obtained.
+        page_confidences: Per page confidence, 0 to 1.
+        page_sizes: Page width and height in the page's own units.
+        words: Word boxes, page local offsets until to_canonical_offsets runs.
+        errors: Problems that did not stop extraction.
+    """
+
     pages: list[str] = field(default_factory=list)
     page_methods: list[ExtractionMethod] = field(default_factory=list)
     page_confidences: list[float] = field(default_factory=list)
@@ -39,10 +58,12 @@ class ExtractionResult:
 
     @property
     def page_count(self) -> int:
+        """Number of pages extracted."""
         return len(self.pages)
 
     @property
     def method(self) -> ExtractionMethod:
+        """Document level method: none, native, OCR or hybrid."""
         kinds = {m for m in self.page_methods if m != ExtractionMethod.NONE}
         if not kinds:
             return ExtractionMethod.NONE
@@ -56,17 +77,22 @@ class ExtractionResult:
 
     @property
     def has_native_text(self) -> bool:
+        """True when any page used its text layer."""
         return ExtractionMethod.NATIVE in self.page_methods
 
     @property
     def is_scanned(self) -> bool:
-        # No text layer anywhere in the document. page_methods has the detail.
+        """True when no page had a usable text layer. page_methods has the detail."""
         return self.method == ExtractionMethod.OCR
 
     def confidence(self) -> float:
-        """Blend page confidences weighted by how much text each page gave us."""
+        """Blend page confidences weighted by how much text each page gave us.
+
+        Returns:
+            The weighted mean, rounded to 4 places; 0.0 for no text.
+        """
         num = den = 0.0
-        for text, conf in zip(self.pages, self.page_confidences):
+        for text, conf in zip(self.pages, self.page_confidences, strict=False):
             w = float(len(text))
             num += conf * w
             den += w
@@ -85,7 +111,7 @@ def _sanitize_fixed_width(text: str) -> str:
     return text.replace("\r", "\n").replace("\f", "\n")
 
 
-def _map_words_to_offsets(page_text: str, raw_words: list) -> list:
+def _map_words_to_offsets(page_text: str, raw_words: list[tuple[Any, ...]]) -> list[tuple[int, int]]:
     """Best effort char offsets for native PDF words.
 
     Walks the page text in reading order. Yields (-1, -1) for words it cannot
@@ -109,7 +135,7 @@ def _map_words_to_offsets(page_text: str, raw_words: list) -> list:
     return out
 
 
-def _ocr_image(image: Any, opts: dict) -> OCRPage:
+def _ocr_image(image: PILImage.Image, opts: dict[str, Any]) -> OCRPage:
     engine = get_engine(opts.get("engine", "tesseract"))
     engine.configure(opts)
     if not engine.available():
@@ -140,16 +166,16 @@ OSD_BELOW = 0.6  # first-pass mean word confidence that triggers OSD
 OSD_MIN_CONF = 1.0  # tesseract orientation_conf floor
 
 
-def _unrotate(w, deg: int, width: int, height: int) -> tuple[float, float, float, float]:
+def _unrotate(w: OCRWord, deg: int, width: int, height: int) -> tuple[float, float, float, float]:
     """A box read off the image turned `deg` clockwise, in the original's pixels."""
-    if deg == 180:
+    if deg == 180:  # noqa: PLR2004 - a rotation angle, not a tunable
         return width - w.x1, height - w.y1, width - w.x0, height - w.y0
-    if deg == 90:
+    if deg == 90:  # noqa: PLR2004 - a rotation angle, not a tunable
         return w.y0, height - w.x1, w.y1, height - w.x0
     return width - w.y1, w.x0, width - w.y0, w.x1  # 270
 
 
-def _upscale_for_ocr(image: Any, opts: dict) -> tuple[Any, float]:
+def _upscale_for_ocr(image: PILImage.Image, opts: dict[str, Any]) -> tuple[PILImage.Image, float]:
     """Enlarge a small image so its text is large enough for the engine.
 
     Tesseract wants roughly 300 DPI. The PDF route renders pages at that DPI,
@@ -173,11 +199,11 @@ def _upscale_for_ocr(image: Any, opts: dict) -> tuple[Any, float]:
     from PIL import Image
 
     k = target / short
-    resized = image.resize((round(image.width * k), round(image.height * k)), Image.LANCZOS)
+    resized = image.resize((round(image.width * k), round(image.height * k)), Image.Resampling.LANCZOS)
     return resized, k
 
 
-def _prepare_pink_paper(image: Any, opts: dict) -> tuple[Any, dict]:
+def _prepare_pink_paper(image: PILImage.Image, opts: dict[str, Any]) -> tuple[PILImage.Image, dict[str, Any]]:
     """On pink paper, read the red channel only, as one block of text.
 
     Most of the client corpus is Yaumi invoices: blue print on pink paper, with
@@ -208,7 +234,7 @@ def _prepare_pink_paper(image: Any, opts: dict) -> tuple[Any, dict]:
     return rgb.getchannel("R"), {**opts, "psm": rule["psm"]}
 
 
-def _ocr_words(words: list, pno: int, scale: float = 1.0) -> list[WordBox]:
+def _ocr_words(words: list[OCRWord], pno: int, scale: float = 1.0) -> list[WordBox]:
     """OCR words as WordBoxes in the page's own coordinate space.
 
     The engine reads a rendered or enlarged image, so it returns boxes in that
@@ -237,9 +263,10 @@ def _ocr_words(words: list, pno: int, scale: float = 1.0) -> list[WordBox]:
 # ponytail: fixed pool per document; with --workers N this is N x threads
 # tesseract processes. Set extraction.ocr.threads if that oversubscribes.
 OCR_THREADS = min(4, os.cpu_count() or 1)
+PDF_POINTS_PER_INCH = 72.0  # page_sizes are in PDF points; a render at dpi is dpi/72 times larger
 
 
-def _render(page, dpi: int):
+def _render(page: Any, dpi: int) -> PILImage.Image:
     """Page to an RGB PIL image, straight from the pixmap buffer."""
     from PIL import Image
 
@@ -247,98 +274,132 @@ def _render(page, dpi: int):
     return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
 
 
-def _submit_ocr(pool, page, dpi: int, opts: dict) -> Future:
+def _submit_ocr(pool: ThreadPoolExecutor, page: Any, dpi: int, opts: dict[str, Any]) -> Future[OCRPage]:
+    """Render on this thread, OCR on the pool; a render failure lands in the Future."""
     try:
         img = _render(page, dpi)
     except Exception as exc:  # noqa: BLE001 - not swallowed: handed to the Future, re-raised at .result()
-        failed: Future = Future()
+        failed: Future[OCRPage] = Future()
         failed.set_exception(exc)
         return failed
     return pool.submit(_ocr_image, img, opts)
 
 
+@dataclass(frozen=True)
+class _PdfOpts:
+    """The extraction options the PDF route reads, resolved once per file."""
+
+    threshold: int
+    ocr: dict[str, Any]
+    capture: bool
+    native_conf: float
+    gate: dict[str, Any]
+    dpi: int
+    threads: int
+    strip: bool
+
+    @classmethod
+    def from_config(cls, cfg: Config) -> _PdfOpts:
+        opts = cfg.extract_opts()
+        ocr_opts = dict(opts.get("ocr", {}))
+        return cls(
+            threshold=int(opts.get("native_char_threshold", 100)),
+            ocr=ocr_opts,
+            capture=bool(opts.get("capture_bboxes", True)),
+            native_conf=float(opts.get("native_confidence", 0.98)),
+            gate=dict(opts.get("quality_gate", {})),
+            dpi=int(ocr_opts.get("dpi", 300)),
+            threads=int(ocr_opts.get("threads", OCR_THREADS)),
+            strip=bool(opts.get("strip_before_count", True)),
+        )
+
+    def is_thin(self, text: str) -> bool:
+        """True when a text layer is too short to trust, so the page is OCRed."""
+        return len(text.strip() if self.strip else text) < self.threshold
+
+
+def _add_native_page(res: ExtractionResult, page: Any, native: str, pno: int, po: _PdfOpts) -> None:
+    """Keep a page's text layer, or the OCR rescue of it when the layer looks substituted."""
+    # The text layer may itself be somebody else's bad OCR. When it scores as
+    # substituted, re-read the page properly and keep whichever reading is
+    # cleaner. See textquality.py.
+    rescued = _rescue_page(page, native, po.ocr, po.gate, pno, po.capture)
+    if rescued is not None:
+        text, words, conf = rescued
+        res.pages.append(text)
+        res.page_methods.append(ExtractionMethod.OCR_RESCUED)
+        res.page_confidences.append(conf)
+        res.words.extend(words)
+        return
+
+    res.pages.append(native)
+    res.page_methods.append(ExtractionMethod.NATIVE)
+    res.page_confidences.append(po.native_conf)
+    if not po.capture:
+        return
+    raw = sorted(page.get_text("words"), key=lambda w: (w[5], w[6], w[7]))
+    for w, off in zip(raw, _map_words_to_offsets(native, raw), strict=True):
+        res.words.append(
+            WordBox(
+                page=pno,
+                text=w[4],
+                x0=float(w[0]),
+                y0=float(w[1]),
+                x1=float(w[2]),
+                y1=float(w[3]),
+                conf=po.native_conf,
+                char_start=off[0] if off[0] >= 0 else None,
+                char_end=off[1] if off[1] >= 0 else None,
+            )
+        )
+
+
+def _add_ocr_page(res: ExtractionResult, pending: Future[OCRPage], native: str, pno: int, po: _PdfOpts) -> None:
+    """Take a scanned page's OCR result; on failure keep its thin native text."""
+    try:
+        ocr = pending.result()
+        res.pages.append(_sanitize_fixed_width(ocr.text))
+        res.page_methods.append(ExtractionMethod.OCR)
+        res.page_confidences.append(ocr_confidence(ocr.words))
+        if po.capture:
+            # The pixmap is dpi/72 times the size of the page rect that
+            # went into page_sizes, so undo that before storing.
+            res.words.extend(_ocr_words(ocr.words, pno, po.dpi / PDF_POINTS_PER_INCH))
+    except Exception as exc:  # noqa: BLE001 - PyMuPDF/PIL/tesseract vary; bad page keeps native text
+        res.errors.append("ocr failed on page " + str(pno) + ": " + summarize_exception(exc))
+        # Keep the thin native text rather than dropping the page entirely.
+        res.pages.append(native)
+        res.page_methods.append(ExtractionMethod.NATIVE if native.strip() else ExtractionMethod.NONE)
+        res.page_confidences.append(po.native_conf if native.strip() else 0.0)
+
+
 def _extract_pdf(path: Path, cfg: Config, res: ExtractionResult) -> None:
     import fitz
 
-    opts = cfg.extract_opts()
-    threshold = int(opts.get("native_char_threshold", 100))
-    ocr_opts = dict(opts.get("ocr", {}))
-    capture = bool(opts.get("capture_bboxes", True))
-    native_conf = float(opts.get("native_confidence", 0.98))
-    gate = dict(opts.get("quality_gate", {}))
-
-    dpi = int(ocr_opts.get("dpi", 300))
-    threads = int(ocr_opts.get("threads", OCR_THREADS))
-    strip = opts.get("strip_before_count", True)
-
-    with fitz.open(path) as doc, ThreadPoolExecutor(threads) as pool:
+    po = _PdfOpts.from_config(cfg)
+    with fitz.open(path) as doc, ThreadPoolExecutor(po.threads) as pool:
         natives = [_sanitize(doc.load_page(p).get_text("text") or "") for p in range(doc.page_count)]
-        scanned = iter([p for p, t in enumerate(natives) if len(t.strip() if strip else t) < threshold])
-        pending: dict[int, Future] = {}
+        scanned = iter([p for p, t in enumerate(natives) if po.is_thin(t)])
+        pending: dict[int, Future[OCRPage]] = {}
 
         for pno in range(doc.page_count):
             page = doc.load_page(pno)
             res.page_sizes.append((float(page.rect.width), float(page.rect.height)))
-            native = natives[pno]
-
-            if len(native.strip() if strip else native) >= threshold:
-                # The text layer may itself be somebody else's bad OCR. When it
-                # scores as substituted, re-read the page properly and keep
-                # whichever reading is cleaner. See textquality.py.
-                rescued = _rescue_page(page, native, ocr_opts, gate, pno, capture)
-                if rescued is not None:
-                    text, words, conf = rescued
-                    res.pages.append(text)
-                    res.page_methods.append(ExtractionMethod.OCR_RESCUED)
-                    res.page_confidences.append(conf)
-                    res.words.extend(words)
-                    continue
-
-                res.pages.append(native)
-                res.page_methods.append(ExtractionMethod.NATIVE)
-                res.page_confidences.append(native_conf)
-                if capture:
-                    raw = sorted(page.get_text("words"), key=lambda w: (w[5], w[6], w[7]))
-                    for w, off in zip(raw, _map_words_to_offsets(native, raw)):
-                        res.words.append(
-                            WordBox(
-                                page=pno,
-                                text=w[4],
-                                x0=float(w[0]),
-                                y0=float(w[1]),
-                                x1=float(w[2]),
-                                y1=float(w[3]),
-                                conf=native_conf,
-                                char_start=off[0] if off[0] >= 0 else None,
-                                char_end=off[1] if off[1] >= 0 else None,
-                            )
-                        )
+            if not po.is_thin(natives[pno]):
+                _add_native_page(res, page, natives[pno], pno, po)
                 continue
-
             # Thin or empty text layer, so treat the page as scanned.
             # Keep up to `threads` scanned pages in flight. Rendering stays on
             # this thread because PyMuPDF is not thread safe; Tesseract runs
             # as a subprocess, so the pool threads overlap for real.
-            while len(pending) < threads and (nxt := next(scanned, None)) is not None:
-                pending[nxt] = _submit_ocr(pool, doc.load_page(nxt), dpi, ocr_opts)
-            try:
-                ocr = pending.pop(pno).result()
-                res.pages.append(_sanitize_fixed_width(ocr.text))
-                res.page_methods.append(ExtractionMethod.OCR)
-                res.page_confidences.append(ocr_confidence(ocr.words))
-                if capture:
-                    # The pixmap is dpi/72 times the size of the page rect that
-                    # went into page_sizes, so undo that before storing.
-                    res.words.extend(_ocr_words(ocr.words, pno, dpi / 72.0))
-            except Exception as exc:  # noqa: BLE001 - PyMuPDF/PIL/tesseract vary; bad page keeps native text
-                res.errors.append("ocr failed on page " + str(pno) + ": " + summarize_exception(exc))
-                # Keep the thin native text rather than dropping the page entirely.
-                res.pages.append(native)
-                res.page_methods.append(ExtractionMethod.NATIVE if native.strip() else ExtractionMethod.NONE)
-                res.page_confidences.append(native_conf if native.strip() else 0.0)
+            while len(pending) < po.threads and (nxt := next(scanned, None)) is not None:
+                pending[nxt] = _submit_ocr(pool, doc.load_page(nxt), po.dpi, po.ocr)
+            _add_ocr_page(res, pending.pop(pno), natives[pno], pno, po)
 
 
-def _rescue_page(page, native, ocr_opts, gate, pno, capture):
+def _rescue_page(
+    page: Any, native: str, ocr_opts: dict[str, Any], gate: dict[str, Any], pno: int, capture: bool
+) -> tuple[str, list[WordBox], float] | None:
     """Re-read a page whose text layer looks substituted. None means keep native.
 
     A PDF can carry a text layer that was itself produced by a scanner's OCR,
@@ -376,7 +437,7 @@ def _rescue_page(page, native, ocr_opts, gate, pno, capture):
         "page rescued by the quality gate",
         extra={"page": pno, "native_score": quality.score, "ocr_score": score_text(chosen).score},
     )
-    words = _ocr_words(ocr.words, pno, dpi / 72.0) if capture else []
+    words = _ocr_words(ocr.words, pno, dpi / PDF_POINTS_PER_INCH) if capture else []
     return chosen, words, ocr_confidence(ocr.words)
 
 
@@ -437,8 +498,16 @@ _HANDLERS = [
 ]
 
 
-def extract(path, cfg: Config) -> ExtractionResult:
-    """One file in, page texts plus word boxes out. Never raises on content."""
+def extract(path: str | Path, cfg: Config) -> ExtractionResult:
+    """One file in, page texts plus word boxes out. Never raises on content.
+
+    Args:
+        path: The document.
+        cfg: Loaded configuration.
+
+    Returns:
+        The extraction, with at least one page; problems are in its errors.
+    """
     p = Path(path)
     res = ExtractionResult()
     ext = p.suffix.lower()
@@ -468,6 +537,9 @@ def to_canonical_offsets(res: ExtractionResult) -> None:
 
     Keeps one offset convention across the whole record. Run once, right
     after extraction, before anything reads the boxes.
+
+    Args:
+        res: The extraction to update.
     """
     spans = page_spans(res.pages)
     for w in res.words:

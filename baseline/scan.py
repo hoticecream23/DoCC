@@ -73,13 +73,22 @@ def _exclusion_reason(path: Path) -> str | None:
     return None
 
 
-def scan_documents(root) -> tuple[list, dict[str, list[str]]]:
+def scan_documents(root: str | Path) -> tuple[list[Path], dict[str, list[str]]]:
     """Every document under root, plus everything left out and why.
 
     Returns the kept paths and a mapping of reason to the paths excluded for
     it. Callers report the second half. A file that is silently skipped and a
     file that is silently processed are the same class of bug: the total stops
     describing the input.
+
+    Args:
+        root: A corpus directory, or a single file.
+
+    Returns:
+        (kept paths, {reason: excluded paths}).
+
+    Raises:
+        FileNotFoundError: root does not exist.
     """
     r = Path(root)
     if r.is_file():
@@ -88,7 +97,8 @@ def scan_documents(root) -> tuple[list, dict[str, list[str]]]:
         # A mistyped path would otherwise walk nothing and report a clean run.
         raise FileNotFoundError(f"no such file or directory: {r}")
 
-    kept, excluded = [], {}
+    kept: list[Path] = []
+    excluded: dict[str, list[str]] = {}
     for p in sorted(r.rglob("*"), key=lambda p: str(p).lower()):
         if not p.is_file():
             continue
@@ -100,6 +110,13 @@ def scan_documents(root) -> tuple[list, dict[str, list[str]]]:
     return kept, excluded
 
 
-def iter_documents(root) -> list:
-    """Every supported file under root, sorted so runs are reproducible."""
+def iter_documents(root: str | Path) -> list[Path]:
+    """Every supported file under root, sorted so runs are reproducible.
+
+    Args:
+        root: A corpus directory, or a single file.
+
+    Returns:
+        The kept paths.
+    """
     return scan_documents(root)[0]

@@ -45,6 +45,9 @@ _DIGIT_LETTER = re.compile(r"[a-z]\d|\d[a-z]")
 _LATIN_ONLY = re.compile(r"^[\x00-\x7F]+$")
 _TOKEN = re.compile(r"\S+")
 
+# Tokens with fewer letters than this are too short for a case shape to mean anything.
+MIN_CASE_SHAPE_LETTERS = 3
+
 
 @dataclass(frozen=True)
 class TextQuality:
@@ -58,21 +61,37 @@ class TextQuality:
     tokens: int
 
     def is_suspect(self, threshold: float) -> bool:
+        """Whether the text is corrupt enough to re-OCR.
+
+        Args:
+            threshold: Score at or above which text is suspect.
+
+        Returns:
+            True when there are tokens and the score reaches threshold.
+        """
         return self.tokens > 0 and self.score >= threshold
 
 
 def _has_bad_case_shape(token: str) -> bool:
+    """True for mixed case that is neither lower, upper nor capitalised."""
     # Initials and reference numbers are legitimately mixed case.
     if "." in token or "/" in token:
         return False
     letters = "".join(c for c in token if c.isalpha())
-    if len(letters) < 3:
+    if len(letters) < MIN_CASE_SHAPE_LETTERS:
         return False
     return not (letters.islower() or letters.isupper() or (letters[0].isupper() and letters[1:].islower()))
 
 
 def score_text(text: str) -> TextQuality:
-    """Rate one block of text. Empty text is not suspect, it is simply empty."""
+    """Rate one block of text. Empty text is not suspect, it is simply empty.
+
+    Args:
+        text: Text to rate.
+
+    Returns:
+        The TextQuality; all zeros when there are no alphabetic tokens.
+    """
     tokens = [t for t in _TOKEN.findall(text) if any(c.isalpha() for c in t)]
     if not tokens:
         return TextQuality(0.0, 0.0, 0.0, 0.0, 0.0, 0)
@@ -100,10 +119,17 @@ def score_text(text: str) -> TextQuality:
 def prefer(native: str, ocr: str) -> tuple[str, bool]:
     """Pick the cleaner of two readings of the same page.
 
-    Returns (chosen_text, used_ocr). The comparison is the whole point of the
-    gate: a low score does not prove OCR is right, it only proves it is less
-    obviously wrong, and a re-OCR that scores worse is discarded. This is what
-    keeps the gate from being able to make the corpus worse by its own metric.
+    The comparison is the whole point of the gate: a low score does not prove
+    OCR is right, it only proves it is less obviously wrong, and a re-OCR that
+    scores worse is discarded. This is what keeps the gate from being able to
+    make the corpus worse by its own metric.
+
+    Args:
+        native: The embedded text layer.
+        ocr: A fresh OCR reading of the same page.
+
+    Returns:
+        (chosen_text, used_ocr).
     """
     if not ocr.strip():
         return native, False

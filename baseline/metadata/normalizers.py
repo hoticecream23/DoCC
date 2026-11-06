@@ -7,6 +7,7 @@ value a reviewer types and a value the pipeline emits land in the same form.
 
 from __future__ import annotations
 
+import datetime
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,6 +18,15 @@ from ..errors import summarize_exception
 from ..logging_setup import get_logger
 
 log = get_logger(__name__)
+
+# Two digit years below this are read as 20xx, the rest as 19xx.
+CENTURY_PIVOT = 70
+# A year below this is a two digit year.
+TWO_DIGIT_YEAR_LIMIT = 100
+MONTHS_PER_YEAR = 12
+
+# (normalized value or None, extras such as the currency code).
+NormResult = tuple[str | None, dict[str, Any]]
 
 _MONTHS = {
     "jan": 1,
@@ -35,12 +45,12 @@ _MONTHS = {
 
 
 def _full_year(y: int) -> int:
-    if y < 100:
-        return y + (2000 if y < 70 else 1900)
+    if y < TWO_DIGIT_YEAR_LIMIT:
+        return y + (2000 if y < CENTURY_PIVOT else 1900)
     return y
 
 
-def _parse_date(value: str, dayfirst: bool = True):
+def _parse_date(value: str, dayfirst: bool = True) -> datetime.date | None:
     """Deterministic date parsing. No fuzzy guessing, no locale surprises."""
     v = value.strip().replace(",", " ")
     v = re.sub(r"\s+", " ", v)
@@ -56,7 +66,7 @@ def _parse_date(value: str, dayfirst: bool = True):
         a, b, y = (int(x) for x in m.groups())
         d, mo = (a, b) if dayfirst else (b, a)
         # Fall back to the other order when the first reading is impossible.
-        if mo > 12 and d <= 12:
+        if mo > MONTHS_PER_YEAR and d <= MONTHS_PER_YEAR:
             d, mo = mo, d
         return _safe_date(_full_year(y), mo, d)
 
@@ -75,9 +85,7 @@ def _parse_date(value: str, dayfirst: bool = True):
     return None
 
 
-def _safe_date(y: int, mo: int, d: int):
-    import datetime
-
+def _safe_date(y: int, mo: int, d: int) -> datetime.date | None:
     try:
         return datetime.date(y, mo, d)
     except ValueError:
@@ -99,46 +107,55 @@ def _to_decimal(value: str) -> Decimal | None:
 
 @dataclass
 class NormCtx:
+    """Context a normalizer may read beyond the value itself.
+
+    Attributes:
+        full: Canonical document text.
+        start: Start offset of the value in ``full``.
+        end: End offset of the value in ``full``.
+        opts: The ``normalizer_options`` block from fields.yaml.
+    """
+
     full: str
     start: int
     end: int
     opts: dict[str, Any]
 
 
-def _n_id_upper(value: str, ctx: NormCtx):
+def _n_id_upper(value: str, ctx: NormCtx) -> NormResult:
     return re.sub(r"[\s-]", "", value).upper(), {}
 
 
-def _n_digits_only(value: str, ctx: NormCtx):
+def _n_digits_only(value: str, ctx: NormCtx) -> NormResult:
     return re.sub(r"\D", "", value), {}
 
 
-def _n_lower_strip(value: str, ctx: NormCtx):
+def _n_lower_strip(value: str, ctx: NormCtx) -> NormResult:
     return value.strip().lower(), {}
 
 
-def _n_upper_strip(value: str, ctx: NormCtx):
+def _n_upper_strip(value: str, ctx: NormCtx) -> NormResult:
     return re.sub(r"\s+", " ", value).strip().upper(), {}
 
 
-def _n_ref_upper(value: str, ctx: NormCtx):
+def _n_ref_upper(value: str, ctx: NormCtx) -> NormResult:
     # Reference numbers: OCR spacing around separators is noise, "02 - 140305"
     # and "02-140305" are the same number.
     v = re.sub(r"\s+", " ", value).strip().upper()
     return re.sub(r" ?([-/.:]) ?", r"\1", v), {}
 
 
-def _n_text_norm(value: str, ctx: NormCtx):
+def _n_text_norm(value: str, ctx: NormCtx) -> NormResult:
     return re.sub(r"\s+", " ", value).strip(), {}
 
 
-def _n_date_iso(value: str, ctx: NormCtx):
+def _n_date_iso(value: str, ctx: NormCtx) -> NormResult:
     o = ctx.opts.get("date_iso", {})
     parsed = _parse_date(value, bool(o.get("dayfirst", True)))
     return (parsed.isoformat() if parsed else None), {}
 
 
-def _n_currency(value: str, ctx: NormCtx):
+def _n_currency(value: str, ctx: NormCtx) -> NormResult:
     """Decimal string plus a separately reported currency code."""
     o = ctx.opts.get("currency", {})
     dec = _to_decimal(value)
@@ -156,7 +173,7 @@ def _n_currency(value: str, ctx: NormCtx):
     return norm, {"currency": code or o.get("default")}
 
 
-NORMALIZERS: dict[str, Callable[[str, NormCtx], tuple]] = {
+NORMALIZERS: dict[str, Callable[[str, NormCtx], NormResult]] = {
     "id_upper": _n_id_upper,
     "digits_only": _n_digits_only,
     "lower_strip": _n_lower_strip,
@@ -168,7 +185,18 @@ NORMALIZERS: dict[str, Callable[[str, NormCtx], tuple]] = {
 }
 
 
-def normalize(name: str | None, value: str, ctx: NormCtx) -> tuple:
+def normalize(name: str | None, value: str, ctx: NormCtx) -> NormResult:
+    """Run the named normalizer on a value.
+
+    Args:
+        name: Normalizer name from fields.yaml, or None for no normalizer.
+        value: Raw matched text.
+        ctx: Where the value sits in the document, plus options.
+
+    Returns:
+        (normalized value, extras). An empty or unknown name returns the value
+        unchanged; a normalizer that raises returns (None, {}).
+    """
     if not name:
         return value, {}
     fn = NORMALIZERS.get(name)

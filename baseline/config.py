@@ -17,13 +17,21 @@ DEFAULT_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
 
 def read_yaml(path: Path) -> Any:
-    """The one yaml.safe_load for config files. Empty file gives {}."""
+    """The one yaml.safe_load for config files. Empty file gives {}.
+
+    Args:
+        path: YAML file.
+
+    Returns:
+        The parsed document, or {} for an empty file.
+    """
     with open(path, encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
     return {} if data is None else data
 
 
 def _load(path: Path) -> dict[str, Any]:
+    """Read a required YAML mapping; raise if missing or not a mapping."""
     if not path.exists():
         raise FileNotFoundError(f"missing config file: {path}")
     data = read_yaml(path)
@@ -49,6 +57,7 @@ class Config:
 
     @property
     def class_names(self) -> list[str]:
+        """Declared document class names, in classes.yaml order."""
         return [c["name"] for c in self.classes.get("classes", [])]
 
     @property
@@ -63,40 +72,84 @@ class Config:
 
     @property
     def field_defs(self) -> list[dict[str, Any]]:
-        return self.fields.get("fields", [])
+        """Metadata field definitions from fields.yaml."""
+        defs: list[dict[str, Any]] = self.fields.get("fields", [])
+        return defs
 
     @property
     def templates(self) -> list[dict[str, Any]]:
-        return self.fields.get("templates", []) or []
+        """Layout templates from fields.yaml."""
+        defs: list[dict[str, Any]] = self.fields.get("templates", []) or []
+        return defs
 
     @property
     def tag_defs(self) -> list[dict[str, Any]]:
-        return self.tags.get("tags", [])
+        """Tag definitions from tags.yaml."""
+        defs: list[dict[str, Any]] = self.tags.get("tags", [])
+        return defs
 
     @property
     def derived_tag_rules(self) -> list[dict[str, Any]]:
-        return self.tags.get("derived", []) or []
+        """Derived-tag rules from tags.yaml."""
+        defs: list[dict[str, Any]] = self.tags.get("derived", []) or []
+        return defs
 
     @property
     def normalizer_version(self) -> str:
+        """Version string of the metadata normalizer rules."""
         return str(self.fields.get("normalizer_version", "1.0.0"))
 
+    def _section(self, key: str) -> dict[str, Any]:
+        """One top-level section of pipeline.yaml, or {}."""
+        opts: dict[str, Any] = self.pipeline.get(key, {})
+        return opts
+
     def extract_opts(self) -> dict[str, Any]:
-        return self.pipeline.get("extraction", {})
+        """Extraction options.
+
+        Returns:
+            The "extraction" section of pipeline.yaml.
+        """
+        return self._section("extraction")
 
     def classify_opts(self) -> dict[str, Any]:
-        return self.pipeline.get("classification", {})
+        """Classification options.
+
+        Returns:
+            The "classification" section of pipeline.yaml.
+        """
+        return self._section("classification")
 
     def tagging_opts(self) -> dict[str, Any]:
-        return self.pipeline.get("tagging", {})
+        """Tagging options.
+
+        Returns:
+            The "tagging" section of pipeline.yaml.
+        """
+        return self._section("tagging")
 
     def metadata_opts(self) -> dict[str, Any]:
-        return self.pipeline.get("metadata", {})
+        """Metadata options.
+
+        Returns:
+            The "metadata" section of pipeline.yaml.
+        """
+        return self._section("metadata")
 
     def table_opts(self) -> dict[str, Any]:
+        """Table options.
+
+        Returns:
+            The whole of tables.yaml.
+        """
         return self.tables
 
     def dump(self) -> dict[str, Any]:
+        """Every loaded YAML file, keyed by name.
+
+        Returns:
+            {file stem: parsed content}.
+        """
         return {
             "pipeline": self.pipeline,
             "classes": self.classes,
@@ -114,6 +167,18 @@ def _load_optional(path: Path) -> dict[str, Any]:
 
 
 def load_config(config_dir: str | Path | None = None) -> Config:
+    """Load every YAML file from a config directory.
+
+    Args:
+        config_dir: Config directory; None for DEFAULT_CONFIG_DIR.
+
+    Returns:
+        The Config.
+
+    Raises:
+        FileNotFoundError: A required file is missing.
+        ValueError: A file does not hold a mapping at top level.
+    """
     d = Path(config_dir) if config_dir else DEFAULT_CONFIG_DIR
     d = d.resolve()
     return Config(
@@ -130,11 +195,23 @@ def load_config(config_dir: str | Path | None = None) -> Config:
 
 @functools.lru_cache(maxsize=4)
 def load_config_cached(config_dir: str | None = None) -> Config:
-    """Cached per process. Workers call this once, not once per document."""
+    """Cached per process. Workers call this once, not once per document.
+
+    Args:
+        config_dir: Config directory; None for the default.
+
+    Returns:
+        The shared Config.
+    """
     return load_config(config_dir)
 
 
 def save_yaml(path: str | Path, data: dict[str, Any]) -> None:
-    """Write YAML back out. Used by tune-thresholds."""
+    """Write YAML back out. Used by tune-thresholds.
+
+    Args:
+        path: Output file.
+        data: Mapping to write.
+    """
     with open(path, "w", encoding="utf-8") as fh:
         yaml.safe_dump(data, fh, sort_keys=False, allow_unicode=True, width=100)

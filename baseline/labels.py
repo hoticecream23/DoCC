@@ -35,6 +35,8 @@ log = get_logger(__name__)
 
 @dataclass
 class ImportResult:
+    """Gold rows plus everything that could not be turned into one."""
+
     rows: list[dict[str, Any]] = field(default_factory=list)
     unmapped_labels: list[str] = field(default_factory=list)
     missing_files: list[str] = field(default_factory=list)
@@ -59,6 +61,20 @@ def _resolve(root: Path, folder: str, name: str) -> Path | None:
     return hits[0] if len(hits) == 1 else None
 
 
+def _gold_row(path: Path, label: str, client_label: str, is_lossy: bool) -> dict[str, Any]:
+    """One gold row for a resolved file."""
+    return {
+        "doc_id": compute_doc_id(path),
+        "path": str(path).replace("\\", "/"),
+        "filename": path.name,
+        "label": label,
+        # Kept so a report can say what was collapsed and so the
+        # mapping can be audited without re-reading the CSV.
+        "client_label": client_label,
+        "label_is_lossy": is_lossy,
+    }
+
+
 def import_labels(
     csv_path: str | Path,
     root: str | Path,
@@ -66,8 +82,21 @@ def import_labels(
     name_column: str = "File_Name",
     label_column: str = "Document_Type",
 ) -> ImportResult:
-    """Read the label CSV and emit gold rows, one per CSV row."""
-    root = Path(root)
+    """Read the label CSV and emit gold rows, one per CSV row.
+
+    Args:
+        csv_path: Client label CSV.
+        root: Corpus root the file names resolve against.
+        cfg: Loaded configuration, for the taxonomy mapping.
+        name_column: CSV column holding the file name.
+        label_column: CSV column holding the client label.
+
+    Returns:
+        The gold rows plus unmapped labels and missing files.
+
+    Raises:
+        ValueError: taxonomy.yaml declares no mappings.
+    """
     mapping = cfg.client_label_map
     lossy = set(cfg.lossy_client_labels)
     if not mapping:
@@ -86,34 +115,37 @@ def import_labels(
             target = mapping[client_label]
             if target is None:
                 continue  # a recorded refusal to map, not an error
-            path = _resolve(root, client_label, name)
+            path = _resolve(Path(root), client_label, name)
             if path is None:
                 res.missing_files.append(name)
                 continue
             is_lossy = client_label in lossy
             res.lossy_rows += is_lossy
-            res.rows.append(
-                {
-                    "doc_id": compute_doc_id(path),
-                    "path": str(path).replace("\\", "/"),
-                    "filename": path.name,
-                    "label": target,
-                    # Kept so a report can say what was collapsed and so the
-                    # mapping can be audited without re-reading the CSV.
-                    "client_label": client_label,
-                    "label_is_lossy": is_lossy,
-                }
-            )
+            res.rows.append(_gold_row(path, target, client_label, is_lossy))
 
+    _log_problems(res)
+    return res
+
+
+def _log_problems(res: ImportResult) -> None:
+    """Log unmapped labels and rows whose file was not found."""
     if res.unmapped_labels:
         log.error("labels absent from taxonomy.yaml", extra={"labels": sorted(set(res.unmapped_labels))})
     if res.missing_files:
         log.warning("csv rows with no file on disk", extra={"count": len(res.missing_files)})
-    return res
 
 
 def render_summary(res: ImportResult, csv_path: str, root: str) -> str:
-    """What the gold file can and cannot be used to claim."""
+    """What the gold file can and cannot be used to claim.
+
+    Args:
+        res: Output of import_labels().
+        csv_path: Source CSV, for the header.
+        root: Corpus root, for the header.
+
+    Returns:
+        A Markdown summary.
+    """
     lines = [
         "# Imported labels",
         "",
@@ -143,14 +175,19 @@ def render_summary(res: ImportResult, csv_path: str, root: str) -> str:
         for cls, labels in res.collapsed.items():
             lines.append(f"| `{cls}` | {', '.join(labels)} |")
 
-    dupes = sorted({r["filename"] for r in res.rows if sum(1 for x in res.rows if x["filename"] == r["filename"]) > 1})
-    if dupes:
-        lines += [
-            "",
-            "## File names appearing more than once",
-            "",
-            "Keyed on content addressed doc_id, so these do not collide.",
-            "",
-        ]
-        lines += [f"- `{d}`" for d in dupes]
+    lines += _dupes_section(res.rows)
     return "\n".join(lines) + "\n"
+
+
+def _dupes_section(rows: list[dict[str, Any]]) -> list[str]:
+    """Markdown listing file names that appear on more than one row, or nothing."""
+    dupes = sorted({r["filename"] for r in rows if sum(1 for x in rows if x["filename"] == r["filename"]) > 1})
+    if not dupes:
+        return []
+    return [
+        "",
+        "## File names appearing more than once",
+        "",
+        "Keyed on content addressed doc_id, so these do not collide.",
+        "",
+    ] + [f"- `{d}`" for d in dupes]
