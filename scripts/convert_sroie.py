@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import IO, Any
 
 import pyarrow.parquet as pq
 
@@ -31,6 +32,9 @@ from baseline.io import atomic_open, report_dry_run
 from baseline.logging_setup import setup_logging
 from baseline.metadata.normalizers import NormCtx, normalize
 from baseline.schema import compute_doc_id
+
+# Rows per Parquet batch, so a split is never held in memory twice.
+PARQUET_BATCH_ROWS = 64
 
 # SROIE field -> (our field, our normalizer). SROIE's fourth field, address,
 # has no field in our schema, so it is not scored.
@@ -41,9 +45,18 @@ FIELDS = {
 }
 
 
-def gold_fields(entities: dict, norm_opts: dict) -> tuple[list[dict], list[str]]:
-    """Map SROIE entities to gold metadata rows. Returns rows and skipped fields."""
-    rows, skipped = [], []
+def gold_fields(entities: dict[str, str | None], norm_opts: dict[str, Any]) -> tuple[list[dict[str, str]], list[str]]:
+    """Map SROIE entities to gold metadata rows.
+
+    Args:
+        entities: SROIE key fields for one receipt.
+        norm_opts: Normalizer options from fields.yaml.
+
+    Returns:
+        Gold rows, and the fields skipped because they would not normalize.
+    """
+    rows: list[dict[str, str]] = []
+    skipped: list[str] = []
     for sroie_name, (field, normalizer) in FIELDS.items():
         raw = (entities.get(sroie_name) or "").strip()
         if not raw:
@@ -58,7 +71,14 @@ def gold_fields(entities: dict, norm_opts: dict) -> tuple[list[dict], list[str]]
     return rows, skipped
 
 
-def write_gold_row(fh, path: Path, fields: list[dict]) -> None:
+def write_gold_row(fh: IO[str], path: Path, fields: list[dict[str, str]]) -> None:
+    """Write one gold line, keyed on the input file's doc_id.
+
+    Args:
+        fh: The open gold file.
+        path: The input file the gold describes.
+        fields: Gold metadata rows.
+    """
     row = {
         "doc_id": compute_doc_id(path),
         "filename": path.name,
@@ -71,6 +91,13 @@ def write_gold_row(fh, path: Path, fields: list[dict]) -> None:
 
 
 def convert(parquet: Path, split: str, out: Path) -> None:
+    """Write the images, text files and gold files for one split.
+
+    Args:
+        parquet: The SROIE Parquet file.
+        split: Split name, used as the output sub directory.
+        out: Output root.
+    """
     norm_opts = load_config().fields.get("normalizer_options", {}) or {}
     images_dir = out / split / "images"
     text_dir = out / split / "text"
@@ -78,12 +105,13 @@ def convert(parquet: Path, split: str, out: Path) -> None:
     text_dir.mkdir(parents=True, exist_ok=True)
 
     table = pq.read_table(parquet, columns=["key", "image", "entities", "words"])
-    n_docs, all_skipped = 0, []
+    n_docs = 0
+    all_skipped: list[str] = []
     with (
         atomic_open(out / split / "gold_images.jsonl") as gold_images,
         atomic_open(out / split / "gold_text.jsonl") as gold_text,
     ):
-        for batch in table.to_batches(max_chunksize=64):
+        for batch in table.to_batches(max_chunksize=PARQUET_BATCH_ROWS):
             for row in batch.to_pylist():
                 key = row["key"]
                 fields, skipped = gold_fields(row["entities"], norm_opts)
@@ -105,7 +133,8 @@ def convert(parquet: Path, split: str, out: Path) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    """Parse arguments and convert, or report what would be written."""
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--parquet", required=True, type=Path)
     ap.add_argument("--split", required=True)
     ap.add_argument("--out", default=Path("datasets/sroie"), type=Path)

@@ -25,8 +25,22 @@ from .vlm import VLMClient
 
 log = get_logger(__name__)
 
+# The shell convention for a process stopped by SIGINT: 128 + 2.
+EXIT_INTERRUPTED = 130
+
 
 def cmd_run(args: argparse.Namespace) -> int:
+    """Run the cascade over a directory, or report what a run would write.
+
+    Args:
+        args: Parsed `run` arguments.
+
+    Returns:
+        The process exit code, 0 on success.
+
+    Raises:
+        ValueError: The VLM model is not set or the host is not local.
+    """
     if args.dry_run:
         out = Path(args.output)
         paths, _ = scan_documents(args.input)
@@ -53,6 +67,11 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the `cascade` argument parser.
+
+    Returns:
+        The parser with its `run` sub command.
+    """
     p = argparse.ArgumentParser(prog="cascade", description="Cascade v2: VLM extraction with grounding")
     p.add_argument("--config", default=None, help="config directory, defaults to ./config")
     p.add_argument("--root", default=".", help="root for relative model paths")
@@ -74,13 +93,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse arguments, run the command and turn failures into exit codes.
+
+    Args:
+        argv: Arguments without the program name; None reads sys.argv.
+
+    Returns:
+        0 on success, 1 on failure, EXIT_INTERRUPTED on Ctrl+C.
+    """
     args = build_parser().parse_args(argv)
     setup_logging(args.log_level)
     try:
         return int(args.func(args))
     except KeyboardInterrupt:
         log.warning("interrupted")
-        return 130
+        return EXIT_INTERRUPTED
     except Exception:
         log.exception("command failed", extra={"command": args.command})
         return 1

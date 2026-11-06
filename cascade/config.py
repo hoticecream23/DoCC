@@ -16,6 +16,8 @@ from baseline.schema import Confidence, Strict
 
 
 class VLMSettings(Strict):
+    """How to reach the model server and how far to trust it."""
+
     base_url: str
     # Null until a deployment chooses one. VLMClient refuses to start without it.
     model: str | None = None
@@ -34,6 +36,8 @@ class VLMSettings(Strict):
 
 
 class RenderSettings(Strict):
+    """How pages are turned into images and text for the model."""
+
     dpi: int = Field(gt=0, le=600)
     max_long_edge: int = Field(gt=0)
     max_pages: int = Field(gt=0)
@@ -41,6 +45,8 @@ class RenderSettings(Strict):
 
 
 class ConfidenceTiers(Strict):
+    """Confidence given to a value by how it was confirmed."""
+
     agree: Confidence
     grounded: Confidence
     ambiguous: Confidence
@@ -54,6 +60,8 @@ class ConfidenceTiers(Strict):
 
 
 class CascadeConfig(Strict):
+    """The whole of cascade.yaml."""
+
     version: int
     vlm: VLMSettings
     render: RenderSettings
@@ -61,5 +69,16 @@ class CascadeConfig(Strict):
 
 
 def load_cascade_config(config_dir: str | Path | None = None) -> CascadeConfig:
+    """Read and validate cascade.yaml.
+
+    Args:
+        config_dir: Directory holding cascade.yaml; None uses ./config.
+
+    Returns:
+        The validated config.
+
+    Raises:
+        pydantic.ValidationError: A key is unknown or a value is out of range.
+    """
     d = Path(config_dir) if config_dir else DEFAULT_CONFIG_DIR
     return CascadeConfig.model_validate(read_yaml(d / "cascade.yaml"))

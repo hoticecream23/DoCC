@@ -20,6 +20,7 @@ longer word or number. The span reported is always the document's own text.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from baseline.metadata import Candidate, NormCtx, normalize
 from baseline.metadata.fields import scan_spans
@@ -29,11 +30,23 @@ EXACT = "exact"
 LOOSE = "loose"
 NORMALISED = "normalised"
 UNGROUNDED = "ungrounded"
+# Characters needed before a match to see a joined token: one token character and the joiner.
+JOIN_LOOKBEHIND = 2
 JOINERS = "-/,."  # Separators: -, /, , always join; . joins only between digits
 
 
 @dataclass(frozen=True)
 class Grounding:
+    """Where a value was found, and how.
+
+    Attributes:
+        outcome: EXACT, LOOSE, NORMALISED or UNGROUNDED.
+        start: Span start in the full text; None when ungrounded.
+        end: Span end in the full text; None when ungrounded.
+        n_matches: How many places matched at this step.
+        rule_agrees: A rule candidate is the same span or the same value.
+    """
+
     outcome: str
     start: int | None = None
     end: int | None = None
@@ -42,6 +55,7 @@ class Grounding:
 
     @property
     def grounded(self) -> bool:
+        """True when the value was found in the text."""
         return self.outcome != UNGROUNDED
 
 
@@ -89,7 +103,7 @@ def _joins(left: str, sep: str, right: str) -> bool:
 class TextIndex:
     """Per document lookups, built once and shared by every value."""
 
-    def __init__(self, full: str, pages: list[str]):
+    def __init__(self, full: str, pages: list[str]) -> None:
         self.full = full
         self.spans = page_spans(pages)
         self.folded, self.src = _fold(full)
@@ -106,7 +120,7 @@ class TextIndex:
         if last.isalnum() and e < len(full) and full[e].isalnum():
             return False
         # Reject if starting inside a joined token
-        if s >= 2 and first.isalnum() and _joins(full[s - 2], full[s - 1], first):
+        if s >= JOIN_LOOKBEHIND and first.isalnum() and _joins(full[s - 2], full[s - 1], first):
             return False
         # Reject if ending inside a joined token
         if e + 1 < len(full) and last.isalnum() and _joins(last, full[e], full[e + 1]):
@@ -114,16 +128,18 @@ class TextIndex:
         return True
 
     def usable(self, s: int, e: int) -> bool:
+        """True when text[s:e] is in range, on one page and not part of a longer token."""
         return 0 <= s < e <= len(self.full) and self._on_one_page(s, e) and self._on_boundary(s, e)
 
 
-def _norm(fdef: dict, value: str, full: str, s: int, e: int, opts: dict):
+def _norm(fdef: dict[str, Any], value: str, full: str, s: int, e: int, opts: dict[str, Any]) -> str | None:
+    normalized: str | None  # normalize() returns a bare tuple
     normalized, _ = normalize(fdef.get("normalizer"), value, NormCtx(full=full, start=s, end=e, opts=opts))
     return normalized
 
 
 def _exact(index: TextIndex, value: str) -> list[tuple[int, int]]:
-    out = []
+    out: list[tuple[int, int]] = []
     i = index.full.find(value)
     while i >= 0:
         if index.usable(i, i + len(value)):
@@ -150,7 +166,7 @@ def _loose(index: TextIndex, value: str) -> list[tuple[int, int]]:
 
 
 def _normalised(
-    index: TextIndex, value: str, fdef: dict, rule_cands: list[Candidate], opts: dict
+    index: TextIndex, value: str, fdef: dict[str, Any], rule_cands: list[Candidate], opts: dict[str, Any]
 ) -> list[tuple[int, int]]:
     target = _norm(fdef, value, value, 0, len(value), opts)
     if not target:
@@ -161,7 +177,7 @@ def _normalised(
     )
 
 
-def _agrees(c: Candidate, s: int, e: int, index: TextIndex, fdef: dict, opts: dict) -> bool:
+def _agrees(c: Candidate, s: int, e: int, index: TextIndex, fdef: dict[str, Any], opts: dict[str, Any]) -> bool:
     """The rule candidate is this span, or overlaps it with the same value."""
     if not (c.start < e and s < c.end):
         return False
@@ -171,7 +187,21 @@ def _agrees(c: Candidate, s: int, e: int, index: TextIndex, fdef: dict, opts: di
     return mine is not None and _norm(fdef, c.value, index.full, c.start, c.end, opts) == mine
 
 
-def ground(value: str, index: TextIndex, fdef: dict, rule_cands: list[Candidate], norm_opts: dict) -> Grounding:
+def ground(
+    value: str, index: TextIndex, fdef: dict[str, Any], rule_cands: list[Candidate], norm_opts: dict[str, Any]
+) -> Grounding:
+    """Find a model value in the text: exact, then loose, then normalised.
+
+    Args:
+        value: The value the model returned.
+        index: The document's text index.
+        fdef: The field definition from fields.yaml.
+        rule_cands: Rule candidates for the field, best first.
+        norm_opts: Normalizer options from fields.yaml.
+
+    Returns:
+        The first step that matched, with the best span, or UNGROUNDED.
+    """
     value = value.strip()
     if not value:
         return Grounding(UNGROUNDED)

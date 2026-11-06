@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import dataclass
+from typing import Any, TypedDict
 
 from baseline.config import Config
 from baseline.errors import VLMOutputError  # noqa: F401 - re-exported
@@ -45,8 +46,37 @@ _NOT = {
 _OFTEN_SEVERAL = ("email", "phone")
 
 
+class TextPart(TypedDict):
+    """A text part of a user message."""
+
+    type: str
+    text: str
+
+
+class ImageURL(TypedDict):
+    """Where an image part points: here always a data: URL."""
+
+    url: str
+
+
+class ImagePart(TypedDict):
+    """An image part of a user message."""
+
+    type: str
+    image_url: ImageURL
+
+
+class ChatMessage(TypedDict):
+    """One OpenAI style chat message."""
+
+    role: str
+    content: str | list[TextPart | ImagePart]
+
+
 @dataclass(frozen=True)
 class VLMAnswer:
+    """The model's answer after parse_answer checked its shape."""
+
     label: str
     fields: dict[str, list[str]]
 
@@ -60,14 +90,29 @@ def _field_names(cfg: Config) -> list[str]:
 
 
 def check_descriptions(cfg: Config) -> None:
-    """Fail before the first document if the prompt would have a blank line."""
+    """Fail before the first document if the prompt would have a blank line.
+
+    Args:
+        cfg: The loaded config.
+
+    Raises:
+        ValueError: A class or field has no description.
+    """
     missing = [f"class {c.get('name')}" for c in cfg.classes.get("classes", []) if not c.get("description")]
     missing += [f"field {f.get('name')}" for f in cfg.field_defs if not f.get("description")]
     if missing:
         raise ValueError("no description in config for: " + ", ".join(missing))
 
 
-def response_schema(cfg: Config) -> dict:
+def response_schema(cfg: Config) -> dict[str, Any]:
+    """Build the JSON schema the server must constrain the answer to.
+
+    Args:
+        cfg: The loaded config; classes and fields come from it.
+
+    Returns:
+        A JSON schema object.
+    """
     names = _field_names(cfg)
     return {
         "type": "object",
@@ -104,8 +149,19 @@ def _system_text(cfg: Config) -> str:
     return "\n".join(lines)
 
 
-def build_messages(cfg: Config, pages: list[str], images: list[bytes], max_text_chars: int) -> list[dict]:
-    content: list[dict] = []
+def build_messages(cfg: Config, pages: list[str], images: list[bytes], max_text_chars: int) -> list[ChatMessage]:
+    """Build the system and user messages for one document.
+
+    Args:
+        cfg: The loaded config.
+        pages: Page text, one string per page sent.
+        images: PNG bytes, one per page sent.
+        max_text_chars: Total page text budget across pages.
+
+    Returns:
+        The system message, then one user message with text and images.
+    """
+    content: list[TextPart | ImagePart] = []
     budget = max_text_chars
     parts = []
     for i, page in enumerate(pages):
@@ -131,6 +187,18 @@ def build_messages(cfg: Config, pages: list[str], images: list[bytes], max_text_
 
 
 def parse_answer(content: str, cfg: Config) -> VLMAnswer:
+    """Parse and check the model's answer.
+
+    Args:
+        content: The raw message content from the server.
+        cfg: The loaded config, for the declared classes and fields.
+
+    Returns:
+        The answer, with blank and repeated values removed.
+
+    Raises:
+        VLMOutputError: The answer is not JSON or not the declared shape.
+    """
     try:
         data = json.loads(content)
     except json.JSONDecodeError as exc:

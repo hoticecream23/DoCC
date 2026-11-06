@@ -20,33 +20,55 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import IO, Any, Protocol
 from urllib.parse import urlparse
 
 from baseline.errors import VLMError
 
 from .config import VLMSettings
+from .prompt import ChatMessage
 
 log = logging.getLogger(__name__)
 
+# Code points at or below this are whitespace or C0 control characters.
+LAST_CONTROL_CHAR = 32
+DEL_CHAR = 127
+HTTP_BAD_REQUEST = 400
 
-class VLMBadRequest(VLMError):
+
+class VLMBadRequest(VLMError):  # noqa: N818 - established public name, shown in diagnostics
     """HTTP 400. Ollama sends it when the prompt overflows the context."""
 
 
 @dataclass(frozen=True)
 class VLMReply:
+    """One answer from the server."""
+
     content: str
     model: str
     finish_reason: str | None
 
 
 class Backend(Protocol):
-    def complete(self, messages: list[dict], schema: dict) -> VLMReply: ...
+    """Anything that can answer a chat request: the client, or a test fake."""
+
+    def complete(self, messages: list[ChatMessage], schema: dict[str, Any]) -> VLMReply:
+        """Send the messages and return the answer, constrained to `schema`."""
+        ...
 
 
 def check_local(url: str, allowed_hosts: list[str]) -> None:
-    if any(ord(c) <= 32 or ord(c) == 127 for c in url):
+    """Refuse a URL that could send document content off the machine.
+
+    Args:
+        url: The server URL to check.
+        allowed_hosts: Non loopback hosts the deployment trusts.
+
+    Raises:
+        ValueError: The URL is malformed, carries credentials or a query, or
+            its host is not loopback and not allowed.
+    """
+    if any(ord(c) <= LAST_CONTROL_CHAR or ord(c) == DEL_CHAR for c in url):
         raise ValueError(f"VLM url must not contain whitespace or control characters: {url!r}")
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -82,11 +104,19 @@ def _is_loopback(host: str) -> bool:
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: http.client.HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
         return None  # urllib then raises HTTPError with the 3xx status
 
 
-def _reply(payload: dict) -> VLMReply:
+def _reply(payload: dict[str, Any]) -> VLMReply:
     try:
         choice = payload["choices"][0]
         content = choice["message"]["content"]
@@ -98,11 +128,22 @@ def _reply(payload: dict) -> VLMReply:
 
 
 class VLMClient:
-    def __init__(self, settings: VLMSettings, sleep: Callable[[float], None] = time.sleep):
+    """Chat completions client that only talks to a local or allowed host.
+
+    Args:
+        settings: Server, model and retry settings.
+        sleep: Called between retries; tests pass a no-op.
+
+    Raises:
+        ValueError: No model is set, the host is not allowed, or the API key
+            variable is empty.
+    """
+
+    def __init__(self, settings: VLMSettings, sleep: Callable[[float], None] = time.sleep) -> None:
         if not settings.model:
             raise ValueError("vlm.model is not set: set it in config/cascade.yaml or pass --model")
         check_local(settings.base_url, settings.allowed_hosts)
-        self._key = None
+        self._key: str | None = None
         if settings.api_key_env:
             self._key = os.environ.get(settings.api_key_env)
             if not self._key:
@@ -117,8 +158,8 @@ class VLMClient:
         check_local(self._url, settings.allowed_hosts)
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
-    def complete(self, messages: list[dict], schema: dict) -> VLMReply:
-        body = json.dumps(
+    def _body(self, messages: list[ChatMessage], schema: dict[str, Any]) -> bytes:
+        return json.dumps(
             {
                 **self._s.extra_body,
                 "model": self._s.model,
@@ -131,6 +172,22 @@ class VLMClient:
                 },
             }
         ).encode("utf-8")
+
+    def complete(self, messages: list[ChatMessage], schema: dict[str, Any]) -> VLMReply:
+        """Send one request, retrying transient failures.
+
+        Args:
+            messages: The chat messages, from build_messages.
+            schema: JSON schema the answer must follow.
+
+        Returns:
+            The server's answer.
+
+        Raises:
+            VLMBadRequest: The server answered HTTP 400, usually a context overflow.
+            VLMError: Any other failure, or every attempt failed.
+        """
+        body = self._body(messages, schema)
         headers = {"Content-Type": "application/json"}
         if self._key:
             headers["Authorization"] = f"Bearer {self._key}"
@@ -149,7 +206,7 @@ class VLMClient:
                 last = f"HTTP {exc.code}"
                 if exc.code in self._s.retry_statuses:
                     continue
-                raise (VLMBadRequest if exc.code == 400 else VLMError)(last) from exc
+                raise (VLMBadRequest if exc.code == HTTP_BAD_REQUEST else VLMError)(last) from exc
             except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as exc:
                 last = f"{type(exc).__name__}: {exc}"
                 continue
