@@ -8,6 +8,7 @@ from __future__ import annotations
 import functools
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -107,10 +108,14 @@ class TesseractEngine(OCREngine):
             opts: Engine options; "binary" is the tesseract executable path.
         """
         # Windows installers do not put tesseract on PATH, so allow an
-        # explicit binary. Null in config means "just use PATH".
+        # explicit binary. Null in config means "just use PATH". A configured
+        # path that does not exist on this machine (the Windows path in
+        # config/pipeline.yaml on a Linux CI runner) also falls back to PATH.
         binary = opts.get("binary")
-        if binary:
+        if binary and Path(binary).is_file():
             self._pytesseract.pytesseract.tesseract_cmd = str(binary)
+        elif binary:
+            log.debug("configured tesseract binary missing, using PATH", extra={"binary": str(binary)})
 
     def available(self) -> bool:
         """Check that the tesseract binary runs.
