@@ -1,7 +1,6 @@
 # Coding standards pass
 
-Date: 2026-11-06. Branch: `small-fixes`, commits 0f867f9..3f2b1d0 (10 commits,
-106 files, +7788 / -3489). Plan and status: `PLAN-standards.md`. Standards
+Date: 2026-11-06. Branch: `small-fixes`, commits 0f867f9..bcfb56c (17 commits). Plan and status: `PLAN-standards.md`. Standards
 source: the four .docx files in the "coding standards final draft" folder
 (v19 is authoritative; csd_5 and crs supplement it).
 
@@ -42,6 +41,7 @@ source: the four .docx files in the "coding standards final draft" folder
 | custom exception modules | 5 scattered | 1 shared |
 | tests / coverage | 560 / 84.6 % | 592 / 87.3 % |
 | CI, pre-commit, coverage gate | none | all three |
+| CI on GitHub (ubuntu, py3.10 + 3.12) | never run | green |
 
 ## Not applied (not applicable to this repo)
 
@@ -49,3 +49,11 @@ S47 MkDocs/OpenAPI sync, S56/S57 `backend/src` layout, S61 trace_id
 middleware, S63 async LLM IO, S66-S68 experiment/prompt/embedding
 registries, S72-S76 PII redaction/RBAC/TLS, S80 PR size (repo-wide pass),
 S82-S90 team review process.
+
+## CI fixes after the first run
+
+The first GitHub Actions run failed because the tests depended on the
+local machine: the Windows tesseract path in config/pipeline.yaml (ocr.py
+now falls back to PATH), the gitignored corpus/ (demo tests now use the
+synthetic corpus) and the gitignored models/ (manifest tests now train
+tiny models in tmp). CI also emits pytest failures as annotations.

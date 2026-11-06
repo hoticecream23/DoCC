@@ -118,5 +118,14 @@ T7 Verify (Sonnet): re-run every BASELINE.md command; fill "after" table;
   orchestrator: ruff 0, black/isort 0, mypy 0 (60 files), functions > 50
   lines 0, except-without-reason 0, 592 tests, coverage 87.3 %.
   Result written to docs/parts/standards.md.
+- CI (first ever run, 2026-11-06): pytest failed on ubuntu. Causes found
+  and fixed: (1) config/pipeline.yaml names the Windows tesseract path;
+  ocr.py now falls back to PATH when it is missing (f726367). (2) demo
+  server tests read the gitignored corpus/; (3) manifest tests copy the
+  gitignored models/. CI now emits pytest failures as annotations
+  (050f242) so the log is readable without sign-in.
+- done: demo server tests use the synthetic corpus (bcfb56c); manifest
+  tests train tiny models in tmp (bce2954). CI run on bcfb56c: success on
+  Python 3.10 and 3.12.
 - in progress: none
-- blocked: none. CI has not yet run on GitHub (branch not pushed).
+- blocked: none
