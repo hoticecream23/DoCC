@@ -11,6 +11,7 @@ import json
 from dataclasses import dataclass
 
 from baseline.config import Config
+from baseline.errors import VLMOutputError  # noqa: F401 - re-exported
 
 _INSTRUCTIONS = """You read business and legal documents and return JSON.
 
@@ -42,10 +43,6 @@ _NOT = {
 # Single-value fields a page often prints several of. Capped at one item, the
 # model joins them into one string or drops the right one, so the merge picks.
 _OFTEN_SEVERAL = ("email", "phone")
-
-
-class VLMOutputError(ValueError):
-    """The model's answer is not the shape the schema asked for."""
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Config
+from .errors import ModelIntegrityError, summarize_exception
 from .logging_setup import get_logger
 from .rules import best_marker_score
 from .schema import Classification, ClassifyMethod
@@ -48,10 +49,6 @@ def record_hash(path: str | Path) -> None:
     entries[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     lines = "".join(f"{h}  {n}\n" for n, h in sorted(entries.items()))
     mf.write_text(lines, encoding="utf-8", newline="\n")
-
-
-class ModelIntegrityError(ValueError):
-    """Model file missing from, or not matching, MANIFEST.sha256."""
 
 
 def load_verified(path: str | Path):
@@ -185,8 +182,8 @@ def load_model(model_dir: str | Path) -> ClassifierModel | None:
         return ClassifierModel(pipeline=pipe, labels=[str(c) for c in pipe.classes_])
     except ModelIntegrityError:
         raise
-    except Exception as exc:
-        log.error("classifier load failed", extra={"dir": str(d), "error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 - unpickling raises arbitrary types; degrade to the rule layer
+        log.error("classifier load failed", extra={"dir": str(d), "error": summarize_exception(exc)})
         return None
 
 
@@ -242,8 +239,8 @@ def classify(full: str, pages: list[str], cfg: Config, model: ClassifierModel | 
             # anything and its silence was being read as a verdict.
             model_scores = dict(sorted(scores.items()))
             model_prob = prob
-        except Exception as exc:
-            log.error("classifier predict failed", extra={"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - sklearn raises varied types; degrade to the rule layer
+            log.error("classifier predict failed", extra={"error": summarize_exception(exc)})
 
     if best_rule_score >= rule_min:
         return Classification(

@@ -11,16 +11,13 @@ import re
 from dataclasses import dataclass
 
 from ..config import Config
+from ..errors import OffsetMismatch  # noqa: F401 - re-exported
 from ..logging_setup import get_logger
 from ..schema import MetadataField, MetadataMethod, WordBox, page_for_offset, page_spans
 from .normalizers import NormCtx, normalize
 from .validators import CHECKSUM_VALIDATORS, run_validator
 
 log = get_logger(__name__)
-
-
-class OffsetMismatch(ValueError):
-    """Raised in strict mode when an offset does not slice back to its value."""
 
 
 @dataclass

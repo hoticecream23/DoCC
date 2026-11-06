@@ -23,13 +23,11 @@ from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlparse
 
+from baseline.errors import VLMError
+
 from .config import VLMSettings
 
 log = logging.getLogger(__name__)
-
-
-class VLMError(RuntimeError):
-    """The server could not give an answer."""
 
 
 class VLMBadRequest(VLMError):

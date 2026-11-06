@@ -17,6 +17,7 @@ from typing import Any
 from . import classify as classify_mod
 from . import tagging as tagging_mod
 from .config import Config, load_config_cached
+from .errors import summarize_exception
 from .extract import ExtractionResult, extract, to_canonical_offsets
 from .logging_setup import get_logger, setup_logging
 from .metadata import extract_fields
@@ -63,9 +64,10 @@ class _Stages:
         t0 = time.perf_counter()
         try:
             return fn()
-        except Exception as exc:
-            log.exception("stage failed", extra={"stage": name})
-            self.errors.append(f"{name}: {type(exc).__name__}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - boundary: a failed stage records an error, the document goes on
+            log.error("stage failed", extra={"stage": name, "error": summarize_exception(exc)})
+            log.debug("stage traceback", exc_info=True)  # debug only: the message can hold document text
+            self.errors.append(f"{name}: {summarize_exception(exc)}")
             return default
         finally:
             elapsed = (time.perf_counter() - t0) * 1000.0
@@ -195,10 +197,11 @@ def existing_doc_ids(output: str | Path) -> set[str]:
                 continue
             try:
                 seen.add(json.loads(line)["doc_id"])
-            except Exception as exc:
+            except (ValueError, KeyError, TypeError) as exc:
                 # The doc is re-run, but a bad line here means the output file is damaged.
                 log.warning(
-                    "unreadable line in output, doc will be re-run", extra={"output": str(p), "error": repr(exc)}
+                    "unreadable line in output, doc will be re-run",
+                    extra={"output": str(p), "error": summarize_exception(exc)},
                 )
                 continue
     return seen
@@ -235,9 +238,9 @@ def _run_one(args: tuple) -> str:
         if bbox_dir:
             write_sidecar(sidecar, Path(bbox_dir))
         return dumps(record)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - boundary: per-document loop of the batch runner
         # Unreadable file. Emit nothing but say so loudly.
-        log.error("document failed", extra={"path": str(path), "error": str(exc)})
+        log.error("document failed", extra={"path": str(path), "error": summarize_exception(exc)})
         return ""
 
 

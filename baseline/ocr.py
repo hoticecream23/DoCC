@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from .errors import summarize_exception
 from .logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -75,8 +76,8 @@ class TesseractEngine(OCREngine):
         try:
             self._pytesseract.get_tesseract_version()
             return True
-        except Exception as exc:
-            log.warning("tesseract unavailable", extra={"error": str(exc)})
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:  # not installed, not on PATH, bad version
+            log.warning("tesseract unavailable", extra={"error": summarize_exception(exc)})
             return False
 
     def recognize(self, image: Any, opts: dict[str, Any]) -> OCRPage:

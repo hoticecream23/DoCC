@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from baseline.config import load_config_cached
+from baseline.errors import BadInput, ConfigError, Unavailable
 from baseline.pipeline import Models, process_document
 from cascade.config import load_cascade_config
 from cascade.runner import process_document as cascade_process
@@ -28,27 +29,26 @@ MAX_PAGES = 20
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 
 
-class BadInput(ValueError):
-    pass
-
-
-class Unavailable(RuntimeError):
-    pass
-
-
 make_backend = VLMClient  # seam: tests swap in a fake backend
 
 
 def vlm_settings(ccfg):
-    """cascade.yaml, then env overrides; Ollama on this laptop when nothing is set."""
+    """Return the VLM settings: cascade.yaml, then env overrides.
+
+    Raises:
+        ConfigError: no model is set in cascade.yaml vlm.model or DOCC_VLM_MODEL.
+    """
     over = {
         k: v
         for k, v in (("base_url", os.environ.get("DOCC_VLM_BASE_URL")), ("model", os.environ.get("DOCC_VLM_MODEL")))
         if v
     }
-    if ccfg.vlm.model is None and not over:
-        over = {"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3.5:9b-16k"}
-    return ccfg.vlm.model_copy(update=over)
+    settings = ccfg.vlm.model_copy(update=over)
+    if not settings.model:
+        raise ConfigError("demo needs a VLM model: set DOCC_VLM_MODEL or vlm.model in config/cascade.yaml")
+    if not settings.base_url:
+        raise ConfigError("demo needs a VLM endpoint: set DOCC_VLM_BASE_URL or vlm.base_url in config/cascade.yaml")
+    return settings
 
 
 def reachable(settings) -> bool:
@@ -59,7 +59,8 @@ def reachable(settings) -> bool:
     try:
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=2):
             return True
-    except Exception:  # HTTPError included: a 401 still means unusable for the demo
+    except OSError as exc:  # URLError, HTTPError (a 401 still means unusable), timeouts
+        log.warning("VLM probe failed", extra={"base_url": settings.base_url, "error": type(exc).__name__})
         return False
 
 
@@ -107,8 +108,6 @@ def make_server(port: int, root: Path) -> ThreadingHTTPServer:
     lock = threading.Lock()
 
     def get_backend():
-        if not vlm.model:
-            raise Unavailable("no VLM model configured")
         if not reachable(vlm):
             raise Unavailable(f"VLM server not reachable at {vlm.base_url}")
         with lock:
@@ -209,7 +208,7 @@ def make_server(port: int, root: Path) -> ThreadingHTTPServer:
                 self._json(503, {"error": str(e)})
             except VLMError as e:  # ponytail: the runner falls back on VLM errors, so this rarely fires
                 self._json(502, {"error": str(e)})
-            except Exception:
+            except Exception:  # noqa: BLE001 - request boundary: any failure becomes a 500, server stays up
                 log.exception("run failed")
                 self._json(500, {"error": "pipeline failed; see server log"})
             finally:

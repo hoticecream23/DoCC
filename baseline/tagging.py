@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .classify import ModelIntegrityError, load_verified, record_hash
 from .config import Config
+from .errors import summarize_exception
 from .logging_setup import get_logger
 from .rules import best_marker_score
 from .schema import MetadataField, Tag, TagMethod
@@ -215,8 +216,8 @@ def load_model(model_dir: str | Path) -> TaggerModel | None:
         return TaggerModel(pipeline=blob["pipeline"], tags=[str(t) for t in blob["tags"]])
     except ModelIntegrityError:
         raise
-    except Exception as exc:
-        log.error("tagger load failed", extra={"dir": str(d), "error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 - unpickling raises arbitrary types; degrade to keyword tags
+        log.error("tagger load failed", extra={"dir": str(d), "error": summarize_exception(exc)})
         return None
 
 
@@ -285,8 +286,8 @@ def apply_tags(
         try:
             for tag, prob in model.predict_scores(full).items():
                 offer(tag, prob, TagMethod.TFIDF_SVM)
-        except Exception as exc:
-            log.error("tagger predict failed", extra={"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - sklearn raises varied types; degrade to keyword tags
+            log.error("tagger predict failed", extra={"error": summarize_exception(exc)})
 
     # Validated metadata beats any keyword, so this runs last and wins ties.
     for tag, conf in derived_scores(metadata, facts, cfg).items():

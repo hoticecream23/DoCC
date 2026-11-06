@@ -7,6 +7,7 @@ import json
 import time
 from pathlib import Path
 
+from ..errors import summarize_exception
 from ..io import atomic_open, atomic_write_text
 from ..logging_setup import get_logger
 from ..schema import Table, TableDiagnostics, TableRecord, page_spans, read_jsonl
@@ -78,9 +79,11 @@ def build_record(record: dict, words: list[dict], tcfg: dict, deterministic_timi
             else:
                 diag.errors.append(f"unknown strategy {name!r}")
                 continue
-        except Exception as exc:  # a bad page never kills the batch
-            log.exception("table strategy failed", extra={"doc_id": doc_id, "strategy": name})
-            diag.errors.append(f"{name}: {type(exc).__name__}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - boundary: a bad page never kills the batch
+            log.error(
+                "table strategy failed", extra={"doc_id": doc_id, "strategy": name, "error": summarize_exception(exc)}
+            )
+            diag.errors.append(f"{name}: {summarize_exception(exc)}")
         finally:
             elapsed = (time.perf_counter() - t0) * 1000.0
             # Same knob as the pipeline: timings are the one field that cannot
@@ -126,8 +129,8 @@ def load_words(bbox_dir: Path, doc_id: str) -> list[dict]:
     try:
         with gzip.open(p, "rt", encoding="utf-8") as fh:
             return list(json.load(fh).get("words", []))
-    except Exception as exc:
-        log.error("cannot read sidecar", extra={"path": str(p), "error": str(exc)})
+    except (OSError, EOFError, ValueError, AttributeError) as exc:  # damaged gzip/JSON: no boxes, still logged
+        log.error("cannot read sidecar", extra={"path": str(p), "error": summarize_exception(exc)})
         return []
 
 

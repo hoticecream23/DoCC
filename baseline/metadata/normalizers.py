@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from ..errors import summarize_exception
 from ..logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -176,6 +177,6 @@ def normalize(name: str | None, value: str, ctx: NormCtx) -> tuple:
         return value, {}
     try:
         return fn(value, ctx)
-    except Exception as exc:
-        log.warning("normalizer raised", extra={"normalizer": name, "error": str(exc)})
+    except (ValueError, TypeError, KeyError, IndexError, ArithmeticError, AttributeError) as exc:  # bad value
+        log.warning("normalizer raised", extra={"normalizer": name, "error": summarize_exception(exc)})
         return None, {}

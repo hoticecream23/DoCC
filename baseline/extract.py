@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config
+from .errors import summarize_exception
 from .logging_setup import get_logger
 from .ocr import OCRPage, get_engine, ocr_confidence
 from .schema import ExtractionMethod, WordBox, page_spans
@@ -121,8 +122,8 @@ def _ocr_image(image: Any, opts: dict) -> OCRPage:
     # low and the confidence comparison does the real filtering. No deskew.
     try:
         deg, conf = engine.orientation(image, opts)
-    except Exception as exc:  # too few characters, timeout: keep the first read
-        log.debug("osd failed", extra={"error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 - OSD raises varied types (few chars, timeout); keep first read
+        log.debug("osd failed", extra={"error": summarize_exception(exc)})
         return page
     if deg not in (90, 180, 270) or conf < OSD_MIN_CONF:
         return page
@@ -249,7 +250,7 @@ def _render(page, dpi: int):
 def _submit_ocr(pool, page, dpi: int, opts: dict) -> Future:
     try:
         img = _render(page, dpi)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - not swallowed: handed to the Future, re-raised at .result()
         failed: Future = Future()
         failed.set_exception(exc)
         return failed
@@ -329,8 +330,8 @@ def _extract_pdf(path: Path, cfg: Config, res: ExtractionResult) -> None:
                     # The pixmap is dpi/72 times the size of the page rect that
                     # went into page_sizes, so undo that before storing.
                     res.words.extend(_ocr_words(ocr.words, pno, dpi / 72.0))
-            except Exception as exc:
-                res.errors.append("ocr failed on page " + str(pno) + ": " + str(exc))
+            except Exception as exc:  # noqa: BLE001 - PyMuPDF/PIL/tesseract vary; bad page keeps native text
+                res.errors.append("ocr failed on page " + str(pno) + ": " + summarize_exception(exc))
                 # Keep the thin native text rather than dropping the page entirely.
                 res.pages.append(native)
                 res.page_methods.append(ExtractionMethod.NATIVE if native.strip() else ExtractionMethod.NONE)
@@ -361,9 +362,9 @@ def _rescue_page(page, native, ocr_opts, gate, pno, capture):
     try:
         dpi = int(ocr_opts.get("dpi", 300))
         ocr = _ocr_image(_render(page, dpi), ocr_opts)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - PyMuPDF/PIL/tesseract raise varied types
         # A failed rescue is not a failed page. Keep the native text and say so.
-        log.warning("quality gate could not re-read page", extra={"page": pno, "error": str(exc)})
+        log.warning("quality gate could not re-read page", extra={"page": pno, "error": summarize_exception(exc)})
         return None
 
     text = _sanitize_fixed_width(ocr.text)
@@ -414,8 +415,8 @@ def _extract_image(path: Path, cfg: Config, res: ExtractionResult) -> None:
             for_ocr, scale = _upscale_for_ocr(img, ocr_opts)
             for_ocr, read_opts = _prepare_pink_paper(for_ocr, ocr_opts)
             ocr = _ocr_image(for_ocr, read_opts)
-        except Exception as exc:
-            res.errors.append("ocr failed: " + str(exc))
+        except Exception as exc:  # noqa: BLE001 - PIL/tesseract raise varied types; record and return an empty page
+            res.errors.append("ocr failed: " + summarize_exception(exc))
             res.pages.append("")
             res.page_methods.append(ExtractionMethod.NONE)
             res.page_confidences.append(0.0)
@@ -445,9 +446,10 @@ def extract(path, cfg: Config) -> ExtractionResult:
         if ext in exts:
             try:
                 handler(p, cfg, res)
-            except Exception as exc:
-                log.exception("extraction failed", extra={"path": str(p)})
-                res.errors.append("extract: " + type(exc).__name__ + ": " + str(exc))
+            except Exception as exc:  # noqa: BLE001 - boundary: extract() never raises on content (see docstring)
+                log.error("extraction failed", extra={"path": str(p), "error": summarize_exception(exc)})
+                log.debug("extraction traceback", exc_info=True)  # debug only: the message can hold document text
+                res.errors.append("extract: " + summarize_exception(exc))
             break
     else:
         res.errors.append("unsupported extension " + repr(ext))

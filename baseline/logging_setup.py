@@ -11,6 +11,15 @@ _RESERVED = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()) |
 
 
 class JsonFormatter(logging.Formatter):
+    """One JSON object per record. Every ``extra=`` key is emitted as is.
+
+    Because extras are not filtered, callers must pass only metadata: ids and
+    paths (doc_id, path, dir, output), stage names (stage, strategy,
+    normalizer, validator, page), counts and scores, config values, and
+    ``error`` built with ``baseline.errors.summarize_exception``. Never pass
+    document text or a raw ``str(exc)`` from a parser, OCR or VLM call.
+    """
+
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
             "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
@@ -34,7 +43,7 @@ def setup_logging(level: str = "INFO") -> None:
     if hasattr(stream, "reconfigure"):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception as exc:
+        except (OSError, ValueError) as exc:  # io.UnsupportedOperation is both
             reconfigure_error = exc  # logged once the handler exists
     handler = logging.StreamHandler(stream)
     handler.setFormatter(JsonFormatter())

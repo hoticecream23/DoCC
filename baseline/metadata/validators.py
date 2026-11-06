@@ -12,6 +12,7 @@ import re
 from collections.abc import Callable
 from decimal import Decimal
 
+from ..errors import summarize_exception
 from ..logging_setup import get_logger
 from .normalizers import _parse_date, _to_decimal
 
@@ -198,6 +199,6 @@ def run_validator(name: str | None, value: str, args: dict | None = None) -> boo
             return bool(fn(value, args))
         except TypeError:
             return bool(fn(value))
-    except Exception as exc:
-        log.warning("validator raised", extra={"validator": name, "error": str(exc)})
+    except (ValueError, TypeError, KeyError, IndexError, ArithmeticError, AttributeError) as exc:  # bad value
+        log.warning("validator raised", extra={"validator": name, "error": summarize_exception(exc)})
         return False
