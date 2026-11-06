@@ -116,7 +116,7 @@ T7 Verify (Sonnet): re-run every BASELINE.md command; fill "after" table;
 - done: T8 (3f2b1d0: 6 more atomic writers, header notes on 8 large
   modules, tesseract in CI, demo probe widened). Final re-measure by the
   orchestrator: ruff 0, black/isort 0, mypy 0 (60 files), functions > 50
-  lines 0, except-without-reason 0, 591 tests, coverage 87.3 %.
+  lines 0, except-without-reason 0, 592 tests, coverage 87.3 %.
   Result written to docs/parts/standards.md.
 - in progress: none
 - blocked: none. CI has not yet run on GitHub (branch not pushed).

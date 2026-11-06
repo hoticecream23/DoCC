@@ -40,7 +40,7 @@ source: the four .docx files in the "coding standards final draft" folder
 | `except Exception` without reason | 25 | 0 |
 | non-atomic output writers | 10 | 0 |
 | custom exception modules | 5 scattered | 1 shared |
-| tests / coverage | 560 / 84.6 % | 591 / 87.3 % |
+| tests / coverage | 560 / 84.6 % | 592 / 87.3 % |
 | CI, pre-commit, coverage gate | none | all three |
 
 ## Not applied (not applicable to this repo)
