@@ -7,7 +7,7 @@ import pytest
 
 from baseline import classify, tagging
 
-REPO_MODELS = Path(__file__).resolve().parent.parent / "models"
+REPO_MODELS = Path(__file__).resolve().parents[2] / "models"
 
 
 def _copy_models(tmp_path: Path) -> Path:

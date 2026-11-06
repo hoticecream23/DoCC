@@ -185,7 +185,9 @@ BANKING = {
     "customer_application": "CUSTOMER APPLICATION FORM\nCustomer ID: 4471\nApplicant details\n",
     "loan_application": "LOAN APPLICATION FORM\nApplicant: R Mehta\nLoan amount: 500000\n",
     "sanction_letter": "LOAN SANCTION LETTER\nWe are pleased to sanction the facility\nRate of interest: 9.1%\n",
-    "repayment_schedule": "REPAYMENT SCHEDULE\nEMI No | Principal | Interest | Outstanding balance\n1 | 4210 | 1880 | 495790\n",
+    "repayment_schedule": (
+        "REPAYMENT SCHEDULE\nEMI No | Principal | Interest | Outstanding balance\n1 | 4210 | 1880 | 495790\n"
+    ),
     "account_opening_form": "ACCOUNT OPENING FORM\nSavings account\nNomination details\n",
     "account_closure_form": "ACCOUNT CLOSURE FORM\nReason for closure: relocation\nUnused cheque leaves surrendered\n",
 }

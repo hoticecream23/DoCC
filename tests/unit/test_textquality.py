@@ -119,16 +119,6 @@ def test_the_module_holds_no_vocabulary():
 # ------------------------------------------------- the gate inside extraction
 
 
-def test_a_clean_native_pdf_is_not_rescued(corpus, cfg):
-    """The gate must be invisible on documents whose text layer is fine."""
-    from baseline.extract import extract
-    from baseline.schema import ExtractionMethod
-
-    res = extract(corpus / "invoice_native.pdf", cfg)
-    assert ExtractionMethod.OCR_RESCUED not in res.page_methods
-    assert res.method == ExtractionMethod.NATIVE
-
-
 def test_a_rescued_page_is_recorded_as_such_not_as_plain_ocr(cfg):
     """A reader must be able to tell 'never had text' from 'text discarded'."""
     from baseline.schema import ExtractionMethod

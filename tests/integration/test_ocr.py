@@ -86,7 +86,7 @@ def test_hybrid_word_boxes_from_both_routes_are_canonical(corpus, cfg):
 def test_hybrid_confidence_sits_between_the_two_routes(corpus, cfg):
     res = extract(corpus / "invoice_hybrid.pdf", cfg)
     native_conf = float(cfg.extract_opts().get("native_confidence", 0.98))
-    ocr_page = [c for m, c in zip(res.page_methods, res.page_confidences) if m == ExtractionMethod.OCR][0]
+    ocr_page = [c for m, c in zip(res.page_methods, res.page_confidences, strict=True) if m == ExtractionMethod.OCR][0]
     assert ocr_page < res.confidence() < native_conf
 
 

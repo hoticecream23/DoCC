@@ -1,7 +1,9 @@
 import json
+from pathlib import Path
 
-from conftest import ROOT
 from vlm_stub import chat, serve
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_run_against_a_local_server_writes_records_and_provenance(corpus, tmp_path):

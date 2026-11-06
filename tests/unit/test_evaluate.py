@@ -278,7 +278,7 @@ def test_harness_scores_the_real_baseline_output(tmp_path):
     """The harness must not depend on the pipeline, only on the schema."""
     from pathlib import Path
 
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parents[2]
     if not (root / "results.jsonl").exists() or not (root / "gold.jsonl").exists():
         pytest.skip("no run output on disk")
     res = evaluate(root / "gold.jsonl", root / "results.jsonl")

@@ -262,7 +262,7 @@ def test_no_column_or_table_vocabulary_is_hardcoded():
     """Config over code, same rule the rest of the pipeline lives under."""
     from pathlib import Path
 
-    pkg = Path(__file__).resolve().parent.parent / "baseline" / "tables"
+    pkg = Path(__file__).resolve().parents[2] / "baseline" / "tables"
     files = sorted(pkg.glob("*.py"))
     # An empty glob would pass this test vacuously, so insist the package is there.
     assert files, "baseline/tables/ has moved; point this test at it"

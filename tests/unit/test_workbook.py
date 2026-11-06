@@ -319,7 +319,7 @@ def _tab(path, name):
     ws = wb[name]
     rows = list(ws.iter_rows(values_only=True))
     header = [str(c).strip().upper() if c else "" for c in rows[0]]
-    return header, [dict(zip(header, r)) for r in rows[1:]]
+    return header, [dict(zip(header, r, strict=True)) for r in rows[1:]]
 
 
 def test_export_writes_every_tab_with_the_agreed_columns(tmp_path, cfg):

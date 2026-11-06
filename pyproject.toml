@@ -29,9 +29,10 @@ build-backend = "setuptools.build_meta"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --cov=baseline --cov=cascade --cov=demo --cov-report=term-missing:skip-covered"
+markers = ["integration: end-to-end runs over the corpus, a server or the VLM stub"]
 
 [tool.coverage.report]
-fail_under = 84
+fail_under = 85
 show_missing = true
 
 [tool.black]

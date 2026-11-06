@@ -360,7 +360,8 @@ black --check .
 isort --check-only .
 ruff check .
 mypy
-python -m pytest
+python -m pytest                                   # full run: unit + integration, coverage gate 85 %
+python -m pytest -m "not integration" --no-cov     # fast unit run
 ```
 
 Line length is 120. Docstrings use the google style. CI runs the same checks

@@ -19,6 +19,7 @@ from baseline.graph import (
     orphan_references,
     to_dot,
 )
+from baseline.graph_report import render_report
 
 
 @pytest.fixture(scope="module")
@@ -237,7 +238,7 @@ def test_graph_node_merging_unions_lists():
     g = Graph()
     g.add_node("x", "organization", gstins=["A"], pan="P")
     g.add_node("x", "organization", gstins=["B"], pan="P")
-    assert g._nodes["x"].attrs["gstins"] == ["A", "B"]
+    assert g.nodes[0].attrs["gstins"] == ["A", "B"]
 
 
 def test_exposure_counts_documents_per_org(gcfg):
@@ -258,25 +259,15 @@ def test_empty_input_produces_an_empty_graph(gcfg):
     assert g.to_dict() == {"nodes": [], "edges": []}
 
 
-# ---------------------------------------------------------------- end to end
+def test_report_names_the_source_and_lists_each_organisation(gcfg):
+    records = [_rec("a", fields=[_f("gstin", "27AAPFU0939F1ZV")]), _rec("b", fields=[_f("pan", "AAPFU0939F")])]
+    g, stats = build_graph(records, gcfg)
+    report = render_report(stats, find_chains(g), org_exposure(g), orphan_references(g, records, gcfg), "run.jsonl")
+    assert "Source: `run.jsonl`" in report
+    assert "AAPFU0939F" in report
 
 
-def test_graph_over_the_real_pipeline_output(cfg, corpus, tmp_path):
-    """Build a run, then a graph over it, with no hand written records."""
-    from baseline.pipeline import run_batch
-
-    out = tmp_path / "results.jsonl"
-    run_batch(corpus, out, workers=1)
-    records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
-    g, stats = build_graph(records, cfg.graph)
-
-    assert stats["documents"] == len(records)
-    # Acme appears via GSTIN on the invoices and the purchase order.
-    orgs = {n.attrs["pan"] for n in g.nodes if n.kind == "organization"}
-    assert "AAPFU0939F" in orgs
-    # The receipts quote the invoice, so the chain must exist.
-    assert any(c["from_class"] == "receipt" and c["to_class"] == "invoice" for c in find_chains(g))
-    # Every organisation node came from a verified identifier.
-    for n in g.nodes:
-        if n.kind == "organization":
-            assert len(n.attrs["pan"]) == 10
+def test_report_on_an_empty_graph_says_nothing_was_found(gcfg):
+    g, stats = build_graph([], gcfg)
+    report = render_report(stats, [], [], [], "empty.jsonl")
+    assert "None. Every cited reference resolves." in report

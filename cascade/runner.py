@@ -24,7 +24,7 @@ from typing import IO, TypedDict, TypeVar
 from baseline import pipeline as baseline_pipeline
 from baseline.classify import rule_scores
 from baseline.config import Config
-from baseline.io import atomic_open
+from baseline.io import atomic_open, cut_partial_tail
 from baseline.logging_setup import get_logger
 from baseline.scan import scan_documents
 from baseline.schema import (
@@ -278,23 +278,10 @@ def process_document(
     return Result(record, sidecar, prov)
 
 
-def _cut_partial_tail(path: Path) -> None:
-    """Drop a last line a crash left without its newline."""
-    if not path.exists():
-        return
-    # ponytail: reads the whole file once per resume; seek from the end if outputs reach GBs.
-    content = path.read_bytes()
-    cut = content.rfind(b"\n") + 1
-    if cut < len(content):
-        log.warning("dropping a partial last line", extra={"path": str(path)})
-        with open(path, "r+b") as fh:
-            fh.truncate(cut)
-
-
 def _prepare_resume(out_path: Path, prov_path: Path) -> set[str]:
     """Repair the output pair after a crash and return the doc_ids already done."""
-    _cut_partial_tail(out_path)
-    _cut_partial_tail(prov_path)
+    cut_partial_tail(out_path)
+    cut_partial_tail(prov_path)
     done = baseline_pipeline.existing_doc_ids(out_path)
     if prov_path.exists():
         lines = prov_path.read_text(encoding="utf-8").splitlines(keepends=True)

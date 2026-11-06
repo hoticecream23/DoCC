@@ -5,6 +5,7 @@ import shutil
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from baseline.classify import classify
 from baseline.config import load_config
@@ -100,7 +101,7 @@ def test_record_rejects_unknown_fields(corpus, cfg):
     record, _ = process_document(corpus / "invoice_native.pdf", cfg)
     blob = json.loads(dumps(record))
     blob["surprise"] = 1
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         DocumentRecord.model_validate(blob)
 
 

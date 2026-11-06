@@ -1,7 +1,10 @@
+from pathlib import Path
+
 import pytest
 import yaml
-from conftest import ROOT
 from pydantic import ValidationError
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _write(tmp_path, data):

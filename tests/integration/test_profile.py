@@ -1,8 +1,10 @@
 """`baseline profile`: corpus counts and the markdown report, no models."""
 
-from conftest import ROOT
+from pathlib import Path
 
 from baseline.profile import run_profile
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_profile_counts_the_synthetic_corpus(corpus, tmp_path):

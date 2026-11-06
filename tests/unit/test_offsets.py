@@ -9,6 +9,7 @@ import pytest
 from baseline.metadata import OffsetMismatch, extract_fields
 from baseline.schema import (
     PAGE_SEP,
+    MetadataMethod,
     build_canonical_text,
     page_for_offset,
     page_spans,
@@ -178,19 +179,10 @@ def test_normalizer_version_is_recorded(cfg):
 # ---------------------------------------------------------------- strict mode
 
 
-def test_strict_mode_raises_on_a_deliberately_broken_offset(cfg, monkeypatch):
+def test_strict_mode_raises_on_a_deliberately_broken_offset(cfg):
     """Prove the guard fires rather than silently passing bad spans through."""
     import baseline.metadata.fields as md
 
-    real = md._pattern_candidates
-
-    def sabotage(full, fdef, limit):
-        cands = real(full, fdef, limit)
-        for c in cands:
-            c.start += 1  # shift so the slice no longer matches
-        return cands
-
-    monkeypatch.setattr(md, "_pattern_candidates", sabotage)
     strict = dict(cfg.pipeline)
     strict["metadata"] = {**strict.get("metadata", {}), "strict_offsets": True}
     broken = type(cfg)(
@@ -200,6 +192,10 @@ def test_strict_mode_raises_on_a_deliberately_broken_offset(cfg, monkeypatch):
         fields=cfg.fields,
         tags=cfg.tags,
     )
-    pages = [PAGE_A]
+    full = "Invoice No: INV-1"
+    # Shifted by one, so the slice no longer matches the value.
+    bad = md.Candidate(
+        value="INV-1", start=13, end=18, confidence=1.0, method=MetadataMethod.REGEX_FORMAT, validated=False
+    )
     with pytest.raises(OffsetMismatch):
-        extract_fields(build_canonical_text(pages), pages, broken, doc_class="invoice")
+        md._emit_fields(full, {"name": "invoice_number"}, [bad], [(0, len(full))], md._extract_opts(broken), [])

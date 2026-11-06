@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -52,11 +53,9 @@ def _invoice_or_nothing(text):
 
 @pytest.fixture(scope="module")
 def ccfg():
-    from conftest import ROOT
-
     from cascade.config import load_cascade_config
 
-    return load_cascade_config(ROOT / "config")
+    return load_cascade_config(Path(__file__).resolve().parents[2] / "config")
 
 
 def test_invoice_end_to_end(corpus, cfg, ccfg):
