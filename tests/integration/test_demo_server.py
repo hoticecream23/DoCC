@@ -1,17 +1,15 @@
 import base64
 import json
+import shutil
 import socket
 import threading
 import urllib.error
 import urllib.request
-from pathlib import Path
 
 import pytest
 
 import demo.server as server
 from demo.server import make_server
-
-ROOT = Path(__file__).resolve().parents[2]
 
 
 def _closed_port():
@@ -20,13 +18,21 @@ def _closed_port():
         return s.getsockname()[1]
 
 
-@pytest.fixture(scope="module")
-def base():
+def _serve(root):
     with pytest.MonkeyPatch.context() as mp:  # cascade points at a closed port: no model is ever called
         mp.setenv("DOCC_VLM_BASE_URL", f"http://127.0.0.1:{_closed_port()}/v1")
         mp.setenv("DOCC_VLM_MODEL", "test-model")
-        srv = make_server(0, ROOT)
+        srv = make_server(0, root)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+@pytest.fixture(scope="module")
+def base(corpus, tmp_path_factory):
+    # A root of its own: the synthetic corpus, no models/ (both are gitignored, so absent on CI).
+    root = tmp_path_factory.mktemp("demo_root")
+    shutil.copytree(corpus, root / "corpus")
+    srv = _serve(root)
     yield f"http://127.0.0.1:{srv.server_port}"
     srv.shutdown()
     srv.server_close()
@@ -104,3 +110,13 @@ def test_cascade_run_with_stub_backend(base, monkeypatch):
     assert code == 200 and body["mode"] == "cascade"
     assert isinstance(body["provenance"], dict) and "raw" not in body["provenance"]
     assert body["provenance"]["model"] == "fake" and body["record"]["classification"]["label"]
+
+
+def test_missing_corpus_dir_is_json_404(tmp_path):
+    srv = _serve(tmp_path)
+    try:
+        code, body = call(f"http://127.0.0.1:{srv.server_port}/api/corpus")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert code == 404 and "no corpus directory" in body["error"]

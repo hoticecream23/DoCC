@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -267,8 +268,29 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         """Serve the page, the VLM status and the corpus list."""
-        if not self._allowed():
-            return
+        if self._allowed():
+            self._guarded(self._get)
+
+    def do_POST(self) -> None:
+        """Run a corpus file or an uploaded file through the chosen pipeline."""
+        if self._allowed(post=True):
+            self._guarded(self._post)
+
+    def _guarded(self, handler: Callable[[], None]) -> None:
+        """Request boundary: every failure becomes a JSON error, so no request closes without a response."""
+        try:
+            handler()
+        except BadInput as e:
+            self._json(HTTP_BAD_REQUEST, {"error": str(e)})
+        except (Unavailable, ConfigError) as e:
+            self._json(HTTP_UNAVAILABLE, {"error": str(e)})
+        except VLMError as e:  # ponytail: the runner falls back on VLM errors, so this rarely fires
+            self._json(HTTP_BAD_GATEWAY, {"error": str(e)})
+        except Exception:  # noqa: BLE001 - request boundary: any failure becomes a 500, server stays up
+            log.exception("request failed")
+            self._json(HTTP_SERVER_ERROR, {"error": "request failed; see server log"})
+
+    def _get(self) -> None:
         app = self.server.app
         path = urlparse(self.path).path
         if path == "/":
@@ -281,13 +303,12 @@ class Handler(BaseHTTPRequestHandler):
             status = {"base_url": vlm.base_url, "model": vlm.model, "reachable": reachable(vlm)}
             return self._json(HTTP_OK, {"cascade": status})
         if path == "/api/corpus":
+            if not app.corpus.is_dir():  # corpus/ is gitignored; the page shows "(corpus unavailable)"
+                return self._json(HTTP_NOT_FOUND, {"error": f"no corpus directory: {app.corpus}"})
             return self._json(HTTP_OK, sorted(p.name for p in app.corpus.iterdir() if p.is_file()))
         self._json(HTTP_NOT_FOUND, {"error": "not found"})
 
-    def do_POST(self) -> None:
-        """Run a corpus file or an uploaded file through the chosen pipeline."""
-        if not self._allowed(post=True):
-            return
+    def _post(self) -> None:
         url = urlparse(self.path)
         if url.path != "/api/run":
             return self._json(HTTP_NOT_FOUND, {"error": "not found"})
@@ -300,15 +321,6 @@ class Handler(BaseHTTPRequestHandler):
             target = self._target(query, tmp)
             if target is not None:
                 self._json(HTTP_OK, self.server.app.run(target, mode))
-        except BadInput as e:
-            self._json(HTTP_BAD_REQUEST, {"error": str(e)})
-        except (Unavailable, ConfigError) as e:
-            self._json(HTTP_UNAVAILABLE, {"error": str(e)})
-        except VLMError as e:  # ponytail: the runner falls back on VLM errors, so this rarely fires
-            self._json(HTTP_BAD_GATEWAY, {"error": str(e)})
-        except Exception:  # noqa: BLE001 - request boundary: any failure becomes a 500, server stays up
-            log.exception("run failed")
-            self._json(HTTP_SERVER_ERROR, {"error": "pipeline failed; see server log"})
         finally:
             for d in tmp:
                 shutil.rmtree(d, ignore_errors=True)
