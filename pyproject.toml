@@ -15,6 +15,9 @@ dependencies = [
     "openpyxl>=3.1",
 ]
 
+[project.optional-dependencies]
+dev = ["ruff", "black", "isort", "mypy", "pytest", "pytest-cov", "pytest-timeout", "pre-commit", "bandit"]
+
 [project.scripts]
 baseline = "baseline.cli:main"
 cascade = "cascade.cli:main"
@@ -25,6 +28,51 @@ build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-q --cov=baseline --cov=cascade --cov=demo --cov-report=term-missing:skip-covered"
+
+[tool.coverage.report]
+fail_under = 84
+show_missing = true
+
+[tool.black]
+line-length = 120
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "N", "UP", "B", "ANN", "D", "BLE", "S110", "SIM105",
+    "TD", "FIX", "PLR2004", "PLR0915", "E722", "E741", "T201", "PGH004",
+]
+# D203/D213 conflict with D211/D212; the google convention disables the rest.
+ignore = ["D105", "D107", "ANN401", "D203", "D213"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "D", "PLR2004", "S110", "T201"]
+"scripts/**" = ["T201"]
+"**/cli.py" = ["T201"]
+"**/__main__.py" = ["T201"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+disallow_untyped_defs = true
+warn_return_any = true
+files = ["baseline", "cascade", "demo", "scripts"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
 
 [tool.setuptools.packages.find]
 # config/ sits beside baseline/ and holds yaml, not code. Without this,

@@ -351,6 +351,22 @@ pages are OCR.
 OCR tests skip themselves if Tesseract is not installed, so the suite passes
 either way.
 
+## Development
+
+```bash
+pip install -e ".[dev]"
+pre-commit install
+black --check .
+isort --check-only .
+ruff check .
+mypy
+python -m pytest
+```
+
+Line length is 120. Docstrings use the google style. CI runs the same checks
+on Python 3.10 and 3.12, and pytest fails if coverage drops below the floor in
+`pyproject.toml`.
+
 ## Layout
 
 ```
