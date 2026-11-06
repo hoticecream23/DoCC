@@ -16,8 +16,19 @@ openpyxl = pytest.importorskip("openpyxl")
 from baseline.workbook import import_workbook, render_summary  # noqa: E402
 
 DOC_COLS = ["DOC_ID", "FILE_NAME", "DOC_CLASS", "CLASS_CORRECTED", "CLASS_VERDICT", "IS_GOLD"]
-META_COLS = ["DOC_ID", "ROW_SOURCE", "FIELD", "VALUE", "NORMALIZED_VALUE", "PAGE",
-             "CHAR_START", "CHAR_END", "CORRECTED_VALUE", "VERDICT", "IS_GOLD"]
+META_COLS = [
+    "DOC_ID",
+    "ROW_SOURCE",
+    "FIELD",
+    "VALUE",
+    "NORMALIZED_VALUE",
+    "PAGE",
+    "CHAR_START",
+    "CHAR_END",
+    "CORRECTED_VALUE",
+    "VERDICT",
+    "IS_GOLD",
+]
 TAG_COLS = ["DOC_ID", "TAG", "ROW_SOURCE", "VERDICT", "IS_GOLD"]
 
 
@@ -239,13 +250,18 @@ def test_gold_scores_against_the_harness(tmp_path, corpus_root, cfg):
     gold.write_text(json.dumps(res.rows[0]) + "\n", encoding="utf-8")
 
     pred = tmp_path / "pred.jsonl"
-    pred.write_text(json.dumps({
-        "doc_id": a,
-        "classification": {"label": "invoice", "confidence": 0.9},
-        "metadata": [{"field": "total_amount", "normalized_value": "500.00",
-                      "char_start": 10, "char_end": 13}],
-        "tags": [{"tag": "has_line_items", "confidence": 0.8}],
-    }) + "\n", encoding="utf-8")
+    pred.write_text(
+        json.dumps(
+            {
+                "doc_id": a,
+                "classification": {"label": "invoice", "confidence": 0.9},
+                "metadata": [{"field": "total_amount", "normalized_value": "500.00", "char_start": 10, "char_end": 13}],
+                "tags": [{"tag": "has_line_items", "confidence": 0.8}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     scores = evaluate(str(gold), str(pred))
     assert scores["classification"]["accuracy_overall"] == 1.0
@@ -255,24 +271,44 @@ def test_gold_scores_against_the_harness(tmp_path, corpus_root, cfg):
 
 # ------------------------------------------------------------- exporting
 
+
 def _record(doc_id, **over):
     rec = {
         "doc_id": doc_id,
         "source_path": "corpus/invoice.pdf",
         "filename": "invoice.pdf",
         "schema_version": "1.1.0",
-        "text": {"full": "INVOICE\x0cpage two", "pages": ["INVOICE", "page two"],
-                 "method": "native", "char_count": 16, "extraction_confidence": 0.98,
-                 "page_methods": ["native", "native"]},
-        "classification": {"label": "invoice", "confidence": 0.9,
-                           "all_scores": {"invoice": 0.9, "receipt": 0.4}, "method": "rule"},
-        "metadata": [{"field": "total_amount", "value": "500", "normalized_value": "500.00",
-                      "page": 0, "char_start": 1, "char_end": 4, "confidence": 0.9,
-                      "method": "anchor", "validated": False,
-                      "normalizer_version": "1.0.0", "currency": "INR"}],
+        "text": {
+            "full": "INVOICE\x0cpage two",
+            "pages": ["INVOICE", "page two"],
+            "method": "native",
+            "char_count": 16,
+            "extraction_confidence": 0.98,
+            "page_methods": ["native", "native"],
+        },
+        "classification": {
+            "label": "invoice",
+            "confidence": 0.9,
+            "all_scores": {"invoice": 0.9, "receipt": 0.4},
+            "method": "rule",
+        },
+        "metadata": [
+            {
+                "field": "total_amount",
+                "value": "500",
+                "normalized_value": "500.00",
+                "page": 0,
+                "char_start": 1,
+                "char_end": 4,
+                "confidence": 0.9,
+                "method": "anchor",
+                "validated": False,
+                "normalizer_version": "1.0.0",
+                "currency": "INR",
+            }
+        ],
         "tags": [{"tag": "has_line_items", "confidence": 0.8, "method": "keyword"}],
-        "diagnostics": {"page_count": 2, "is_scanned": False, "has_native_text": True,
-                        "timings_ms": {}, "errors": []},
+        "diagnostics": {"page_count": 2, "is_scanned": False, "has_native_text": True, "timings_ms": {}, "errors": []},
     }
     rec.update(over)
     return rec
@@ -287,16 +323,25 @@ def _tab(path, name):
 
 
 def test_export_writes_every_tab_with_the_agreed_columns(tmp_path, cfg):
-    from baseline.workbook import (DOCUMENT_COLUMNS, LINE_ITEM_COLUMNS, METADATA_COLUMNS,
-                                   TAG_COLUMNS, TAXONOMY_COLUMNS, export_workbook)
+    from baseline.workbook import (
+        DOCUMENT_COLUMNS,
+        LINE_ITEM_COLUMNS,
+        METADATA_COLUMNS,
+        TAG_COLUMNS,
+        TAXONOMY_COLUMNS,
+        export_workbook,
+    )
 
     out = tmp_path / "wb.xlsx"
     counts = export_workbook([_record("a" * 16)], cfg, out)
     assert counts["documents"] == 1
-    for name, cols in (("Documents", DOCUMENT_COLUMNS),
-                       ("Metadata", [*METADATA_COLUMNS, "REVIEW_PRIORITY"]),
-                       ("Tags", TAG_COLUMNS), ("Taxonomy", TAXONOMY_COLUMNS),
-                       ("Line items", LINE_ITEM_COLUMNS)):
+    for name, cols in (
+        ("Documents", DOCUMENT_COLUMNS),
+        ("Metadata", [*METADATA_COLUMNS, "REVIEW_PRIORITY"]),
+        ("Tags", TAG_COLUMNS),
+        ("Taxonomy", TAXONOMY_COLUMNS),
+        ("Line items", LINE_ITEM_COLUMNS),
+    ):
         assert _tab(out, name)[0] == cols
 
 
@@ -408,17 +453,26 @@ def test_export_then_import_is_lossless(tmp_path, cfg):
     out = tmp_path / "wb.xlsx"
     rec = _record(doc_id)
     # A field the normalizer cannot read. The pipeline keeps it, so must this.
-    rec["metadata"].append({"field": "invoice_date", "value": "not a date",
-                            "normalized_value": None, "page": 0, "char_start": 0,
-                            "char_end": 3, "confidence": 0.5, "method": "anchor",
-                            "validated": False, "normalizer_version": "1.0.0",
-                            "currency": None})
+    rec["metadata"].append(
+        {
+            "field": "invoice_date",
+            "value": "not a date",
+            "normalized_value": None,
+            "page": 0,
+            "char_start": 0,
+            "char_end": 3,
+            "confidence": 0.5,
+            "method": "anchor",
+            "validated": False,
+            "normalizer_version": "1.0.0",
+            "currency": None,
+        }
+    )
     export_workbook([rec], cfg, out)
 
     # Stand in for the reviewer: confirm every row.
     wb = openpyxl.load_workbook(out)
-    for tab, vcol in (("Documents", "CLASS_VERDICT"), ("Metadata", "VERDICT"),
-                      ("Tags", "VERDICT")):
+    for tab, vcol in (("Documents", "CLASS_VERDICT"), ("Metadata", "VERDICT"), ("Tags", "VERDICT")):
         ws = wb[tab]
         header = [str(c.value).strip().upper() for c in ws[1]]
         v, g = header.index(vcol) + 1, header.index("IS_GOLD") + 1
@@ -433,12 +487,12 @@ def test_export_then_import_is_lossless(tmp_path, cfg):
     assert gold["label"] == rec["classification"]["label"]
     assert gold["tags"] == [t["tag"] for t in rec["tags"]]
     assert {(e["field"], e["normalized_value"]) for e in gold["metadata"]} == {
-        ("total_amount", "500.00"), ("invoice_date", "not a date"),
+        ("total_amount", "500.00"),
+        ("invoice_date", "not a date"),
     }
     by_field = {e["field"]: e for e in gold["metadata"]}
     assert by_field["total_amount"]["char_start"] == 1
     assert by_field["total_amount"]["char_end"] == 4
-
 
 
 def test_export_adds_review_priority_last_and_import_ignores_it(tmp_path, cfg):
@@ -454,29 +508,43 @@ def test_export_adds_review_priority_last_and_import_ignores_it(tmp_path, cfg):
     doc_id = compute_doc_id(src)
 
     def field(name, value, conf, method, validated):
-        return {"field": name, "value": value, "normalized_value": value, "page": 0,
-                "char_start": 0, "char_end": 3, "confidence": conf, "method": method,
-                "validated": validated, "normalizer_version": "1.0.0", "currency": None}
+        return {
+            "field": name,
+            "value": value,
+            "normalized_value": value,
+            "page": 0,
+            "char_start": 0,
+            "char_end": 3,
+            "confidence": conf,
+            "method": method,
+            "validated": validated,
+            "normalizer_version": "1.0.0",
+            "currency": None,
+        }
 
-    rec = _record(doc_id, metadata=[
-        field("total_amount", "500.00", 0.6, "regex_format", True),       # low bucket
-        field("invoice_number", "INV1", 0.95, "anchor", False),           # unvalidated
-        field("gstin", "27AAAPL1234C1ZV", 0.8, "regex_checksum", True),   # mid bucket
-        field("invoice_date", "2024-01-02", 0.95, "regex_format", True),  # top, validated
-    ])
+    rec = _record(
+        doc_id,
+        metadata=[
+            field("total_amount", "500.00", 0.6, "regex_format", True),  # low bucket
+            field("invoice_number", "INV1", 0.95, "anchor", False),  # unvalidated
+            field("gstin", "27AAAPL1234C1ZV", 0.8, "regex_checksum", True),  # mid bucket
+            field("invoice_date", "2024-01-02", 0.95, "regex_format", True),  # top, validated
+        ],
+    )
     out = tmp_path / "wb.xlsx"
     export_workbook([rec], cfg, out)
 
     header, rows = _tab(out, "Metadata")
     assert header == [*METADATA_COLUMNS, "REVIEW_PRIORITY"]
     assert {r["FIELD"]: r["REVIEW_PRIORITY"] for r in rows} == {
-        "total_amount": "HIGH", "invoice_number": "HIGH",
-        "gstin": "MEDIUM", "invoice_date": "LOW",
+        "total_amount": "HIGH",
+        "invoice_number": "HIGH",
+        "gstin": "MEDIUM",
+        "invoice_date": "LOW",
     }
 
     wb = openpyxl.load_workbook(out)
-    for tab, vcol in (("Documents", "CLASS_VERDICT"), ("Metadata", "VERDICT"),
-                      ("Tags", "VERDICT")):
+    for tab, vcol in (("Documents", "CLASS_VERDICT"), ("Metadata", "VERDICT"), ("Tags", "VERDICT")):
         ws = wb[tab]
         head = [str(c.value).strip().upper() for c in ws[1]]
         v, g = head.index(vcol) + 1, head.index("IS_GOLD") + 1
@@ -492,6 +560,7 @@ def test_export_adds_review_priority_last_and_import_ignores_it(tmp_path, cfg):
     wb.save(out)
     assert with_col == import_workbook(out, root, cfg).rows
     assert len(with_col[0]["metadata"]) == 4
+
 
 # --------------------------------------------------- merging a review forward
 #
@@ -526,8 +595,7 @@ def one_doc(tmp_path):
 
 def test_a_confirmation_carries_while_the_prediction_holds(tmp_path, one_doc, cfg):
     root, doc_id = one_doc
-    prior = _reviewed_sheet(tmp_path, doc_id,
-                            docs=[[doc_id, "invoice.pdf", "invoice", None, "OK", "True"]])
+    prior = _reviewed_sheet(tmp_path, doc_id, docs=[[doc_id, "invoice.pdf", "invoice", None, "OK", "True"]])
     out, counts = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
     row = _tab(out, "Documents")[1][0]
     assert row["CLASS_VERDICT"] == "OK"
@@ -539,8 +607,7 @@ def test_a_confirmation_is_cleared_when_the_prediction_changes(tmp_path, one_doc
     """The dangerous case. Carrying the approval forward would mark an answer
     nobody has looked at as human approved."""
     root, doc_id = one_doc
-    prior = _reviewed_sheet(tmp_path, doc_id,
-                            docs=[[doc_id, "invoice.pdf", "receipt", None, "OK", "True"]])
+    prior = _reviewed_sheet(tmp_path, doc_id, docs=[[doc_id, "invoice.pdf", "receipt", None, "OK", "True"]])
     rec = _record(doc_id)  # now classified invoice, not receipt
     out, counts = _export_merged(tmp_path, cfg, [rec], prior)
     row = _tab(out, "Documents")[1][0]
@@ -552,9 +619,7 @@ def test_a_confirmation_is_cleared_when_the_prediction_changes(tmp_path, one_doc
 
 def test_a_correction_carries_whatever_the_pipeline_now_says(tmp_path, one_doc, cfg):
     root, doc_id = one_doc
-    prior = _reviewed_sheet(
-        tmp_path, doc_id,
-        docs=[[doc_id, "invoice.pdf", "receipt", "contract", "wrong", "True"]])
+    prior = _reviewed_sheet(tmp_path, doc_id, docs=[[doc_id, "invoice.pdf", "receipt", "contract", "wrong", "True"]])
     out, counts = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
     row = _tab(out, "Documents")[1][0]
     assert row["CLASS_CORRECTED"] == "contract"
@@ -562,14 +627,11 @@ def test_a_correction_carries_whatever_the_pipeline_now_says(tmp_path, one_doc, 
     assert counts["document_corrections_carried"] == 1
 
 
-def test_a_correction_the_pipeline_caught_up_with_becomes_a_confirmation(
-        tmp_path, one_doc, cfg):
+def test_a_correction_the_pipeline_caught_up_with_becomes_a_confirmation(tmp_path, one_doc, cfg):
     """The reviewer said invoice, the pipeline now says invoice. There is
     nothing left to correct and the row should stop asking to be corrected."""
     root, doc_id = one_doc
-    prior = _reviewed_sheet(
-        tmp_path, doc_id,
-        docs=[[doc_id, "invoice.pdf", "receipt", "Invoice", "wrong", "True"]])
+    prior = _reviewed_sheet(tmp_path, doc_id, docs=[[doc_id, "invoice.pdf", "receipt", "Invoice", "wrong", "True"]])
     out, counts = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
     row = _tab(out, "Documents")[1][0]
     assert row["CLASS_CORRECTED"] is None
@@ -584,10 +646,11 @@ def test_a_field_correction_follows_the_field_when_the_value_moves(tmp_path, one
     row rather than being stranded on a value that no longer exists."""
     root, doc_id = one_doc
     prior = _reviewed_sheet(
-        tmp_path, doc_id,
+        tmp_path,
+        doc_id,
         docs=[[doc_id, "invoice.pdf", "invoice", None, "OK", "True"]],
-        meta=[[doc_id, "pipeline", "total_amount", "300", "300.00", 0, 1, 4,
-               "4044", "wrong", "True"]])
+        meta=[[doc_id, "pipeline", "total_amount", "300", "300.00", 0, 1, 4, "4044", "wrong", "True"]],
+    )
     out, counts = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
     row = _tab(out, "Metadata")[1][0]
     assert row["VALUE"] == "500", "this is the new run's own value"
@@ -601,10 +664,11 @@ def test_a_confirmed_value_the_run_lost_comes_back_as_a_human_row(tmp_path, one_
     row, which is exactly what the importer turns into gold."""
     root, doc_id = one_doc
     prior = _reviewed_sheet(
-        tmp_path, doc_id,
+        tmp_path,
+        doc_id,
         docs=[[doc_id, "invoice.pdf", "invoice", None, "OK", "True"]],
-        meta=[[doc_id, "pipeline", "invoice_number", "INV-9", "INV-9", 0, 1, 6,
-               None, "OK", "True"]])
+        meta=[[doc_id, "pipeline", "invoice_number", "INV-9", "INV-9", 0, 1, 6, None, "OK", "True"]],
+    )
     rec = _record(doc_id)  # carries total_amount only, no invoice_number
     out, counts = _export_merged(tmp_path, cfg, [rec], prior)
     rows = {r["FIELD"]: r for r in _tab(out, "Metadata")[1]}
@@ -621,24 +685,25 @@ def test_a_spurious_row_the_run_stopped_emitting_is_simply_gone(tmp_path, one_do
     same question twice."""
     root, doc_id = one_doc
     prior = _reviewed_sheet(
-        tmp_path, doc_id,
+        tmp_path,
+        doc_id,
         docs=[[doc_id, "invoice.pdf", "invoice", None, "OK", "True"]],
-        meta=[[doc_id, "pipeline", "invoice_number", "junk", "junk", 0, 1, 4,
-               None, "spurious", "True"]])
+        meta=[[doc_id, "pipeline", "invoice_number", "junk", "junk", 0, 1, 4, None, "spurious", "True"]],
+    )
     out, counts = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
     fields = {r["FIELD"] for r in _tab(out, "Metadata")[1]}
     assert "invoice_number" not in fields
     assert counts["field_spurious_resolved"] == 1
 
 
-def test_a_rejected_tag_the_run_stopped_emitting_is_gone_but_a_confirmed_one_survives(
-        tmp_path, one_doc, cfg):
+def test_a_rejected_tag_the_run_stopped_emitting_is_gone_but_a_confirmed_one_survives(tmp_path, one_doc, cfg):
     root, doc_id = one_doc
     prior = _reviewed_sheet(
-        tmp_path, doc_id,
+        tmp_path,
+        doc_id,
         docs=[[doc_id, "invoice.pdf", "invoice", None, "OK", "True"]],
-        tags=[[doc_id, "signed", "pipeline", "WRONG", "True"],
-              [None, "multi_page", "pipeline", "OK", "True"]])
+        tags=[[doc_id, "signed", "pipeline", "WRONG", "True"], [None, "multi_page", "pipeline", "OK", "True"]],
+    )
     rec = _record(doc_id)  # emits has_line_items only
     out, counts = _export_merged(tmp_path, cfg, [rec], prior)
     tags = {r["TAG"]: r for r in _tab(out, "Tags")[1]}
@@ -653,14 +718,14 @@ def test_merging_forward_never_marks_anything_gold_without_a_verdict(tmp_path, o
     """IS_GOLD with no verdict is a row claiming review it did not get."""
     root, doc_id = one_doc
     prior = _reviewed_sheet(
-        tmp_path, doc_id,
+        tmp_path,
+        doc_id,
         docs=[[doc_id, "invoice.pdf", "receipt", None, "OK", "True"]],
-        meta=[[doc_id, "pipeline", "total_amount", "300", "300.00", 0, 1, 4,
-               None, "OK", "True"]],
-        tags=[[doc_id, "signed", "pipeline", "OK", "True"]])
+        meta=[[doc_id, "pipeline", "total_amount", "300", "300.00", 0, 1, 4, None, "OK", "True"]],
+        tags=[[doc_id, "signed", "pipeline", "OK", "True"]],
+    )
     out, _ = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
-    for name, vcol in (("Documents", "CLASS_VERDICT"), ("Metadata", "VERDICT"),
-                       ("Tags", "VERDICT")):
+    for name, vcol in (("Documents", "CLASS_VERDICT"), ("Metadata", "VERDICT"), ("Tags", "VERDICT")):
         for row in _tab(out, name)[1]:
             if row.get("IS_GOLD"):
                 assert row.get(vcol), f"{name} row is gold with no verdict"
@@ -671,11 +736,12 @@ def test_a_review_survives_a_full_re_export_and_import(tmp_path, one_doc, cfg):
     The reviewer's corrections must still be the gold at the far end."""
     root, doc_id = one_doc
     prior = _reviewed_sheet(
-        tmp_path, doc_id,
+        tmp_path,
+        doc_id,
         docs=[[doc_id, "invoice.pdf", "receipt", "contract", "wrong", "True"]],
-        meta=[[doc_id, "pipeline", "total_amount", "300", "300.00", 0, 1, 4,
-               "4044", "wrong", "True"]],
-        tags=[[doc_id, "has_line_items", "pipeline", "OK", "True"]])
+        meta=[[doc_id, "pipeline", "total_amount", "300", "300.00", 0, 1, 4, "4044", "wrong", "True"]],
+        tags=[[doc_id, "has_line_items", "pipeline", "OK", "True"]],
+    )
 
     merged, _ = _export_merged(tmp_path, cfg, [_record(doc_id)], prior)
     res = import_workbook(merged, root, cfg)

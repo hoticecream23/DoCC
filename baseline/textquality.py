@@ -68,11 +68,7 @@ def _has_bad_case_shape(token: str) -> bool:
     letters = "".join(c for c in token if c.isalpha())
     if len(letters) < 3:
         return False
-    return not (
-        letters.islower()
-        or letters.isupper()
-        or (letters[0].isupper() and letters[1:].islower())
-    )
+    return not (letters.islower() or letters.isupper() or (letters[0].isupper() and letters[1:].islower()))
 
 
 def score_text(text: str) -> TextQuality:

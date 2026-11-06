@@ -44,16 +44,18 @@ def _prov(decision, field):
 def test_a_proven_id_survives_a_model_that_omits_it(cfg):
     d = _decide(cfg, {})
     pan = _by_field(d)["pan"]
-    assert [(m.value, m.method, m.validated) for m in pan] == [
-        ("AAPFU0939F", MetadataMethod.REGEX_CHECKSUM, True)
-    ]
+    assert [(m.value, m.method, m.validated) for m in pan] == [("AAPFU0939F", MetadataMethod.REGEX_CHECKSUM, True)]
 
 
 def test_a_model_id_proven_by_its_own_pattern_is_emitted_as_validated(cfg):
     d = _decide(cfg, {"pan": ["AAPFU0939F"]}, baseline_meta=[])  # nothing pre-proven
     (pan,) = _by_field(d)["pan"]
     assert (pan.value, pan.method, pan.validated, pan.confidence) == (
-        "AAPFU0939F", MetadataMethod.REGEX_CHECKSUM, True, 1.0)
+        "AAPFU0939F",
+        MetadataMethod.REGEX_CHECKSUM,
+        True,
+        1.0,
+    )
     assert [p["emitted"] for p in _prov(d, "pan")] == [True]
 
 
@@ -64,8 +66,7 @@ def test_a_model_id_that_fails_its_checksum_is_dropped(cfg):
 
 
 def test_validated_is_never_true_without_a_checksum(cfg):
-    d = _decide(cfg, {"email": ["billing@acme.example"], "invoice_number": ["INV-1"],
-                      "total_amount": ["11800"]})
+    d = _decide(cfg, {"email": ["billing@acme.example"], "invoice_number": ["INV-1"], "total_amount": ["11800"]})
     for m in d.metadata:
         assert m.validated == (m.method is MetadataMethod.REGEX_CHECKSUM)
     assert _by_field(d)["email"][0].method in (MetadataMethod.VLM, MetadataMethod.VLM_RULE_AGREE)
@@ -85,8 +86,7 @@ def test_a_non_multi_field_prefers_the_value_a_rule_agrees_with(cfg):
 
 def test_without_rule_agreement_the_strongest_grounding_wins(cfg):
     text = TEXT + "Ref ab-7\n"
-    d = _decide(cfg, {"invoice_number": ["NOT-THERE-9", "AB-7", "INV-2"]}, text=text, baseline_meta=[],
-                rules={})
+    d = _decide(cfg, {"invoice_number": ["NOT-THERE-9", "AB-7", "INV-2"]}, text=text, baseline_meta=[], rules={})
     assert [m.value for m in _by_field(d)["invoice_number"]] == ["INV-2"]  # exact beats loose "ab-7"
 
 
@@ -121,8 +121,7 @@ def test_a_short_circuit_rule_decides_the_class_over_the_model(cfg):
     d = _decide(cfg, {}, label="receipt", rules={"invoice": 0.95})
     c = d.classification
     assert (c.label, c.method, c.confidence) == ("invoice", ClassifyMethod.RULE, 0.95)
-    assert d.class_provenance == {"source": "rule", "label": "invoice",
-                                  "vlm_label": "receipt", "disagrees": True}
+    assert d.class_provenance == {"source": "rule", "label": "invoice", "vlm_label": "receipt", "disagrees": True}
 
 
 def test_below_the_short_circuit_the_model_decides(cfg):
@@ -139,8 +138,15 @@ def test_a_model_abstention_is_unknown_with_zero_confidence(cfg):
 
 
 def test_metadata_is_sorted_and_every_offset_slices_back(cfg):
-    d = _decide(cfg, {"email": ["billing@acme.example"], "invoice_number": ["INV-1"],
-                      "total_amount": ["11800"], "vendor_name": ["Acme Ltd"]})
+    d = _decide(
+        cfg,
+        {
+            "email": ["billing@acme.example"],
+            "invoice_number": ["INV-1"],
+            "total_amount": ["11800"],
+            "vendor_name": ["Acme Ltd"],
+        },
+    )
     keys = [(m.char_start, m.field) for m in d.metadata]
     assert keys == sorted(keys)
     for m in d.metadata:
@@ -158,10 +164,7 @@ def test_a_proven_id_is_kept_even_when_its_field_is_out_of_scope(cfg):
     import dataclasses
 
     # Scope the PAN field to court_document only
-    scoped_fields = [
-        dict(f, classes=["court_document"]) if f["name"] == "pan" else f
-        for f in cfg.field_defs
-    ]
+    scoped_fields = [dict(f, classes=["court_document"]) if f["name"] == "pan" else f for f in cfg.field_defs]
     scoped_cfg = dataclasses.replace(cfg, fields={**cfg.fields, "fields": scoped_fields})
 
     pages = [TEXT]
@@ -177,19 +180,14 @@ def test_a_proven_id_is_kept_even_when_its_field_is_out_of_scope(cfg):
 
     # PAN should still be in metadata as REGEX_CHECKSUM, validated
     pan = _by_field(d)["pan"]
-    assert [(m.value, m.method, m.validated) for m in pan] == [
-        ("AAPFU0939F", MetadataMethod.REGEX_CHECKSUM, True)
-    ]
+    assert [(m.value, m.method, m.validated) for m in pan] == [("AAPFU0939F", MetadataMethod.REGEX_CHECKSUM, True)]
 
 
 def test_an_out_of_scope_field_leaves_no_rule_only_record(cfg):
     import dataclasses
 
     # Scope the invoice_number field to invoice only
-    scoped_fields = [
-        dict(f, classes=["invoice"]) if f["name"] == "invoice_number" else f
-        for f in cfg.field_defs
-    ]
+    scoped_fields = [dict(f, classes=["invoice"]) if f["name"] == "invoice_number" else f for f in cfg.field_defs]
     scoped_cfg = dataclasses.replace(cfg, fields={**cfg.fields, "fields": scoped_fields})
 
     pages = [TEXT]

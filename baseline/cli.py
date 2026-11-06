@@ -1,16 +1,16 @@
 """Command line entry points.
 
-  baseline run             --input DIR --output results.jsonl [--workers N]
-  baseline train           --annotations FILE --output-model DIR
-  baseline tune-thresholds --annotations FILE --predictions FILE
-  baseline profile         --input DIR --output profile.md
-  baseline import-labels   --csv FILE --root DIR --output gold.jsonl
-  baseline export-workbook --input results.jsonl --output workbook.xlsx
-  baseline import-workbook --xlsx FILE --root DIR --output gold.jsonl
-  baseline eval            --gold FILE --pred FILE [--output report.md]
-  baseline compare         --gold FILE --a FILE --b FILE [--output cmp.md]
-  baseline graph           --input results.jsonl --output graph.json
-  baseline tables          --input results.jsonl --output tables.jsonl
+baseline run             --input DIR --output results.jsonl [--workers N]
+baseline train           --annotations FILE --output-model DIR
+baseline tune-thresholds --annotations FILE --predictions FILE
+baseline profile         --input DIR --output profile.md
+baseline import-labels   --csv FILE --root DIR --output gold.jsonl
+baseline export-workbook --input results.jsonl --output workbook.xlsx
+baseline import-workbook --xlsx FILE --root DIR --output gold.jsonl
+baseline eval            --gold FILE --pred FILE [--output report.md]
+baseline compare         --gold FILE --a FILE --b FILE [--output cmp.md]
+baseline graph           --input results.jsonl --output graph.json
+baseline tables          --input results.jsonl --output tables.jsonl
 """
 
 from __future__ import annotations
@@ -27,13 +27,13 @@ from .evaluate import compare, evaluate, render_comparison, render_report
 from .extract import extract
 from .graph import build as build_graph
 from .labels import import_labels, render_summary
-from .workbook import export_workbook, import_workbook
-from .workbook import render_summary as render_workbook_summary
 from .logging_setup import get_logger, setup_logging
 from .pipeline import run_batch
 from .profile import run_profile
 from .schema import build_canonical_text, read_jsonl
 from .tables import build as build_tables
+from .workbook import export_workbook, import_workbook
+from .workbook import render_summary as render_workbook_summary
 
 log = get_logger(__name__)
 
@@ -92,16 +92,14 @@ def cmd_train(args: argparse.Namespace) -> int:
     labelled = [(t, r["label"]) for t, r in zip(texts, rows) if r.get("label")]
     if labelled and args.kind in ("classifier", "both"):
         report["classifier"] = classify_mod.train(
-            [t for t, _ in labelled], [l for _, l in labelled], out / "classifier"
+            [t for t, _ in labelled], [label for _, label in labelled], out / "classifier"
         )
     elif args.kind in ("classifier", "both"):
         log.warning("no label field in annotations, skipping classifier")
 
     tagged = [(t, r["tags"]) for t, r in zip(texts, rows) if r.get("tags")]
     if tagged and args.kind in ("tagger", "both"):
-        report["tagger"] = tagging_mod.train(
-            [t for t, _ in tagged], [list(g) for _, g in tagged], out / "tagger"
-        )
+        report["tagger"] = tagging_mod.train([t for t, _ in tagged], [list(g) for _, g in tagged], out / "tagger")
     elif args.kind in ("tagger", "both"):
         log.warning("no tags field in annotations, skipping tagger")
 
@@ -134,7 +132,7 @@ def cmd_tune_thresholds(args: argparse.Namespace) -> int:
     # Predictions file supplies the canonical text, keyed by doc_id or path.
     texts: dict[str, str] = {}
     skipped = 0
-    with open(args.predictions, "r", encoding="utf-8") as fh:
+    with open(args.predictions, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if not line:
@@ -149,8 +147,10 @@ def cmd_tune_thresholds(args: argparse.Namespace) -> int:
                 if key:
                     texts[str(key)] = body
     if skipped:
-        log.warning(f"skipped {skipped} malformed prediction lines",
-                    extra={"predictions": str(args.predictions), "skipped": skipped})
+        log.warning(
+            f"skipped {skipped} malformed prediction lines",
+            extra={"predictions": str(args.predictions), "skipped": skipped},
+        )
 
     # Annotations that carry their own text can be tuned without a join.
     inline = {
@@ -175,8 +175,7 @@ def cmd_tune_thresholds(args: argparse.Namespace) -> int:
 
     if not matched:
         log.error(
-            "no annotation matched a prediction and none carried inline text, "
-            "check that doc_id or path keys line up"
+            "no annotation matched a prediction and none carried inline text, " "check that doc_id or path keys line up"
         )
         return 1
 
@@ -186,8 +185,7 @@ def cmd_tune_thresholds(args: argparse.Namespace) -> int:
     for tag, info in sorted(tuned.items()):
         log.info(
             "tag threshold",
-            extra={"tag": tag, "threshold": info["threshold"], "f1": info["f1"],
-                   "positives": info["positives"]},
+            extra={"tag": tag, "threshold": info["threshold"], "f1": info["f1"], "positives": info["positives"]},
         )
 
     if args.dry_run:
@@ -234,9 +232,15 @@ def cmd_export_workbook(args: argparse.Namespace) -> int:
     records = read_jsonl(args.input)
     tables = read_jsonl(args.tables) if args.tables else None
     try:
-        counts = export_workbook(records, cfg, args.output, tables=tables,
-                                 run_id=args.run_id or "", overwrite=args.overwrite,
-                                 merge_from=args.merge_from)
+        counts = export_workbook(
+            records,
+            cfg,
+            args.output,
+            tables=tables,
+            run_id=args.run_id or "",
+            overwrite=args.overwrite,
+            merge_from=args.merge_from,
+        )
     except FileExistsError as exc:
         log.error("refusing to overwrite", extra={"error": str(exc)})
         return 1
@@ -245,12 +249,15 @@ def cmd_export_workbook(args: argparse.Namespace) -> int:
     for name, n in sorted(counts.items()):
         print(f"  {name}: {n}")
     if args.merge_from:
-        print(f"Carried the review from {args.merge_from}. A confirmation of a "
-              "prediction that has since changed was cleared for re-review; every "
-              "correction was kept.")
+        print(
+            f"Carried the review from {args.merge_from}. A confirmation of a "
+            "prediction that has since changed was cleared for re-review; every "
+            "correction was kept."
+        )
     else:
-        print("Review columns are blank on purpose. A row becomes gold only once "
-              "IS_GOLD and a verdict are filled in.")
+        print(
+            "Review columns are blank on purpose. A row becomes gold only once " "IS_GOLD and a verdict are filled in."
+        )
     return 0
 
 
@@ -295,9 +302,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         out.write_text(report, encoding="utf-8")
         log.info("report written", extra={"output": str(out)})
     if args.json:
-        Path(args.json).write_text(
-            json.dumps(res, indent=2, sort_keys=True), encoding="utf-8"
-        )
+        Path(args.json).write_text(json.dumps(res, indent=2, sort_keys=True), encoding="utf-8")
 
     log.info(
         "scores",
@@ -314,11 +319,15 @@ def cmd_eval(args: argparse.Namespace) -> int:
     if tb.get("scored"):
         log.info(
             "table scores",
-            extra={"gold_tables": tb["gold_tables"], "pred_tables": tb["pred_tables"],
-                   "detection_recall": tb["detection_recall"],
-                   "cell_f1": tb["cells"]["f1"], "cell_precision": tb["cells"]["precision"],
-                   "adjacency_f1": tb["adjacency"]["f1"],
-                   "adjacency_precision": tb["adjacency"]["precision"]},
+            extra={
+                "gold_tables": tb["gold_tables"],
+                "pred_tables": tb["pred_tables"],
+                "detection_recall": tb["detection_recall"],
+                "cell_f1": tb["cells"]["f1"],
+                "cell_precision": tb["cells"]["precision"],
+                "adjacency_f1": tb["adjacency"]["f1"],
+                "adjacency_precision": tb["adjacency"]["precision"],
+            },
         )
     return 0
 
@@ -349,17 +358,24 @@ def cmd_graph(args: argparse.Namespace) -> int:
         log.error("no graph.yaml in the config directory")
         return 1
     res = build_graph(
-        args.input, args.output, cfg.graph,
-        dot_path=args.dot, report_path=args.report,
+        args.input,
+        args.output,
+        cfg.graph,
+        dot_path=args.dot,
+        report_path=args.report,
     )
     st = res["stats"]
     log.info(
         "graph summary",
-        extra={"documents": st["documents"], "organizations": st["organizations"],
-               "accounts": st["accounts"], "edges": st["edges"],
-               "chains": len(res["chains"]),
-               "duplicate_groups": len(st["duplicate_groups"]),
-               "orphans": len(res["orphans"])},
+        extra={
+            "documents": st["documents"],
+            "organizations": st["organizations"],
+            "accounts": st["accounts"],
+            "edges": st["edges"],
+            "chains": len(res["chains"]),
+            "duplicate_groups": len(st["duplicate_groups"]),
+            "orphans": len(res["orphans"]),
+        },
     )
     return 0
 
@@ -370,21 +386,26 @@ def cmd_tables(args: argparse.Namespace) -> int:
         log.error("no tables.yaml in the config directory")
         return 1
     res = build_tables(
-        args.input, args.output, cfg.tables,
-        bbox_dir=args.bbox_dir, report_path=args.report,
-        deterministic_timings=bool(
-            cfg.pipeline.get("runtime", {}).get("deterministic_timings", False)
-        ),
+        args.input,
+        args.output,
+        cfg.tables,
+        bbox_dir=args.bbox_dir,
+        report_path=args.report,
+        deterministic_timings=bool(cfg.pipeline.get("runtime", {}).get("deterministic_timings", False)),
     )
     st = res["stats"]
     log.info(
         "tables summary",
-        extra={"documents": st["documents"],
-               "documents_with_tables": st["documents_with_tables"],
-               "tables": st["tables"], "cells": st["cells"],
-               "placed_cells": st["placed_cells"],
-               "abstentions": st["abstentions"], "errors": st["errors"],
-               "by_method": st["by_method"]},
+        extra={
+            "documents": st["documents"],
+            "documents_with_tables": st["documents_with_tables"],
+            "tables": st["tables"],
+            "cells": st["cells"],
+            "placed_cells": st["placed_cells"],
+            "abstentions": st["abstentions"],
+            "errors": st["errors"],
+            "by_method": st["by_method"],
+        },
     )
     return 0
 
@@ -440,25 +461,25 @@ def build_parser() -> argparse.ArgumentParser:
     il.add_argument("--label-column", default="Document_Type")
     il.set_defaults(func=cmd_import_labels)
 
-    ew = sub.add_parser("export-workbook",
-                        help="write a results file out as the review workbook")
+    ew = sub.add_parser("export-workbook", help="write a results file out as the review workbook")
     ew.add_argument("--input", required=True, help="results JSONL")
     ew.add_argument("--output", required=True, help="workbook to write")
     ew.add_argument("--tables", help="tables JSONL, fills the Line items tab")
     ew.add_argument("--run-id", help="defaults to a timestamp")
-    ew.add_argument("--merge-from",
-                    help="an earlier reviewed workbook, whose review is carried "
-                         "onto this run wherever it still applies")
-    ew.add_argument("--overwrite", action="store_true",
-                    help="replace an existing file, discarding any review in it")
+    ew.add_argument(
+        "--merge-from",
+        help="an earlier reviewed workbook, whose review is carried " "onto this run wherever it still applies",
+    )
+    ew.add_argument("--overwrite", action="store_true", help="replace an existing file, discarding any review in it")
     ew.set_defaults(func=cmd_export_workbook)
 
-    iw = sub.add_parser("import-workbook",
-                        help="convert the reviewed index workbook into a gold file")
+    iw = sub.add_parser("import-workbook", help="convert the reviewed index workbook into a gold file")
     iw.add_argument("--xlsx", required=True, help="the reviewed workbook")
-    iw.add_argument("--root", required=True,
-                    help="directory the reviewed documents live under, used to "
-                         "resolve each doc_id back to a file")
+    iw.add_argument(
+        "--root",
+        required=True,
+        help="directory the reviewed documents live under, used to " "resolve each doc_id back to a file",
+    )
     iw.add_argument("--output", required=True, help="gold JSONL to write")
     iw.add_argument("--report", help="write the import summary here instead of stdout")
     iw.set_defaults(func=cmd_import_workbook)
@@ -467,8 +488,7 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--gold", required=True)
     ev.add_argument("--pred", required=True)
     ev.add_argument("--output", default="report.md")
-    ev.add_argument("--pred-tables", default=None,
-                    help="tables JSONL, scored when gold carries tables")
+    ev.add_argument("--pred-tables", default=None, help="tables JSONL, scored when gold carries tables")
     ev.add_argument("--json", default=None, help="also dump raw scores as JSON")
     ev.set_defaults(func=cmd_eval)
 
@@ -479,8 +499,7 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--a-tables", default=None, help="tables JSONL for the baseline")
     cp.add_argument("--b-tables", default=None, help="tables JSONL for the challenger")
     cp.add_argument("--output", default="comparison.md")
-    cp.add_argument("--fail-on-regression", action="store_true",
-                    help="exit 2 if anything got worse, for CI")
+    cp.add_argument("--fail-on-regression", action="store_true", help="exit 2 if anything got worse, for CI")
     cp.set_defaults(func=cmd_compare)
 
     gr = sub.add_parser("graph", help="build a knowledge graph over a results file")

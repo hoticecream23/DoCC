@@ -26,10 +26,10 @@ from baseline.metadata import (
 
 GOOD_PAN = ["AAPFU0939F", "AAAPZ1234C", "AABCU9603R", "ABCPD1234E"]
 BAD_PAN = [
-    "ABCDE1234F",   # D is not a holder type code
-    "AAPFU0939",    # too short
-    "AAPFU09399",   # last char must be a letter
-    "AAPF10939F",   # digit inside the letter block
+    "ABCDE1234F",  # D is not a holder type code
+    "AAPFU0939",  # too short
+    "AAPFU09399",  # last char must be a letter
+    "AAPF10939F",  # digit inside the letter block
     "",
 ]
 
@@ -60,9 +60,9 @@ def test_pan_entity_types_are_configurable():
 
 GOOD_AADHAAR = ["269837654322", "2698 3765 4322", "2698-3765-4322"]
 BAD_AADHAAR = [
-    "269837654321",   # wrong check digit
-    "269837654",      # too short
-    "126983765432",   # Aadhaar never starts with 0 or 1
+    "269837654321",  # wrong check digit
+    "269837654",  # too short
+    "126983765432",  # Aadhaar never starts with 0 or 1
     "069837654322",
     "abcdefghijkl",
     "",
@@ -90,14 +90,14 @@ def test_verhoeff_catches_every_single_digit_error():
     for i in range(len(base)):
         for d in "0123456789":
             if d != base[i]:
-                assert verhoeff_check(base[:i] + d + base[i + 1:]) is False
+                assert verhoeff_check(base[:i] + d + base[i + 1 :]) is False
 
 
 def test_verhoeff_catches_every_adjacent_transposition():
     base = "26983765432" + verhoeff_digit("26983765432")
     for i in range(len(base) - 1):
         if base[i] != base[i + 1]:
-            swapped = base[:i] + base[i + 1] + base[i] + base[i + 2:]
+            swapped = base[:i] + base[i + 1] + base[i] + base[i + 2 :]
             assert verhoeff_check(swapped) is False
 
 
@@ -105,12 +105,12 @@ def test_verhoeff_catches_every_adjacent_transposition():
 
 GOOD_GSTIN = ["27AAPFU0939F1ZV", "29AAGCB7383J1Z4"]
 BAD_GSTIN = [
-    "27AAPFU0939F1ZX",   # check digit wrong
-    "00AAPFU0939F1ZV",   # state code 00 does not exist
-    "39AAPFU0939F1ZV",   # state code out of range
-    "27AAPFU0939F1AV",   # 14th char must be Z
-    "27ABCDE0939F1ZV",   # embedded PAN is structurally invalid
-    "27AAPFU0939F1Z",    # too short
+    "27AAPFU0939F1ZX",  # check digit wrong
+    "00AAPFU0939F1ZV",  # state code 00 does not exist
+    "39AAPFU0939F1ZV",  # state code out of range
+    "27AAPFU0939F1AV",  # 14th char must be Z
+    "27ABCDE0939F1ZV",  # embedded PAN is structurally invalid
+    "27AAPFU0939F1Z",  # too short
     "",
 ]
 
@@ -134,10 +134,8 @@ def test_gstin_rejects_every_wrong_check_digit():
 
 # ---------------------------------------------------------------- Luhn
 
-GOOD_CARDS = ["4539578763621486", "4111111111111111", "5500005555555559",
-              "378282246310005"]
-BAD_CARDS = ["4539578763621487", "4111111111111112", "1234567890123456",
-             "411111111111", "", "abcd"]
+GOOD_CARDS = ["4539578763621486", "4111111111111111", "5500005555555559", "378282246310005"]
+BAD_CARDS = ["4539578763621487", "4111111111111112", "1234567890123456", "411111111111", "", "abcd"]
 
 
 @pytest.mark.parametrize("v", GOOD_CARDS)
@@ -155,7 +153,7 @@ def test_luhn_catches_every_single_digit_error():
     for i in range(len(base)):
         for d in "0123456789":
             if d != base[i]:
-                assert luhn_check(base[:i] + d + base[i + 1:]) is False
+                assert luhn_check(base[:i] + d + base[i + 1 :]) is False
 
 
 def test_luhn_accepts_separators():
@@ -165,18 +163,19 @@ def test_luhn_accepts_separators():
 
 # ---------------------------------------------------------------- IFSC
 
+
 @pytest.mark.parametrize("v", ["HDFC0001234", "SBIN0000456", "UTIB0000123"])
 def test_ifsc_good(v):
     assert ifsc_check(v) is True
 
 
-@pytest.mark.parametrize("v", ["HDFC1001234", "HDF00001234", "HDFC000123",
-                               "HDFC00012345", "HD1C0001234", ""])
+@pytest.mark.parametrize("v", ["HDFC1001234", "HDF00001234", "HDFC000123", "HDFC00012345", "HD1C0001234", ""])
 def test_ifsc_bad(v):
     assert ifsc_check(v) is False
 
 
 # ---------------------------------------------------------------- soft validators
+
 
 @pytest.mark.parametrize("v", ["a@b.co", "billing@acme.example", "x.y+z@sub.domain.in"])
 def test_email_good(v):
@@ -210,14 +209,17 @@ def test_date_sane_bad(v):
 
 # Every one of these is printed on a SROIE receipt, and none of them used to
 # parse, so 15 of 361 gold dates had to be dropped from scoring.
-@pytest.mark.parametrize("v, iso", [
-    ("27/MAR/2018", "2018-03-27"),
-    ("28-FEB-2018", "2018-02-28"),
-    ("22 MAR 18", "2018-03-22"),
-    ("2018/03/27", "2018-03-27"),
-    ("23.03.18", "2018-03-23"),
-    ("5 Sept. 2020", "2020-09-05"),
-])
+@pytest.mark.parametrize(
+    "v, iso",
+    [
+        ("27/MAR/2018", "2018-03-27"),
+        ("28-FEB-2018", "2018-02-28"),
+        ("22 MAR 18", "2018-03-22"),
+        ("2018/03/27", "2018-03-27"),
+        ("23.03.18", "2018-03-23"),
+        ("5 Sept. 2020", "2020-09-05"),
+    ],
+)
 def test_receipt_date_formats_parse(v, iso):
     from baseline.metadata.normalizers import _parse_date
 
@@ -231,12 +233,15 @@ def test_near_dates_still_do_not_parse(v):
     assert _parse_date(v) is None
 
 
-@pytest.mark.parametrize("line, iso", [
-    ("Date: 27/MAR/2018 12:01", "2018-03-27"),
-    ("Date : 22 MAR 18", "2018-03-22"),
-    ("DATE 23.03.18", "2018-03-23"),
-    ("Date: 2018/03/27", "2018-03-27"),
-])
+@pytest.mark.parametrize(
+    "line, iso",
+    [
+        ("Date: 27/MAR/2018 12:01", "2018-03-27"),
+        ("Date : 22 MAR 18", "2018-03-22"),
+        ("DATE 23.03.18", "2018-03-23"),
+        ("Date: 2018/03/27", "2018-03-27"),
+    ],
+)
 def test_receipt_dates_are_extracted(line, iso, cfg):
     """Parsing them is not enough. The field regexes have to reach them too."""
     from baseline.metadata import extract_fields
@@ -272,6 +277,7 @@ def test_invoice_number_needs_a_digit():
 
 # ---------------------------------------------------------------- dispatch
 
+
 def test_run_validator_dispatches_by_name():
     assert run_validator("pan", "AAPFU0939F") is True
     assert run_validator("gstin", "27AAPFU0939F1ZV") is True
@@ -285,12 +291,24 @@ def test_run_validator_is_safe_on_junk():
 
 # ------------------------------------------------- invoice_number pattern
 
-@pytest.mark.parametrize("word", [
-    # Every one of these matched before a digit was required, and the first is
-    # printed on nearly every invoice in the corpus.
-    "INVOICE", "INVOICES", "POLICY", "PORTAL", "POSTAL", "PORTION",
-    "POWER", "BILLING", "BILLABLE", "PORTNON",
-])
+
+@pytest.mark.parametrize(
+    "word",
+    [
+        # Every one of these matched before a digit was required, and the first is
+        # printed on nearly every invoice in the corpus.
+        "INVOICE",
+        "INVOICES",
+        "POLICY",
+        "PORTAL",
+        "POSTAL",
+        "PORTION",
+        "POWER",
+        "BILLING",
+        "BILLABLE",
+        "PORTNON",
+    ],
+)
 def test_invoice_number_pattern_ignores_ordinary_words(word, cfg):
     """The pattern layer emitted seven English words for every real reference.
 
@@ -302,9 +320,17 @@ def test_invoice_number_pattern_ignores_ordinary_words(word, cfg):
     assert rx.search(word) is None, f"{word} still reads as an invoice number"
 
 
-@pytest.mark.parametrize("ref", [
-    "INV-2024-0042", "PO-1234", "PO-001234", "INV/2024/7", "BILL-99", "INV2024",
-])
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "INV-2024-0042",
+        "PO-1234",
+        "PO-001234",
+        "INV/2024/7",
+        "BILL-99",
+        "INV2024",
+    ],
+)
 def test_invoice_number_pattern_still_reads_real_references(ref, cfg):
     rx = _invoice_number_regex(cfg)
     m = rx.search(ref)
@@ -321,6 +347,7 @@ def _invoice_number_regex(cfg):
 
 
 # ------------------------------------- a failed checksum emits nothing
+
 
 def test_a_failed_checksum_emits_no_candidate(cfg):
     """On the client corpus every failing Aadhaar and card was OCR noise.
@@ -345,10 +372,13 @@ def test_a_passing_checksum_is_still_emitted(cfg):
     assert all(f.validated and f.method.value == "regex_checksum" for f in got.values())
 
 
-@pytest.mark.parametrize("line, ref", [
-    ("TAX INVOICE ~ CASH # 13333469", "13333469"),
-    ("TAX INVOICE - CREDIT # 13333481", "13333481"),
-])
+@pytest.mark.parametrize(
+    "line, ref",
+    [
+        ("TAX INVOICE ~ CASH # 13333469", "13333469"),
+        ("TAX INVOICE - CREDIT # 13333481", "13333481"),
+    ],
+)
 def test_yaumi_cash_and_credit_references_are_read(line, ref, cfg):
     """The corpus's dominant layout. Before these labels 2 of 140 were read."""
     from baseline.metadata import extract_fields
@@ -358,18 +388,21 @@ def test_yaumi_cash_and_credit_references_are_read(line, ref, cfg):
     assert [f.normalized_value for f in fields if f.field == "invoice_number"] == [ref]
 
 
-@pytest.mark.parametrize("v, want", [
-    ("11800.00", "11800.00"),
-    ("1,18,000.50", "118000.50"),
-    ("Rs. 11,800.00", "11800.00"),
-    ("Rs.11800", "11800"),
-    ("AED 2,500.75", "2500.75"),
-    ("11,800/-", "11800"),
-    ("-500.00", "-500.00"),
-    ("11 800.00", "11800.00"),
-    ("500 2024", "500"),
-    ("Rs.", None),
-])
+@pytest.mark.parametrize(
+    "v, want",
+    [
+        ("11800.00", "11800.00"),
+        ("1,18,000.50", "118000.50"),
+        ("Rs. 11,800.00", "11800.00"),
+        ("Rs.11800", "11800"),
+        ("AED 2,500.75", "2500.75"),
+        ("11,800/-", "11800"),
+        ("-500.00", "-500.00"),
+        ("11 800.00", "11800.00"),
+        ("500 2024", "500"),
+        ("Rs.", None),
+    ],
+)
 def test_amounts_parse_past_a_currency_prefix(v, want):
     """A VLM answers with the printed amount, symbol and all."""
     from baseline.metadata.normalizers import _to_decimal

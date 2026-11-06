@@ -14,8 +14,8 @@ from baseline.scan import iter_documents
 from baseline.schema import DocumentRecord, ExtractionMethod, compute_doc_id
 from baseline.tagging import apply_tags, derived_scores
 
-
 # ---------------------------------------------------------------- doc_id
+
 
 def test_doc_id_is_content_addressed_not_path_addressed(corpus, tmp_path):
     src = corpus / "contract.txt"
@@ -38,6 +38,7 @@ def test_doc_id_is_16_hex_chars(corpus):
 
 
 # ---------------------------------------------------------------- routing
+
 
 def test_native_pdf_is_never_sent_to_ocr(corpus, cfg):
     res = extract(corpus / "invoice_native.pdf", cfg)
@@ -85,6 +86,7 @@ def test_native_word_boxes_are_captured(corpus, cfg):
 
 # ---------------------------------------------------------------- schema
 
+
 def test_record_validates_and_round_trips(corpus, cfg):
     record, _ = process_document(corpus / "invoice_native.pdf", cfg)
     blob = json.loads(dumps(record))
@@ -120,10 +122,11 @@ def test_word_boxes_use_canonical_offsets(corpus, cfg):
     mapped = [w for w in sidecar.words if w.char_start is not None]
     assert mapped
     for w in mapped:
-        assert record.text.full[w.char_start:w.char_end] == w.text
+        assert record.text.full[w.char_start : w.char_end] == w.text
 
 
 # ---------------------------------------------------------------- resilience
+
 
 def test_a_broken_pdf_does_not_kill_the_run(corpus, cfg):
     record, _ = process_document(corpus / "broken.pdf", cfg)
@@ -147,6 +150,7 @@ def test_every_stage_is_timed(corpus, cfg):
 
 
 # ---------------------------------------------------------------- determinism
+
 
 def _strip_timings(path):
     out = []
@@ -179,12 +183,13 @@ def test_default_config_is_deterministic_apart_from_timings(corpus, default_seri
 
 def test_timings_are_recorded_by_default(default_serial_run):
     out = default_serial_run.out
-    recs = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
+    recs = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     non_zero = [r for r in recs if any(v > 0 for v in r["diagnostics"]["timings_ms"].values())]
     assert non_zero, "default config should record real per stage timings"
 
 
 # ---------------------------------------------------------------- resume
+
 
 def _copy_run(run, tmp_path):
     """A writable copy of a shared run's output, so resume can append to it."""
@@ -228,6 +233,7 @@ def test_no_resume_reprocesses_everything(corpus, tmp_path):
 
 # ---------------------------------------------------------------- config over code
 
+
 def test_a_new_document_class_needs_only_a_yaml_edit(tmp_path, cfg):
     """Nothing in the modules may know the class list."""
     cfgdir = tmp_path / "config"
@@ -241,8 +247,7 @@ def test_a_new_document_class_needs_only_a_yaml_edit(tmp_path, cfg):
             {
                 "name": "veterinary_report",
                 "markers": [
-                    {"kind": "regex", "pattern": r"\bveterinary\s+report\b",
-                     "scope": "first_page", "specificity": 0.97}
+                    {"kind": "regex", "pattern": r"\bveterinary\s+report\b", "scope": "first_page", "specificity": 0.97}
                 ],
             }
         ],
@@ -264,6 +269,7 @@ def test_classifier_never_forces_a_guess(cfg):
 
 # ---------------------------------------------------------------- tagging
 
+
 def test_derived_tag_beats_a_keyword(corpus, cfg):
     record, _ = process_document(corpus / "invoice_native.pdf", cfg)
     by_tag = {t.tag: t for t in record.tags}
@@ -284,9 +290,15 @@ def test_derived_rule_needs_a_validated_field(cfg):
 
     unvalidated = [
         MetadataField(
-            field="gstin", value="27AAPFU0939F1ZX", normalized_value="27AAPFU0939F1ZX",
-            page=0, char_start=0, char_end=15, confidence=0.5,
-            method=MetadataMethod.REGEX_FORMAT, validated=False,
+            field="gstin",
+            value="27AAPFU0939F1ZX",
+            normalized_value="27AAPFU0939F1ZX",
+            page=0,
+            char_start=0,
+            char_end=15,
+            confidence=0.5,
+            method=MetadataMethod.REGEX_FORMAT,
+            validated=False,
         )
     ]
     assert "gst_applicable" not in derived_scores(unvalidated, {}, cfg)

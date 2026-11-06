@@ -74,7 +74,7 @@ def import_labels(
         raise ValueError("taxonomy.yaml declares no mappings; nothing to map through")
 
     res = ImportResult()
-    with open(csv_path, "r", encoding="utf-8-sig", newline="") as fh:
+    with open(csv_path, encoding="utf-8-sig", newline="") as fh:
         for row in csv.DictReader(fh):
             name = (row.get(name_column) or "").strip()
             client_label = (row.get(label_column) or "").strip()
@@ -92,31 +92,34 @@ def import_labels(
                 continue
             is_lossy = client_label in lossy
             res.lossy_rows += is_lossy
-            res.rows.append({
-                "doc_id": compute_doc_id(path),
-                "path": str(path).replace("\\", "/"),
-                "filename": path.name,
-                "label": target,
-                # Kept so a report can say what was collapsed and so the
-                # mapping can be audited without re-reading the CSV.
-                "client_label": client_label,
-                "label_is_lossy": is_lossy,
-            })
+            res.rows.append(
+                {
+                    "doc_id": compute_doc_id(path),
+                    "path": str(path).replace("\\", "/"),
+                    "filename": path.name,
+                    "label": target,
+                    # Kept so a report can say what was collapsed and so the
+                    # mapping can be audited without re-reading the CSV.
+                    "client_label": client_label,
+                    "label_is_lossy": is_lossy,
+                }
+            )
 
     if res.unmapped_labels:
-        log.error("labels absent from taxonomy.yaml",
-                  extra={"labels": sorted(set(res.unmapped_labels))})
+        log.error("labels absent from taxonomy.yaml", extra={"labels": sorted(set(res.unmapped_labels))})
     if res.missing_files:
-        log.warning("csv rows with no file on disk",
-                    extra={"count": len(res.missing_files)})
+        log.warning("csv rows with no file on disk", extra={"count": len(res.missing_files)})
     return res
 
 
 def render_summary(res: ImportResult, csv_path: str, root: str) -> str:
     """What the gold file can and cannot be used to claim."""
     lines = [
-        "# Imported labels", "",
-        f"Source: `{csv_path}`", f"Root: `{root}`", "",
+        "# Imported labels",
+        "",
+        f"Source: `{csv_path}`",
+        f"Root: `{root}`",
+        "",
         f"- gold rows written: {len(res.rows)}",
         f"- distinct doc_ids: {len({r['doc_id'] for r in res.rows})}",
         f"- rows carrying a lossy label: {res.lossy_rows}",
@@ -127,17 +130,27 @@ def render_summary(res: ImportResult, csv_path: str, root: str) -> str:
         lines.append(f"- labels not in taxonomy.yaml: {sorted(set(res.unmapped_labels))}")
 
     if res.collapsed:
-        lines += ["", "## Collapsed labels", "",
-                  "These client labels cannot be recovered from the document text.",
-                  "Any score over them is a class level score, not a label level one.",
-                  "", "| class | client labels collapsed into it |", "| --- | --- |"]
+        lines += [
+            "",
+            "## Collapsed labels",
+            "",
+            "These client labels cannot be recovered from the document text.",
+            "Any score over them is a class level score, not a label level one.",
+            "",
+            "| class | client labels collapsed into it |",
+            "| --- | --- |",
+        ]
         for cls, labels in res.collapsed.items():
             lines.append(f"| `{cls}` | {', '.join(labels)} |")
 
-    dupes = sorted({r["filename"] for r in res.rows
-                    if sum(1 for x in res.rows if x["filename"] == r["filename"]) > 1})
+    dupes = sorted({r["filename"] for r in res.rows if sum(1 for x in res.rows if x["filename"] == r["filename"]) > 1})
     if dupes:
-        lines += ["", "## File names appearing more than once", "",
-                  "Keyed on content addressed doc_id, so these do not collide.", ""]
+        lines += [
+            "",
+            "## File names appearing more than once",
+            "",
+            "Keyed on content addressed doc_id, so these do not collide.",
+            "",
+        ]
         lines += [f"- `{d}`" for d in dupes]
     return "\n".join(lines) + "\n"

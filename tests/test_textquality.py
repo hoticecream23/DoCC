@@ -5,7 +5,6 @@ gitignored, so the corpus itself cannot appear in a test. What can be pinned is
 the behaviour those measurements justify, on strings short enough to read.
 """
 
-
 from baseline.textquality import prefer, score_text
 
 # Verbatim from 1-2-2026 (1)Ev.pdf and 1-28-202610011.pdf, which are the
@@ -83,6 +82,7 @@ def test_empty_text_is_not_suspect():
 
 # ------------------------------------------------------- prefer()
 
+
 def test_prefer_takes_the_cleaner_reading():
     chosen, used_ocr = prefer(CORRUPT, CLEAN)
     assert chosen == CLEAN and used_ocr is True
@@ -109,10 +109,7 @@ def test_the_module_holds_no_vocabulary():
     import pathlib
 
     src = pathlib.Path("baseline/textquality.py").read_text(encoding="utf-8")
-    code = "\n".join(
-        line for line in src.splitlines()
-        if not line.strip().startswith("#")
-    ).split('"""')
+    code = "\n".join(line for line in src.splitlines() if not line.strip().startswith("#")).split('"""')
     # keep only the parts outside docstrings
     body = "".join(code[::2]).lower()
     for word in ("invoice", "receipt", "salary", "gstin", "aadhaar", "court"):
@@ -120,6 +117,7 @@ def test_the_module_holds_no_vocabulary():
 
 
 # ------------------------------------------------- the gate inside extraction
+
 
 def test_a_clean_native_pdf_is_not_rescued(corpus, cfg):
     """The gate must be invisible on documents whose text layer is fine."""

@@ -21,15 +21,22 @@ from make_corpus import (
     SALARY,
 )
 
-VENDORS = ["Acme Traders", "Initech Supplies", "Umbrella Retail", "Stark Components",
-           "Wayne Logistics", "Cyberdyne Parts"]
+VENDORS = [
+    "Acme Traders",
+    "Initech Supplies",
+    "Umbrella Retail",
+    "Stark Components",
+    "Wayne Logistics",
+    "Cyberdyne Parts",
+]
 CITIES = ["Mumbai", "Pune", "Chennai", "Kolkata", "Jaipur", "Indore"]
 
 # label -> (template text, tags that are true for it)
 TEMPLATES = {
-    "invoice": (INVOICE_P1 + "\n" + INVOICE_P2,
-                ["gst_applicable", "has_line_items", "payment_pending", "signed",
-                 "contains_pii", "bank_details_present"]),
+    "invoice": (
+        INVOICE_P1 + "\n" + INVOICE_P2,
+        ["gst_applicable", "has_line_items", "payment_pending", "signed", "contains_pii", "bank_details_present"],
+    ),
     "receipt": (RECEIPT, ["payment_made", "bank_details_present", "signed"]),
     "salary_slip": (SALARY, ["contains_pii", "bank_details_present"]),
     "bank_statement": (BANK_STATEMENT, ["bank_details_present"]),

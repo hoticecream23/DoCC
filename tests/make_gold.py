@@ -37,8 +37,13 @@ INVOICE_FIELDS = [
     {"field": "ifsc", "normalized_value": "HDFC0001234"},
 ]
 INVOICE_TAGS = [
-    "gst_applicable", "has_line_items", "payment_pending", "signed",
-    "contains_pii", "bank_details_present", "multi_page",
+    "gst_applicable",
+    "has_line_items",
+    "payment_pending",
+    "signed",
+    "contains_pii",
+    "bank_details_present",
+    "multi_page",
 ]
 
 RECEIPT_FIELDS = [
@@ -60,29 +65,33 @@ LINE_ITEMS = [
 ]
 INVOICE_TABLES = [{"page": 1, "cells": LINE_ITEMS}]
 
-STATEMENT_TABLE = [{
-    "page": 0,
-    "cells": [
-        ["Date", "Description", "Debit", "Credit", "Balance"],
-        ["01/03/2024", "Opening Balance", "", "", "125000.00"],
-        ["05/03/2024", "NEFT Globex", "", "11800.00", "136800.00"],
-        ["12/03/2024", "Vendor payment", "22000.00", "", "114800.00"],
-        ["31/03/2024", "Closing Balance", "", "", "114800.00"],
-    ],
-}]
+STATEMENT_TABLE = [
+    {
+        "page": 0,
+        "cells": [
+            ["Date", "Description", "Debit", "Credit", "Balance"],
+            ["01/03/2024", "Opening Balance", "", "", "125000.00"],
+            ["05/03/2024", "NEFT Globex", "", "11800.00", "136800.00"],
+            ["12/03/2024", "Vendor payment", "22000.00", "", "114800.00"],
+            ["31/03/2024", "Closing Balance", "", "", "114800.00"],
+        ],
+    }
+]
 
 # No header row on this one. A reader would not call "Basic Pay" a label for
 # the column under it.
-SALARY_TABLE = [{
-    "page": 0,
-    "cells": [
-        ["Basic Pay", "45000.00"],
-        ["HRA", "18000.00"],
-        ["Gross", "63000.00"],
-        ["Deductions", "7200.00"],
-        ["Net Pay", "55800.00"],
-    ],
-}]
+SALARY_TABLE = [
+    {
+        "page": 0,
+        "cells": [
+            ["Basic Pay", "45000.00"],
+            ["HRA", "18000.00"],
+            ["Gross", "63000.00"],
+            ["Deductions", "7200.00"],
+            ["Net Pay", "55800.00"],
+        ],
+    }
+]
 
 GOLD = [
     {
@@ -192,5 +201,4 @@ if __name__ == "__main__":
     fields = sum(len(r["metadata"]) for r in GOLD)
     tags = sum(len(r["tags"]) for r in GOLD)
     tables = sum(len(r.get("tables") or []) for r in GOLD)
-    print(f"wrote {len(GOLD)} gold documents, {fields} fields, {tags} tags, "
-          f"{tables} tables to {target}")
+    print(f"wrote {len(GOLD)} gold documents, {fields} fields, {tags} tags, " f"{tables} tables to {target}")

@@ -7,9 +7,7 @@ import logging
 import sys
 from typing import Any
 
-_RESERVED = set(
-    logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()
-) | {"message", "asctime", "taskName"}
+_RESERVED = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()) | {"message", "asctime", "taskName"}
 
 
 class JsonFormatter(logging.Formatter):
@@ -44,8 +42,7 @@ def setup_logging(level: str = "INFO") -> None:
     root.handlers[:] = [handler]
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
     if reconfigure_error is not None:
-        logging.getLogger(__name__).debug(
-            "stderr not reconfigured to utf-8", extra={"error": repr(reconfigure_error)})
+        logging.getLogger(__name__).debug("stderr not reconfigured to utf-8", extra={"error": repr(reconfigure_error)})
 
 
 def get_logger(name: str) -> logging.Logger:

@@ -9,8 +9,8 @@ regex_format in the output.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from decimal import Decimal
-from typing import Callable
 
 from ..logging_setup import get_logger
 from .normalizers import _parse_date, _to_decimal

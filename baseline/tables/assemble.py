@@ -24,8 +24,12 @@ def _is_header_row(cells: list[TableCell], n_cols: int, hcfg: dict) -> bool:
 
 
 def _assemble(
-    page: int, n_rows: int, n_cols: int, method: TableMethod,
-    cells: list[TableCell], tcfg: dict,
+    page: int,
+    n_rows: int,
+    n_cols: int,
+    method: TableMethod,
+    cells: list[TableCell],
+    tcfg: dict,
 ) -> Table:
     header: list[str] = []
     if _is_header_row(cells, n_cols, dict(tcfg.get("header", {}))):

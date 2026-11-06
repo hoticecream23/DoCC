@@ -10,7 +10,7 @@ def _total(cfg, text):
     assert not errors
     got = [f for f in fields if f.field == "total_amount"]
     for f in got:
-        assert text[f.char_start:f.char_end] == f.value
+        assert text[f.char_start : f.char_end] == f.value
     return got[0].value if got else None
 
 

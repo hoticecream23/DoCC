@@ -18,7 +18,7 @@ DEFAULT_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
 def read_yaml(path: Path) -> Any:
     """The one yaml.safe_load for config files. Empty file gives {}."""
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
     return {} if data is None else data
 

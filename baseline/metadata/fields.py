@@ -75,11 +75,7 @@ def _pattern_candidates(full: str, fdef: dict, limit: int) -> list[Candidate]:
                 end=e,
                 confidence=c_ok if ok else c_no,
                 # Checksum backed and format only are different things.
-                method=(
-                    MetadataMethod.REGEX_CHECKSUM
-                    if ok and hard
-                    else MetadataMethod.REGEX_FORMAT
-                ),
+                method=(MetadataMethod.REGEX_CHECKSUM if ok and hard else MetadataMethod.REGEX_FORMAT),
                 validated=ok,
             )
         )
@@ -111,7 +107,7 @@ def _anchor_candidates(full: str, fdef: dict, default_window: int, limit: int) -
 
     out: list[Candidate] = []
     # Most specific labels first so a weak label never shadows a strong one.
-    for lab in sorted(labels, key=lambda l: -float(l.get("specificity", 0.5))):
+    for lab in sorted(labels, key=lambda item: -float(item.get("specificity", 0.5))):
         text = str(lab.get("text", "")).lower()
         if not text:
             continue
@@ -266,8 +262,13 @@ def candidates_for(
         elif strategy == "positional":
             out.extend(
                 _positional_candidates(
-                    full, fdef, cfg.templates, doc_class, words or [],
-                    page_spans(pages), page_sizes or [],
+                    full,
+                    fdef,
+                    cfg.templates,
+                    doc_class,
+                    words or [],
+                    page_spans(pages),
+                    page_sizes or [],
                 )
             )
     out.sort(key=_rank)
@@ -336,9 +337,7 @@ def extract_fields(
             elif strategy == "anchor":
                 cands = _anchor_candidates(full, fdef, default_window, limit)
             elif strategy == "positional":
-                cands = _positional_candidates(
-                    full, fdef, cfg.templates, doc_class, words, spans, page_sizes
-                )
+                cands = _positional_candidates(full, fdef, cfg.templates, doc_class, words, spans, page_sizes)
             else:
                 errors.append(f"{name}: unknown strategy {strategy!r}")
                 continue

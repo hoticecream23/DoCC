@@ -9,9 +9,10 @@ from __future__ import annotations
 import gzip
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from . import classify as classify_mod
 from . import tagging as tagging_mod
@@ -41,7 +42,7 @@ class Models:
     tagger: Any = None
 
     @classmethod
-    def load(cls, cfg: Config, root: Path) -> "Models":
+    def load(cls, cfg: Config, root: Path) -> Models:
         cdir = root / str(cfg.classify_opts().get("model_dir", "models/classifier"))
         tdir = root / str(cfg.tagging_opts().get("model_dir", "models/tagger"))
         return cls(
@@ -98,9 +99,7 @@ def tag_facts(text: TextRecord, page_count: int, is_scanned: bool) -> dict:
     }
 
 
-def process_document(
-    path: str | Path, cfg: Config, models: Models | None = None
-) -> tuple[DocumentRecord, BBoxSidecar]:
+def process_document(path: str | Path, cfg: Config, models: Models | None = None) -> tuple[DocumentRecord, BBoxSidecar]:
     """The whole pipeline for one file. Raises only if the file is unreadable."""
     p = Path(path)
     models = models or Models()
@@ -133,9 +132,7 @@ def process_document(
     )
 
     def _meta():
-        fields, errs = extract_fields(
-            text.full, text.pages, cfg, cls.label, res.words, res.page_sizes
-        )
+        fields, errs = extract_fields(text.full, text.pages, cfg, cls.label, res.words, res.page_sizes)
         st.errors.extend(errs)
         return fields
 
@@ -144,9 +141,7 @@ def process_document(
     facts = tag_facts(text, res.page_count, res.is_scanned)
     tags = st.run(
         "tag",
-        lambda: tagging_mod.apply_tags(
-            text.full, text.pages, cfg, meta, facts, models.tagger
-        ),
+        lambda: tagging_mod.apply_tags(text.full, text.pages, cfg, meta, facts, models.tagger),
         [],
     )
 
@@ -193,7 +188,7 @@ def existing_doc_ids(output: str | Path) -> set[str]:
     if not p.exists():
         return set()
     seen = set()
-    with open(p, "r", encoding="utf-8") as fh:
+    with open(p, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if not line:
@@ -202,8 +197,9 @@ def existing_doc_ids(output: str | Path) -> set[str]:
                 seen.add(json.loads(line)["doc_id"])
             except Exception as exc:
                 # The doc is re-run, but a bad line here means the output file is damaged.
-                log.warning("unreadable line in output, doc will be re-run",
-                            extra={"output": str(p), "error": repr(exc)})
+                log.warning(
+                    "unreadable line in output, doc will be re-run", extra={"output": str(p), "error": repr(exc)}
+                )
                 continue
     return seen
 
@@ -265,8 +261,9 @@ def run_batch(
     if excluded:
         # Say what was left out and why. A total that quietly omits input does
         # not mean what it appears to mean.
-        log.info("files excluded as not documents",
-                 extra={reason: len(items) for reason, items in sorted(excluded.items())})
+        log.info(
+            "files excluded as not documents", extra={reason: len(items) for reason, items in sorted(excluded.items())}
+        )
     skip = existing_doc_ids(out_path) if resume else set()
     todo = []
     for p in paths:
@@ -280,12 +277,22 @@ def run_batch(
 
     log.info(
         "batch starting",
-        extra={"found": len(paths), "skipped": len(paths) - len(todo), "todo": len(todo),
-               "excluded": sum(len(v) for v in excluded.values()), "workers": workers},
+        extra={
+            "found": len(paths),
+            "skipped": len(paths) - len(todo),
+            "todo": len(todo),
+            "excluded": sum(len(v) for v in excluded.values()),
+            "workers": workers,
+        },
     )
 
-    stats = {"found": len(paths), "skipped": len(paths) - len(todo), "written": 0, "failed": 0,
-             "excluded": {reason: len(items) for reason, items in sorted(excluded.items())}}
+    stats = {
+        "found": len(paths),
+        "skipped": len(paths) - len(todo),
+        "written": 0,
+        "failed": 0,
+        "excluded": {reason: len(items) for reason, items in sorted(excluded.items())},
+    }
     if not todo:
         return stats
 

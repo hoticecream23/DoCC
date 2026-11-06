@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from baseline import pipeline as baseline_pipeline
 from baseline.classify import rule_scores
@@ -85,9 +86,18 @@ def process_document(
     deterministic = bool(cfg.pipeline.get("runtime", {}).get("deterministic_timings", False))
     timings: dict[str, float] = {}
     prov: dict[str, Any] = {
-        "doc_id": base.doc_id, "filename": base.filename, "model": None, "finish_reason": None,
-        "pages_sent": 0, "images_sent": 0, "fallback": False, "errors": [], "raw": None,
-        "class": None, "fields": [], "timings_ms": timings,
+        "doc_id": base.doc_id,
+        "filename": base.filename,
+        "model": None,
+        "finish_reason": None,
+        "pages_sent": 0,
+        "images_sent": 0,
+        "fallback": False,
+        "errors": [],
+        "raw": None,
+        "class": None,
+        "fields": [],
+        "timings_ms": timings,
     }
 
     def timed(name: str, fn: Callable[[], Any]) -> Any:
@@ -118,10 +128,20 @@ def process_document(
             reply = timed("vlm", lambda: backend.complete(messages, response_schema(cfg)))
         prov["model"], prov["finish_reason"], prov["raw"] = reply.model, reply.finish_reason, reply.content
         answer = parse_answer(reply.content, cfg)
-        decision = timed("decide", lambda: decide(
-            full, pages, cfg, ccfg.confidence, rule_scores(full, pages, cfg), answer,
-            base.metadata, sidecar.words, sidecar.page_sizes,
-        ))
+        decision = timed(
+            "decide",
+            lambda: decide(
+                full,
+                pages,
+                cfg,
+                ccfg.confidence,
+                rule_scores(full, pages, cfg),
+                answer,
+                base.metadata,
+                sidecar.words,
+                sidecar.page_sizes,
+            ),
+        )
         meta, problems = _drop_bad_offsets(decision.metadata, full)
         facts = baseline_pipeline.tag_facts(base.text, base.diagnostics.page_count, base.diagnostics.is_scanned)
         tags = apply_tags(full, pages, cfg, meta, facts, models.tagger if models else None)
@@ -132,8 +152,7 @@ def process_document(
         prov["errors"].append(msg)
         meta, problems = _drop_bad_offsets(base.metadata, full)
         prov["errors"].extend(problems)
-        record = _record(base, base.classification, meta, base.tags,
-                         _diagnostics(base, timings, [msg, *problems]))
+        record = _record(base, base.classification, meta, base.tags, _diagnostics(base, timings, [msg, *problems]))
         return Result(record, sidecar, prov)
 
     prov["class"], prov["fields"] = decision.class_provenance, decision.field_provenance
@@ -161,12 +180,20 @@ def run_batch(
 
     paths, excluded = scan_documents(input_dir)
     skip = baseline_pipeline.existing_doc_ids(out_path) if resume else set()
-    stats = {"found": len(paths), "skipped": 0, "written": 0, "failed": 0, "fallback": 0,
-             "excluded": {reason: len(items) for reason, items in sorted(excluded.items())}}
+    stats = {
+        "found": len(paths),
+        "skipped": 0,
+        "written": 0,
+        "failed": 0,
+        "fallback": 0,
+        "excluded": {reason: len(items) for reason, items in sorted(excluded.items())},
+    }
     mode = "a" if resume else "w"
 
-    with open(out_path, mode, encoding="utf-8", newline="\n") as fh, \
-         open(prov_path, mode, encoding="utf-8", newline="\n") as ph:
+    with (
+        open(out_path, mode, encoding="utf-8", newline="\n") as fh,
+        open(prov_path, mode, encoding="utf-8", newline="\n") as ph,
+    ):
         for p in paths:
             try:
                 if compute_doc_id(p) in skip:

@@ -15,8 +15,8 @@ from typing import Any
 from .config import Config
 from .logging_setup import get_logger
 from .ocr import OCRPage, get_engine, ocr_confidence
-from .textquality import prefer, score_text
 from .schema import ExtractionMethod, WordBox, page_spans
+from .textquality import prefer, score_text
 
 log = get_logger(__name__)
 
@@ -201,10 +201,7 @@ def _prepare_pink_paper(image: Any, opts: dict) -> tuple[Any, dict]:
     red, green, blue = ImageStat.Stat(small).median  # the median pixel is the paper
     # ponytail: thresholds fit one scan batch. Yaumi sits at 36 to 45, the
     # palest other pink paper at 32. Re-measure when a new tinted batch arrives.
-    is_pink = (
-        red - green >= rule["min_red_over_green"]
-        and abs(green - blue) <= rule["max_green_blue_gap"]
-    )
+    is_pink = red - green >= rule["min_red_over_green"] and abs(green - blue) <= rule["max_green_blue_gap"]
     if not is_pink:
         return image, opts
     return rgb.getchannel("R"), {**opts, "psm": rule["psm"]}
@@ -336,9 +333,7 @@ def _extract_pdf(path: Path, cfg: Config, res: ExtractionResult) -> None:
                 res.errors.append("ocr failed on page " + str(pno) + ": " + str(exc))
                 # Keep the thin native text rather than dropping the page entirely.
                 res.pages.append(native)
-                res.page_methods.append(
-                    ExtractionMethod.NATIVE if native.strip() else ExtractionMethod.NONE
-                )
+                res.page_methods.append(ExtractionMethod.NATIVE if native.strip() else ExtractionMethod.NONE)
                 res.page_confidences.append(native_conf if native.strip() else 0.0)
 
 
@@ -368,8 +363,7 @@ def _rescue_page(page, native, ocr_opts, gate, pno, capture):
         ocr = _ocr_image(_render(page, dpi), ocr_opts)
     except Exception as exc:
         # A failed rescue is not a failed page. Keep the native text and say so.
-        log.warning("quality gate could not re-read page",
-                    extra={"page": pno, "error": str(exc)})
+        log.warning("quality gate could not re-read page", extra={"page": pno, "error": str(exc)})
         return None
 
     text = _sanitize_fixed_width(ocr.text)
@@ -377,10 +371,10 @@ def _rescue_page(page, native, ocr_opts, gate, pno, capture):
     if not used_ocr:
         return None
 
-    log.info("page rescued by the quality gate",
-             extra={"page": pno,
-                    "native_score": quality.score,
-                    "ocr_score": score_text(chosen).score})
+    log.info(
+        "page rescued by the quality gate",
+        extra={"page": pno, "native_score": quality.score, "ocr_score": score_text(chosen).score},
+    )
     words = _ocr_words(ocr.words, pno, dpi / 72.0) if capture else []
     return chosen, words, ocr_confidence(ocr.words)
 
@@ -397,9 +391,7 @@ def _extract_docx(path: Path, cfg: Config, res: ExtractionResult) -> None:
     # docx has no page concept without rendering, so it is one canonical page.
     res.pages.append(text)
     res.page_methods.append(ExtractionMethod.NATIVE if text.strip() else ExtractionMethod.NONE)
-    res.page_confidences.append(
-        float(cfg.extract_opts().get("native_confidence", 0.98)) if text.strip() else 0.0
-    )
+    res.page_confidences.append(float(cfg.extract_opts().get("native_confidence", 0.98)) if text.strip() else 0.0)
     res.page_sizes.append((0.0, 0.0))
 
 
@@ -407,9 +399,7 @@ def _extract_text(path: Path, cfg: Config, res: ExtractionResult) -> None:
     text = _sanitize(path.read_text(encoding="utf-8", errors="replace"))
     res.pages.append(text)
     res.page_methods.append(ExtractionMethod.NATIVE if text.strip() else ExtractionMethod.NONE)
-    res.page_confidences.append(
-        float(cfg.extract_opts().get("native_confidence", 0.98)) if text.strip() else 0.0
-    )
+    res.page_confidences.append(float(cfg.extract_opts().get("native_confidence", 0.98)) if text.strip() else 0.0)
     res.page_sizes.append((0.0, 0.0))
 
 

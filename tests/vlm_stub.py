@@ -14,9 +14,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 def chat(content: str, model: str = "test-model", finish: str = "stop") -> dict:
-    return {"model": model, "choices": [
-        {"message": {"role": "assistant", "content": content}, "finish_reason": finish}
-    ]}
+    return {
+        "model": model,
+        "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": finish}],
+    }
 
 
 @contextmanager
@@ -26,11 +27,13 @@ def serve(responses):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
-            requests.append({
-                "path": self.path,
-                "headers": dict(self.headers),
-                "body": json.loads(self.rfile.read(n) or b"{}"),
-            })
+            requests.append(
+                {
+                    "path": self.path,
+                    "headers": dict(self.headers),
+                    "body": json.loads(self.rfile.read(n) or b"{}"),
+                }
+            )
             status, body, delay, headers = responses[min(len(requests), len(responses)) - 1]
             if delay:
                 time.sleep(delay)

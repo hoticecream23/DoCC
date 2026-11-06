@@ -77,17 +77,12 @@ class Graph:
         return [self._edges[k] for k in sorted(self._edges)]
 
     def neighbours(self, node_id: str, etype: str | None = None) -> list[str]:
-        return sorted(
-            e.dst for e in self.edges
-            if e.src == node_id and (etype is None or e.type == etype)
-        )
+        return sorted(e.dst for e in self.edges if e.src == node_id and (etype is None or e.type == etype))
 
     def to_dict(self) -> dict:
         return {
             "nodes": [{"id": n.id, "kind": n.kind, **n.attrs} for n in self.nodes],
-            "edges": [
-                {"src": e.src, "dst": e.dst, "type": e.type, **e.attrs} for e in self.edges
-            ],
+            "edges": [{"src": e.src, "dst": e.dst, "type": e.type, **e.attrs} for e in self.edges],
         }
 
 
@@ -136,8 +131,7 @@ def collapse_identities(id_items: list[dict]) -> list[dict]:
     return [best[k] for k in sorted(best)]
 
 
-def match_roles(role_items: dict[str, list[dict]], id_items: list[dict],
-                limit: int, margin: int = 0) -> dict:
+def match_roles(role_items: dict[str, list[dict]], id_items: list[dict], limit: int, margin: int = 0) -> dict:
     """Assign roles to verified identities, at most one role per identity.
 
     Documents name several parties but often carry only one verified number.
@@ -169,8 +163,7 @@ def match_roles(role_items: dict[str, list[dict]], id_items: list[dict],
             continue
         # Nearest competing claim on the same identity from a different role.
         rival = next(
-            (d for d, ro, _, ii in pairs[idx + 1:]
-             if ro != role and org_key(ii.get("normalized_value", "")) == ident),
+            (d for d, ro, _, ii in pairs[idx + 1 :] if ro != role and org_key(ii.get("normalized_value", "")) == ident),
             None,
         )
         if rival is not None and (rival - dist) < margin:
@@ -223,7 +216,8 @@ def _add_document(g: Graph, rec: dict, gcfg: dict) -> int:
 
     doc_node = f"doc:{doc_id}"
     g.add_node(
-        doc_node, "document",
+        doc_node,
+        "document",
         filename=rec.get("filename", ""),
         label=cls,
         page_count=(rec.get("diagnostics") or {}).get("page_count", 0),
@@ -256,18 +250,15 @@ def _add_document(g: Graph, rec: dict, gcfg: dict) -> int:
 
     # ---- roles, one per verified identity ----
     id_items = collapse_identities(vfields.get("gstin", []) + vfields.get("pan", []))
-    wanted = {etype: afields.get(fname, [])
-              for etype, fname in sorted(roles.items()) if afields.get(fname)}
+    wanted = {etype: afields.get(fname, []) for etype, fname in sorted(roles.items()) if afields.get(fname)}
     if wanted and id_items:
         for edge_type, (dist, role_item, id_item) in sorted(
             match_roles(wanted, id_items, role_limit, role_margin).items()
         ):
             value = id_item.get("normalized_value", "")
             key = value[GSTIN_PAN_SLICE] if len(value) == 15 else value
-            g.add_node(f"org:{key}", "organization",
-                       names=[role_item.get("normalized_value", "")])
-            g.add_edge(doc_node, f"org:{key}", edge_type,
-                       name=role_item.get("normalized_value", ""), distance=dist)
+            g.add_node(f"org:{key}", "organization", names=[role_item.get("normalized_value", "")])
+            g.add_edge(doc_node, f"org:{key}", edge_type, name=role_item.get("normalized_value", ""), distance=dist)
 
     # ---- accounts ----
     for m in vfields.get("account_number", []) + afields.get("account_number", []):
@@ -330,10 +321,7 @@ def _add_duplicates(g: Graph, records: list[dict], dup_cfg: dict) -> list[dict]:
         # A receipt quoting an invoice number is a reference, not a duplicate.
         key = [cls_here] if dup_cfg.get("same_class", True) else []
         for name in match_on:
-            vals = sorted(
-                m.get("normalized_value") for m in fields.get(name, [])
-                if m.get("normalized_value")
-            )
+            vals = sorted(m.get("normalized_value") for m in fields.get(name, []) if m.get("normalized_value"))
             if not vals:
                 key = []
                 break
@@ -346,7 +334,7 @@ def _add_duplicates(g: Graph, records: list[dict], dup_cfg: dict) -> list[dict]:
         if len(docs) > 1:
             duplicates.append({"key": list(key), "documents": sorted(docs)})
             for i, a in enumerate(sorted(docs)):
-                for b in sorted(docs)[i + 1:]:
+                for b in sorted(docs)[i + 1 :]:
                     g.add_edge(a, b, "duplicate_of", key=" | ".join(key))
     return duplicates
 
@@ -365,13 +353,15 @@ def find_chains(g: Graph) -> list[dict]:
             continue
         src, dst = by_id.get(e.src), by_id.get(e.dst)
         if src and dst:
-            out.append({
-                "from": src.attrs.get("filename", e.src),
-                "from_class": src.attrs.get("label", ""),
-                "to": dst.attrs.get("filename", e.dst),
-                "to_class": dst.attrs.get("label", ""),
-                "key": e.attrs.get("key", ""),
-            })
+            out.append(
+                {
+                    "from": src.attrs.get("filename", e.src),
+                    "from_class": src.attrs.get("label", ""),
+                    "to": dst.attrs.get("filename", e.dst),
+                    "to_class": dst.attrs.get("label", ""),
+                    "key": e.attrs.get("key", ""),
+                }
+            )
     return sorted(out, key=lambda d: (d["from"], d["to"]))
 
 
@@ -386,16 +376,19 @@ def org_exposure(g: Graph) -> list[dict]:
     for node in g.nodes:
         if node.kind != "organization":
             continue
-        docs = sorted({e.src for e in g.edges
-                       if e.dst == node.id and e.type in ("mentions_org", "issued_by", "billed_to")})
-        out.append({
-            "org": node.id,
-            "pan": node.attrs.get("pan", ""),
-            "gstins": node.attrs.get("gstins", []),
-            "names": node.attrs.get("names", []),
-            "documents": len(docs),
-            "files": [by_id[d].attrs.get("filename", d) for d in docs if d in by_id],
-        })
+        docs = sorted(
+            {e.src for e in g.edges if e.dst == node.id and e.type in ("mentions_org", "issued_by", "billed_to")}
+        )
+        out.append(
+            {
+                "org": node.id,
+                "pan": node.attrs.get("pan", ""),
+                "gstins": node.attrs.get("gstins", []),
+                "names": node.attrs.get("names", []),
+                "documents": len(docs),
+                "files": [by_id[d].attrs.get("filename", d) for d in docs if d in by_id],
+            }
+        )
     return sorted(out, key=lambda d: (-d["documents"], d["org"]))
 
 
@@ -432,14 +425,18 @@ def orphan_references(g: Graph, records: list[dict], gcfg: dict) -> list[dict]:
 def to_dot(g: Graph) -> str:
     """Graphviz source, so the thing can actually be looked at."""
     shapes = {"document": "box", "organization": "ellipse", "account": "diamond"}
-    L = ["digraph kg {", '  rankdir=LR;', '  node [fontname="Helvetica" fontsize=10];',
-         '  edge [fontname="Helvetica" fontsize=8];']
+    L = [
+        "digraph kg {",
+        "  rankdir=LR;",
+        '  node [fontname="Helvetica" fontsize=10];',
+        '  edge [fontname="Helvetica" fontsize=8];',
+    ]
     for n in g.nodes:
         if n.kind == "document":
             lab = f"{n.attrs.get('filename', n.id)}\\n{n.attrs.get('label', '')}"
         elif n.kind == "organization":
             names = n.attrs.get("names") or []
-            lab = (names[0] if names else n.attrs.get("pan", n.id))
+            lab = names[0] if names else n.attrs.get("pan", n.id)
         else:
             lab = f"{n.attrs.get('ifsc', '')}\\n{n.attrs.get('number', '')}"
         L.append(f'  "{n.id}" [label="{lab}" shape={shapes.get(n.kind, "box")}];')
@@ -472,8 +469,7 @@ def render_report(g: Graph, stats: dict, chains, exposure, orphans, source: str)
         a(f"| {k} | {v} |")
     a("")
     if stats["unverified_ids_ignored"]:
-        a(f"Ignored {stats['unverified_ids_ignored']} unverified identifier(s) "
-          "rather than risk a wrong merge.")
+        a(f"Ignored {stats['unverified_ids_ignored']} unverified identifier(s) " "rather than risk a wrong merge.")
         a("")
 
     a("## Organisations")
@@ -481,8 +477,10 @@ def render_report(g: Graph, stats: dict, chains, exposure, orphans, source: str)
     a("| pan | gstins | names seen | documents |")
     a("| --- | --- | --- | --- |")
     for o in exposure:
-        a(f"| {o['pan']} | {', '.join(o['gstins']) or 'none'} | "
-          f"{', '.join(o['names']) or 'none'} | {o['documents']} |")
+        a(
+            f"| {o['pan']} | {', '.join(o['gstins']) or 'none'} | "
+            f"{', '.join(o['names']) or 'none'} | {o['documents']} |"
+        )
     a("")
 
     a("## Document chains")
@@ -491,8 +489,7 @@ def render_report(g: Graph, stats: dict, chains, exposure, orphans, source: str)
         a("| from | | to | via |")
         a("| --- | --- | --- | --- |")
         for c in chains:
-            a(f"| {c['from']} ({c['from_class']}) | references | "
-              f"{c['to']} ({c['to_class']}) | {c['key']} |")
+            a(f"| {c['from']} ({c['from_class']}) | references | " f"{c['to']} ({c['to_class']}) | {c['key']} |")
     else:
         a("No document referenced another.")
     a("")
@@ -543,7 +540,5 @@ def build(input_path, output_path, gcfg: dict, dot_path=None, report_path=None) 
             encoding="utf-8",
         )
 
-    log.info("graph built", extra={k: v for k, v in stats.items()
-                                  if k not in ("duplicate_groups", "edges_by_type")})
-    return {"graph": g, "stats": stats, "chains": chains,
-            "exposure": exposure, "orphans": orphans}
+    log.info("graph built", extra={k: v for k, v in stats.items() if k not in ("duplicate_groups", "edges_by_type")})
+    return {"graph": g, "stats": stats, "chains": chains, "exposure": exposure, "orphans": orphans}

@@ -27,7 +27,7 @@ def _fields(cfg, text):
     fields, errors = extract_fields(text, [text], cfg, doc_class="court_document")
     assert not errors
     for f in fields:
-        assert text[f.char_start:f.char_end] == f.value
+        assert text[f.char_start : f.char_end] == f.value
     return {f.field: f.normalized_value for f in fields}
 
 

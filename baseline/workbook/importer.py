@@ -119,6 +119,7 @@ def _doc_id_to_path(root: Path) -> dict[str, str]:
 
 def _offsets(row: tuple, index: dict[str, int]) -> dict[str, int]:
     """Page and span. Both ends of the span or neither, never one."""
+
     def as_int(column: str) -> int | None:
         raw = _get(row, index, column)
         try:
@@ -167,15 +168,15 @@ def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> Wor
     res.rows = [gold[k] for k in sorted(gold)]
 
     if res.unresolved_doc_ids:
-        log.warning("workbook rows whose doc_id is not under --root",
-                    extra={"count": len(res.unresolved_doc_ids)})
+        log.warning("workbook rows whose doc_id is not under --root", extra={"count": len(res.unresolved_doc_ids)})
     for problem in res.problems:
         log.error("workbook uses names the config does not declare", extra={"detail": problem})
     return res
 
 
-def _import_documents(doc_i: dict[str, int], doc_rows: list[tuple], by_id: dict[str, str],
-                      cfg: Config, res: WorkbookImport) -> dict[str, dict[str, Any]]:
+def _import_documents(
+    doc_i: dict[str, int], doc_rows: list[tuple], by_id: dict[str, str], cfg: Config, res: WorkbookImport
+) -> dict[str, dict[str, Any]]:
     """The Documents tab: one gold row per document the reviewer gave a class."""
     classes = {c.casefold() for c in cfg.class_names}
     unknown_label = str(cfg.classify_opts().get("unknown_label", "unknown")).casefold()
@@ -198,8 +199,7 @@ def _import_documents(doc_i: dict[str, int], doc_rows: list[tuple], by_id: dict[
         elif verdict in ("wrong", "missing"):
             label = corrected
             if not label:
-                res.missing_correction.append(
-                    f"Documents/{doc_id}: {verdict} with no CLASS_CORRECTED")
+                res.missing_correction.append(f"Documents/{doc_id}: {verdict} with no CLASS_CORRECTED")
                 continue
         else:
             # No usable verdict means nobody has said what the truth is.
@@ -232,8 +232,9 @@ def _import_documents(doc_i: dict[str, int], doc_rows: list[tuple], by_id: dict[
     return gold
 
 
-def _import_metadata(meta_i: dict[str, int], meta_rows: list[tuple],
-                     gold: dict[str, dict[str, Any]], cfg: Config, res: WorkbookImport) -> None:
+def _import_metadata(
+    meta_i: dict[str, int], meta_rows: list[tuple], gold: dict[str, dict[str, Any]], cfg: Config, res: WorkbookImport
+) -> None:
     """The Metadata tab: confirmed and corrected field values, normalised."""
     normalizers = {str(f.get("name", "")).casefold(): f.get("normalizer") for f in cfg.field_defs}
     fields = set(normalizers)
@@ -270,8 +271,7 @@ def _import_metadata(meta_i: dict[str, int], meta_rows: list[tuple],
         else:
             typed = _get(row, meta_i, "CORRECTED_VALUE")
             if not typed:
-                res.missing_correction.append(
-                    f"Metadata/{doc_id}/{name}: {verdict} with no CORRECTED_VALUE")
+                res.missing_correction.append(f"Metadata/{doc_id}/{name}: {verdict} with no CORRECTED_VALUE")
                 continue
             # No span: the reviewer supplied an answer, not a place in the text.
             offsets = {}
@@ -282,7 +282,8 @@ def _import_metadata(meta_i: dict[str, int], meta_rows: list[tuple],
         # normalizers are idempotent, so a value the pipeline already produced
         # passes through untouched.
         value, _extras = normalize(
-            normalizers.get(name), typed,
+            normalizers.get(name),
+            typed,
             NormCtx(full=typed, start=0, end=len(typed), opts=norm_opts),
         )
         value = "" if value is None else str(value).strip()
@@ -306,8 +307,9 @@ def _import_metadata(meta_i: dict[str, int], meta_rows: list[tuple],
         gold[doc_id]["metadata"].append(entry)
 
 
-def _import_tags(tag_i: dict[str, int], tag_rows: list[tuple],
-                 gold: dict[str, dict[str, Any]], cfg: Config, res: WorkbookImport) -> None:
+def _import_tags(
+    tag_i: dict[str, int], tag_rows: list[tuple], gold: dict[str, dict[str, Any]], cfg: Config, res: WorkbookImport
+) -> None:
     """The Tags tab: a tag is either on the document or it is not."""
     tags = {str(t.get("name", "")).casefold() for t in cfg.tag_defs}
 
@@ -344,16 +346,15 @@ def _import_tags(tag_i: dict[str, int], tag_rows: list[tuple],
 
 def render_summary(res: WorkbookImport, xlsx_path: str, root: str) -> str:
     """What this gold file can and cannot be used to claim."""
-    with_spans = sum(
-        1 for r in res.rows
-        if any("char_start" in e for e in r["metadata"])
-    )
+    with_spans = sum(1 for r in res.rows if any("char_start" in e for e in r["metadata"]))
     lines = [
-        "# Imported workbook", "",
-        f"Source: `{xlsx_path}`", f"Root: `{root}`", "",
+        "# Imported workbook",
+        "",
+        f"Source: `{xlsx_path}`",
+        f"Root: `{root}`",
+        "",
         f"- gold rows written: {len(res.rows)}",
-        f"- documents carrying at least one gold field: "
-        f"{sum(1 for r in res.rows if r['metadata'])}",
+        f"- documents carrying at least one gold field: " f"{sum(1 for r in res.rows if r['metadata'])}",
         f"- documents carrying character offsets: {with_spans}",
         f"- gold fields: {sum(len(r['metadata']) for r in res.rows)}",
         f"- gold tags: {sum(len(r['tags']) for r in res.rows)}",
@@ -366,14 +367,15 @@ def render_summary(res: WorkbookImport, xlsx_path: str, root: str) -> str:
 
     verdicts = {k: v for k, v in sorted(res.counts.items())}
     if verdicts:
-        lines += ["", "## Where the gold came from", "",
-                  "| row | verdict | count |", "| --- | --- | --- |"]
+        lines += ["", "## Where the gold came from", "", "| row | verdict | count |", "| --- | --- | --- |"]
         for key, count in verdicts.items():
             kind, _, verdict = key.partition("_")
             lines.append(f"| {kind} | `{verdict}` | {count} |")
 
     lines += [
-        "", "## What this gold cannot measure", "",
+        "",
+        "## What this gold cannot measure",
+        "",
         "The workbook is an export of what the pipeline produced, so a row",
         "exists only where the pipeline emitted something or a human added one",
         "by hand. A field or tag the pipeline never found leaves no trace in",
@@ -391,37 +393,62 @@ def render_summary(res: WorkbookImport, xlsx_path: str, root: str) -> str:
     ]
 
     if res.unresolved_doc_ids:
-        lines += ["", "## Rows pointing at content that is not here", "",
-                  "The doc_id is the SHA-256 of the file's bytes, so these rows were",
-                  "reviewed against a file that is not under `--root`. Same name is",
-                  "not same file. They are still in the gold, without a path, and will",
-                  "not join to any prediction until the content turns up.", ""]
+        lines += [
+            "",
+            "## Rows pointing at content that is not here",
+            "",
+            "The doc_id is the SHA-256 of the file's bytes, so these rows were",
+            "reviewed against a file that is not under `--root`. Same name is",
+            "not same file. They are still in the gold, without a path, and will",
+            "not join to any prediction until the content turns up.",
+            "",
+        ]
         lines += [f"- `{d}`" for d in sorted(set(res.unresolved_doc_ids))]
 
     if res.confirmed_abstentions:
-        lines += ["", "## Abstentions confirmed as correct", "",
-                  "The reviewer agreed the pipeline was right not to answer. That is",
-                  "useful, but it is not a label: these documents still have a real",
-                  "class that nobody has written down, so they carry no classification",
-                  "gold. Put the true class in CLASS_CORRECTED to score them.", "",
-                  f"- {len(res.confirmed_abstentions)} document(s)"]
+        lines += [
+            "",
+            "## Abstentions confirmed as correct",
+            "",
+            "The reviewer agreed the pipeline was right not to answer. That is",
+            "useful, but it is not a label: these documents still have a real",
+            "class that nobody has written down, so they carry no classification",
+            "gold. Put the true class in CLASS_CORRECTED to score them.",
+            "",
+            f"- {len(res.confirmed_abstentions)} document(s)",
+        ]
 
     if res.missing_correction:
-        lines += ["", "## Rows marked wrong with nothing to replace them", "",
-                  "Nobody has said what the right answer is, so these produce no gold.", ""]
+        lines += [
+            "",
+            "## Rows marked wrong with nothing to replace them",
+            "",
+            "Nobody has said what the right answer is, so these produce no gold.",
+            "",
+        ]
         lines += [f"- {d}" for d in sorted(set(res.missing_correction))]
 
     if res.orphan_rows:
         counts = Counter(res.orphan_rows)
-        lines += ["", "## Rows with no gold document", "",
-                  "A Metadata or Tags row whose DOC_ID is absent from the Documents",
-                  "tab, or whose document produced no gold row.", ""]
+        lines += [
+            "",
+            "## Rows with no gold document",
+            "",
+            "A Metadata or Tags row whose DOC_ID is absent from the Documents",
+            "tab, or whose document produced no gold row.",
+            "",
+        ]
         lines += [f"- {k} ({v})" if v > 1 else f"- {k}" for k, v in sorted(counts.items())]
 
     if res.problems:
-        lines += ["", "## Names the config does not declare", "",
-                  "Nothing here was guessed at. Add the name to the relevant config",
-                  "file, or correct it in the sheet.", ""]
+        lines += [
+            "",
+            "## Names the config does not declare",
+            "",
+            "Nothing here was guessed at. Add the name to the relevant config",
+            "file, or correct it in the sheet.",
+            "",
+        ]
         lines += [f"- {p}" for p in res.problems]
 
     return "\n".join(lines) + "\n"

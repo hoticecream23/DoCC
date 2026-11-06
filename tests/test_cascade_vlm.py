@@ -1,5 +1,4 @@
 import pytest
-
 from vlm_stub import chat, serve
 
 SCHEMA = {"type": "object"}
@@ -100,20 +99,34 @@ def test_an_unexpected_response_shape_is_an_error():
             _client(url).complete(MESSAGES, SCHEMA)
 
 
-@pytest.mark.parametrize("url", [
-    "http://127.0.0.1:8000/v1", "http://localhost:11434/v1", "http://[::1]:8000/v1",
-])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8000/v1",
+        "http://localhost:11434/v1",
+        "http://[::1]:8000/v1",
+    ],
+)
 def test_loopback_hosts_are_accepted(url):
     from cascade.vlm import check_local
 
     check_local(url, [])
 
 
-@pytest.mark.parametrize("url", [
-    "http://10.0.0.5:8000/v1", "https://api.example.com/v1", "file:///etc/passwd", "http:///v1",
-    "http://evil.com@127.0.0.1/v1", "http://evil.com%2F@127.0.0.1/v1", "http://user:pw@127.0.0.1/v1",
-    "http://127.0.0.1:8000/v1?x=1", "http://127.0.0.1:80\t.evil.com/v1",
-])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://10.0.0.5:8000/v1",
+        "https://api.example.com/v1",
+        "file:///etc/passwd",
+        "http:///v1",
+        "http://evil.com@127.0.0.1/v1",
+        "http://evil.com%2F@127.0.0.1/v1",
+        "http://user:pw@127.0.0.1/v1",
+        "http://127.0.0.1:8000/v1?x=1",
+        "http://127.0.0.1:80\t.evil.com/v1",
+    ],
+)
 def test_non_local_hosts_are_refused(url):
     from cascade.vlm import check_local
 
@@ -190,13 +203,17 @@ def test_api_key_over_plain_http_to_a_non_loopback_host_warns_and_constructs(mon
 
     monkeypatch.setenv("CASCADE_TEST_KEY", "secret")
     with caplog.at_level("WARNING"):
-        VLMClient(_settings("http://gpu-box.internal:8000/v1", api_key_env="CASCADE_TEST_KEY",
-                            allowed_hosts=["gpu-box.internal"]))
+        VLMClient(
+            _settings(
+                "http://gpu-box.internal:8000/v1", api_key_env="CASCADE_TEST_KEY", allowed_hosts=["gpu-box.internal"]
+            )
+        )
     assert "API key sent over plain http to gpu-box.internal" in caplog.text
     caplog.clear()
     with caplog.at_level("WARNING"):
-        VLMClient(_settings("https://gpu-box.internal/v1", api_key_env="CASCADE_TEST_KEY",
-                            allowed_hosts=["gpu-box.internal"]))
+        VLMClient(
+            _settings("https://gpu-box.internal/v1", api_key_env="CASCADE_TEST_KEY", allowed_hosts=["gpu-box.internal"])
+        )
     assert "plain http" not in caplog.text
 
 

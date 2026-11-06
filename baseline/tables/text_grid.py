@@ -30,9 +30,7 @@ def _blank_runs(lines: list[str], width: int, min_width: int) -> list[tuple[int,
     return [r for r in runs if (r[1] - r[0]) >= min_width]
 
 
-def detect_text_grid(
-    page: int, page_text: str, page_start: int, tcfg: dict
-) -> tuple[list[Table], list[str]]:
+def detect_text_grid(page: int, page_text: str, page_start: int, tcfg: dict) -> tuple[list[Table], list[str]]:
     """Tables on one page from whitespace columns in the canonical text.
 
     Works on anything with text, including documents that carry no geometry
@@ -65,8 +63,17 @@ def detect_text_grid(
             continue
         if len(band) >= min_rows:
             t, a = _search_band(
-                page, band, raw_lines, offsets, min_sep, min_rows, min_cols,
-                min_cells, min_multi, int(tcg.get("max_band_lines", 400)), tcfg,
+                page,
+                band,
+                raw_lines,
+                offsets,
+                min_sep,
+                min_rows,
+                min_cols,
+                min_cells,
+                min_multi,
+                int(tcg.get("max_band_lines", 400)),
+                tcfg,
             )
             tables.extend(t)
             abstained.extend(a)
@@ -103,9 +110,7 @@ def _search_band(
     if len(band) > max_band_lines:
         # Quadratic search is not worth it on a wall of text, and a wall of
         # text is not a table. Judge the band as it stands and move on.
-        return _text_grid_band(
-            page, band, raw_lines, offsets, min_sep, min_cols, min_cells, min_multi, tcfg
-        )
+        return _text_grid_band(page, band, raw_lines, offsets, min_sep, min_cols, min_cells, min_multi, tcfg)
 
     tables: list[Table] = []
     abstained: list[str] = []
@@ -113,8 +118,15 @@ def _search_band(
     for i in range(len(band)):
         for j in range(i + min_rows, len(band) + 1):
             got, _ = _text_grid_band(
-                page, band[i:j], raw_lines, offsets, min_sep, min_cols,
-                min_cells, min_multi, tcfg,
+                page,
+                band[i:j],
+                raw_lines,
+                offsets,
+                min_sep,
+                min_cols,
+                min_cells,
+                min_multi,
+                tcfg,
             )
             if got:
                 best_of.append((-got[0].n_cols, -got[0].n_rows, i, got[0]))
@@ -122,9 +134,7 @@ def _search_band(
     # Nothing anywhere inside the band. Report why the band as a whole failed,
     # rather than one reason per rejected sub run, which would be noise.
     if not best_of:
-        _, why = _text_grid_band(
-            page, band, raw_lines, offsets, min_sep, min_cols, min_cells, min_multi, tcfg
-        )
+        _, why = _text_grid_band(page, band, raw_lines, offsets, min_sep, min_cols, min_cells, min_multi, tcfg)
         return [], why
 
     # Take the best candidate, then look either side of it for another table.
@@ -133,11 +143,20 @@ def _search_band(
     used = {c.row + start for c in table.cells}
     lo, hi = min(used), max(used)
     tables.append(table)
-    for side in (band[:lo], band[hi + 1:]):
+    for side in (band[:lo], band[hi + 1 :]):
         if len(side) >= min_rows:
             got, why = _search_band(
-                page, side, raw_lines, offsets, min_sep, min_rows, min_cols,
-                min_cells, min_multi, max_band_lines, tcfg,
+                page,
+                side,
+                raw_lines,
+                offsets,
+                min_sep,
+                min_rows,
+                min_cols,
+                min_cells,
+                min_multi,
+                max_band_lines,
+                tcfg,
             )
             tables.extend(got)
             abstained.extend(why)
@@ -186,8 +205,12 @@ def _text_grid_band(
             start = offsets[line_idx] + c0 + lead
             row_cells.append(
                 TableCell(
-                    row=r, col=c, text=content, page=page,
-                    char_start=start, char_end=start + len(content),
+                    row=r,
+                    col=c,
+                    text=content,
+                    page=page,
+                    char_start=start,
+                    char_end=start + len(content),
                 )
             )
         grid.append(row_cells)

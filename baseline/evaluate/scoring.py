@@ -14,7 +14,7 @@ KEYS = ("doc_id", "source_path", "path")
 
 def load_jsonl(path: str | Path) -> list[dict]:
     rows = []
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         for i, line in enumerate(fh, 1):
             line = line.strip()
             if not line:
@@ -69,8 +69,7 @@ def prf(tp: int, fp: int, fn: int) -> dict:
     p = tp / (tp + fp) if tp + fp else 0.0
     r = tp / (tp + fn) if tp + fn else 0.0
     f = 2 * p * r / (p + r) if p + r else 0.0
-    return {"precision": round(p, 4), "recall": round(r, 4), "f1": round(f, 4),
-            "tp": tp, "fp": fp, "fn": fn}
+    return {"precision": round(p, 4), "recall": round(r, 4), "f1": round(f, 4), "tp": tp, "fp": fp, "fn": fn}
 
 
 def levenshtein(a: str, b: str) -> int:
@@ -134,8 +133,7 @@ def eval_extraction(pairs: list[tuple[dict, dict]]) -> dict:
     }
 
 
-def coverage_at_error(items: list[tuple[float, bool]], unknown_flags: list[bool],
-                      targets=(0.01, 0.05, 0.10)) -> dict:
+def coverage_at_error(items: list[tuple[float, bool]], unknown_flags: list[bool], targets=(0.01, 0.05, 0.10)) -> dict:
     """Max coverage achievable while staying under each error rate.
 
     Coverage is the share of all documents answered. Error is measured only
@@ -166,9 +164,7 @@ def coverage_at_error(items: list[tuple[float, bool]], unknown_flags: list[bool]
 
 
 def eval_classification(pairs: list[tuple[dict, dict]], unknown_label: str = "unknown") -> dict:
-    per: dict[str, dict[str, int]] = collections.defaultdict(
-        lambda: {"tp": 0, "fp": 0, "fn": 0}
-    )
+    per: dict[str, dict[str, int]] = collections.defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
     correct = answered = 0
     conf_items, unknown_flags = [], []
     confusion: collections.Counter = collections.Counter()
@@ -197,9 +193,7 @@ def eval_classification(pairs: list[tuple[dict, dict]], unknown_label: str = "un
 
     labels = sorted(per)
     per_label = {k: prf(per[k]["tp"], per[k]["fp"], per[k]["fn"]) for k in labels}
-    macro = round(
-        statistics.fmean([v["f1"] for v in per_label.values()]) if per_label else 0.0, 4
-    )
+    macro = round(statistics.fmean([v["f1"] for v in per_label.values()]) if per_label else 0.0, 4)
     n = len(pairs)
     return {
         "n": n,
@@ -229,12 +223,8 @@ def eval_metadata(pairs: list[tuple[dict, dict]]) -> dict:
     span:  did we point at the right place in the text.
     Span needs gold offsets, so it is skipped where gold has none.
     """
-    val: dict[str, dict[str, int]] = collections.defaultdict(
-        lambda: {"tp": 0, "fp": 0, "fn": 0}
-    )
-    span: dict[str, dict[str, int]] = collections.defaultdict(
-        lambda: {"tp": 0, "fp": 0, "fn": 0}
-    )
+    val: dict[str, dict[str, int]] = collections.defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
+    span: dict[str, dict[str, int]] = collections.defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
     span_scored = 0
     validated_tp = validated_fp = 0
     errors: list[str] = []
@@ -280,9 +270,7 @@ def eval_metadata(pairs: list[tuple[dict, dict]]) -> dict:
             val[name]["fp"] += len(got - want)
             val[name]["fn"] += len(want - got)
             if want and not (got & want):
-                errors.append(
-                    f"{_keys_of(g)[0]}: {name} want {sorted(want)!r} got {sorted(got) or 'nothing'!r}"
-                )
+                errors.append(f"{_keys_of(g)[0]}: {name} want {sorted(want)!r} got {sorted(got) or 'nothing'!r}")
 
         if has_spans:
             span_scored += 1
@@ -305,18 +293,16 @@ def eval_metadata(pairs: list[tuple[dict, dict]]) -> dict:
         "value": _roll(val),
         "span": _roll(span) if span_scored else {"per_field": {}, "note": "gold has no offsets"},
         "span_scored_docs": span_scored,
-        "validated_precision": round(
-            validated_tp / (validated_tp + validated_fp), 4
-        ) if validated_tp + validated_fp else None,
+        "validated_precision": (
+            round(validated_tp / (validated_tp + validated_fp), 4) if validated_tp + validated_fp else None
+        ),
         "validated_wrong": validated_fp,
         "errors": errors[:40],
     }
 
 
 def eval_tagging(pairs: list[tuple[dict, dict]]) -> dict:
-    per: dict[str, dict[str, int]] = collections.defaultdict(
-        lambda: {"tp": 0, "fp": 0, "fn": 0}
-    )
+    per: dict[str, dict[str, int]] = collections.defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
     for g, p in pairs:
         want = set(g.get("tags") or [])
         got = {t["tag"] for t in (p.get("tags") or []) if t.get("tag")}
@@ -335,9 +321,7 @@ def eval_tagging(pairs: list[tuple[dict, dict]]) -> dict:
     return {
         "per_tag": per_tag,
         "micro": prf(tp, fp, fn),
-        "macro_f1": round(
-            statistics.fmean([v["f1"] for v in per_tag.values()]) if per_tag else 0.0, 4
-        ),
+        "macro_f1": round(statistics.fmean([v["f1"] for v in per_tag.values()]) if per_tag else 0.0, 4),
     }
 
 

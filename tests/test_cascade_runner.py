@@ -5,15 +5,18 @@ import pytest
 from baseline.pipeline import process_document as baseline_process
 from baseline.schema import ClassifyMethod, MetadataMethod
 
-INVOICE_ANSWER = {"class": "invoice", "fields": {
-    "invoice_number": ["INV-2024-0042"],
-    "invoice_date": ["2024-03-14"],                # model reformatted it
-    "total_amount": ["11800.00"],                  # printed as 11,800.00
-    "vendor_name": ["Acme Traders Private Limited"],  # printed twice
-    "buyer_name": ["Hallucinated Holdings"],       # not on the document
-    "gstin": ["27AAPFU0939F1ZV"],
-    "pan": ["AAPFU0939F"],
-}}
+INVOICE_ANSWER = {
+    "class": "invoice",
+    "fields": {
+        "invoice_number": ["INV-2024-0042"],
+        "invoice_date": ["2024-03-14"],  # model reformatted it
+        "total_amount": ["11800.00"],  # printed as 11,800.00
+        "vendor_name": ["Acme Traders Private Limited"],  # printed twice
+        "buyer_name": ["Hallucinated Holdings"],  # not on the document
+        "gstin": ["27AAPFU0939F1ZV"],
+        "pan": ["AAPFU0939F"],
+    },
+}
 NOTHING = {"class": "unknown", "fields": {}}
 
 
@@ -49,9 +52,10 @@ def _invoice_or_nothing(text):
 
 @pytest.fixture(scope="module")
 def ccfg():
+    from conftest import ROOT
+
     from cascade.config import load_cascade_config
 
-    from conftest import ROOT
     return load_cascade_config(ROOT / "config")
 
 
@@ -64,8 +68,7 @@ def test_invoice_end_to_end(corpus, cfg, ccfg):
     assert rec.classification.label == "invoice" and rec.classification.method is ClassifyMethod.RULE
     by = {m.field: m for m in rec.metadata}
 
-    assert (by["invoice_number"].value, by["invoice_number"].method) == (
-        "INV-2024-0042", MetadataMethod.VLM_RULE_AGREE)
+    assert (by["invoice_number"].value, by["invoice_number"].method) == ("INV-2024-0042", MetadataMethod.VLM_RULE_AGREE)
     assert (by["invoice_date"].value, by["invoice_date"].normalized_value) == ("14/03/2024", "2024-03-14")
     assert (by["total_amount"].value, by["total_amount"].normalized_value) == ("11,800.00", "11800.00")
 
@@ -103,8 +106,9 @@ def test_a_down_server_falls_back_to_the_baseline_answer(corpus, cfg, ccfg):
 def test_a_malformed_answer_falls_back_too(corpus, cfg, ccfg):
     from cascade.runner import process_document
 
-    r = process_document(corpus / "invoice_native.pdf", cfg, ccfg,
-                         FakeBackend(lambda text: {"class": "not_a_class", "fields": {}}))
+    r = process_document(
+        corpus / "invoice_native.pdf", cfg, ccfg, FakeBackend(lambda text: {"class": "not_a_class", "fields": {}})
+    )
     assert r.provenance["fallback"] is True
     assert any("VLMOutputError" in e for e in r.record.diagnostics.errors)
 
@@ -127,12 +131,15 @@ def test_batch_writes_one_record_and_one_provenance_line_per_document(corpus, cf
     assert stats["written"] + stats["failed"] == stats["found"]
     assert stats["failed"] == 0
     assert stats["fallback"] >= 1  # broken.pdf cannot be rendered
-    records = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
-    provs = [json.loads(l) for l in (tmp_path / "cascade.jsonl.provenance").read_text(encoding="utf-8").splitlines()]
+    records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    provs = [
+        json.loads(line) for line in (tmp_path / "cascade.jsonl.provenance").read_text(encoding="utf-8").splitlines()
+    ]
     assert len(records) == stats["written"] == len(provs)
     assert [r["doc_id"] for r in records] == [p["doc_id"] for p in provs]
 
     from baseline.schema import DocumentRecord
+
     for r in records:
         assert DocumentRecord.model_validate(r).verify_offsets() == []
 
@@ -179,14 +186,16 @@ def _stub_client(url):
     from cascade.config import VLMSettings
     from cascade.vlm import VLMClient
 
-    return VLMClient(VLMSettings(base_url=url, model="m", timeout_s=2, retries=0, backoff_s=0, max_tokens=100),
-                     sleep=lambda s: None)
+    return VLMClient(
+        VLMSettings(base_url=url, model="m", timeout_s=2, retries=0, backoff_s=0, max_tokens=100), sleep=lambda s: None
+    )
 
 
 def test_a_400_is_retried_once_with_half_the_pages(corpus, cfg, ccfg):
+    from vlm_stub import chat, serve
+
     from cascade.prompt import response_schema
     from cascade.runner import process_document
-    from vlm_stub import chat, serve
 
     names = response_schema(cfg)["properties"]["fields"]["required"]
     ok = chat(json.dumps({"class": "unknown", "fields": {n: [] for n in names}}))
@@ -198,8 +207,9 @@ def test_a_400_is_retried_once_with_half_the_pages(corpus, cfg, ccfg):
 
 
 def test_a_second_400_falls_back(corpus, cfg, ccfg):
-    from cascade.runner import process_document
     from vlm_stub import serve
+
+    from cascade.runner import process_document
 
     with serve([(400, '{"error": "context"}', 0, None)]) as (url, reqs):
         r = process_document(corpus / "invoice_native.pdf", cfg, ccfg, _stub_client(url))

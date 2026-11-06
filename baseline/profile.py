@@ -93,14 +93,10 @@ def profile_corpus(input_dir: str | Path, cfg: Config) -> dict:
             stats["conf_by_method"][pm.value].append(pc)
         if res.method == ExtractionMethod.HYBRID:
             # Same document, both routes. This is the cleanest comparison there is.
-            nat = [c for m, c in zip(res.page_methods, res.page_confidences)
-                   if m == ExtractionMethod.NATIVE]
-            ocr = [c for m, c in zip(res.page_methods, res.page_confidences)
-                   if m == ExtractionMethod.OCR]
+            nat = [c for m, c in zip(res.page_methods, res.page_confidences) if m == ExtractionMethod.NATIVE]
+            ocr = [c for m, c in zip(res.page_methods, res.page_confidences) if m == ExtractionMethod.OCR]
             if nat and ocr:
-                stats["hybrid_deltas"].append(
-                    (p.name, statistics.fmean(nat), statistics.fmean(ocr))
-                )
+                stats["hybrid_deltas"].append((p.name, statistics.fmean(nat), statistics.fmean(ocr)))
         if res.has_native_text:
             stats["with_native_text"] += 1
         if res.is_scanned:
@@ -150,16 +146,20 @@ def _md_header(stats: dict, input_dir: str, n: int) -> list[str]:
     if excluded:
         seen = stats.get("n_files_seen", n)
         a("")
-        a(f"`{input_dir}` holds {seen} files. {seen - n} of them are not documents "
-          "and were excluded before anything ran:")
+        a(
+            f"`{input_dir}` holds {seen} files. {seen - n} of them are not documents "
+            "and were excluded before anything ran:"
+        )
         a("")
         a("| reason | files |")
         a("| --- | --- |")
         for reason, count in excluded.items():
             a(f"| `{reason}` | {count} |")
         a("")
-        a("See `EXCLUDED_EXT` and `_exclusion_reason` in `scan.py` for what each "
-          "reason means and why it was decided that way.")
+        a(
+            "See `EXCLUDED_EXT` and `_exclusion_reason` in `scan.py` for what each "
+            "reason means and why it was decided that way."
+        )
     a("")
     a("No models were used. Everything below is the deterministic floor.")
     a("")

@@ -31,7 +31,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     backend = VLMClient(settings)  # refuses a missing model or a non local host
     log.info("cascade server", extra={"base_url": settings.base_url, "model": settings.model})
     stats = run_batch(
-        args.input, args.output, cfg, ccfg, backend,
+        args.input,
+        args.output,
+        cfg,
+        ccfg,
+        backend,
         models=Models.load(cfg, Path(args.root)),
         bbox_dir=args.bbox_dir,
         resume=not args.no_resume,

@@ -1,4 +1,5 @@
 """Local demo server for the baseline pipeline. Stdlib only, binds 127.0.0.1."""
+
 from __future__ import annotations
 
 import base64
@@ -40,8 +41,11 @@ make_backend = VLMClient  # seam: tests swap in a fake backend
 
 def vlm_settings(ccfg):
     """cascade.yaml, then env overrides; Ollama on this laptop when nothing is set."""
-    over = {k: v for k, v in (("base_url", os.environ.get("DOCC_VLM_BASE_URL")),
-                              ("model", os.environ.get("DOCC_VLM_MODEL"))) if v}
+    over = {
+        k: v
+        for k, v in (("base_url", os.environ.get("DOCC_VLM_BASE_URL")), ("model", os.environ.get("DOCC_VLM_MODEL")))
+        if v
+    }
     if ccfg.vlm.model is None and not over:
         over = {"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3.5:9b-16k"}
     return ccfg.vlm.model_copy(update=over)
@@ -118,12 +122,15 @@ def make_server(port: int, root: Path) -> ThreadingHTTPServer:
         if mode == "cascade":
             res = cascade_process(path, cfg, ccfg, get_backend(), models)
             record = res.record
-            out["provenance"] = {k: res.provenance[k] for k in (
-                "model", "finish_reason", "pages_sent", "images_sent", "fallback", "errors", "timings_ms")}
+            out["provenance"] = {
+                k: res.provenance[k]
+                for k in ("model", "finish_reason", "pages_sent", "images_sent", "fallback", "errors", "timings_ms")
+            }
         else:
             record, _ = process_document(path, cfg, models)
-        out.update(record=record.model_dump(mode="json"), pages=render_pages(path),
-                   total_ms=(time.perf_counter() - t0) * 1000)
+        out.update(
+            record=record.model_dump(mode="json"), pages=render_pages(path), total_ms=(time.perf_counter() - t0) * 1000
+        )
         return out
 
     class Handler(BaseHTTPRequestHandler):
@@ -160,8 +167,9 @@ def make_server(port: int, root: Path) -> ThreadingHTTPServer:
                     return self._send(404, b"demo/index.html not found", "text/plain; charset=utf-8")
                 return self._send(200, page.read_bytes(), "text/html; charset=utf-8")
             if path == "/api/status":
-                return self._json(200, {"cascade": {"base_url": vlm.base_url, "model": vlm.model,
-                                                    "reachable": reachable(vlm)}})
+                return self._json(
+                    200, {"cascade": {"base_url": vlm.base_url, "model": vlm.model, "reachable": reachable(vlm)}}
+                )
             if path == "/api/corpus":
                 return self._json(200, sorted(p.name for p in corpus.iterdir() if p.is_file()))
             self._json(404, {"error": "not found"})

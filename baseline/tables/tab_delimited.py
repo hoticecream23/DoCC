@@ -12,9 +12,7 @@ from ..schema import Table, TableCell, TableMethod
 from .assemble import _assemble
 
 
-def detect_tab_delimited(
-    page: int, page_text: str, page_start: int, tcfg: dict
-) -> tuple[list[Table], list[str]]:
+def detect_tab_delimited(page: int, page_text: str, page_start: int, tcfg: dict) -> tuple[list[Table], list[str]]:
     """Tables on one page from runs of lines that carry the same tab count.
 
     The structural check is the tab count itself: every row of a Word table
@@ -42,8 +40,12 @@ def detect_tab_delimited(
 
 
 def _run_to_table(
-    page: int, run: list[tuple[int, str]], min_rows: int, min_cols: int,
-    min_cells: int, tcfg: dict,
+    page: int,
+    run: list[tuple[int, str]],
+    min_rows: int,
+    min_cols: int,
+    min_cells: int,
+    tcfg: dict,
 ) -> Table | None:
     if len(run) < min_rows:
         return None
@@ -55,10 +57,16 @@ def _run_to_table(
             content = raw.strip()
             if content:
                 start = line_start + pos + (len(raw) - len(raw.lstrip()))
-                row.append(TableCell(
-                    row=r, col=c, text=content, page=page,
-                    char_start=start, char_end=start + len(content),
-                ))
+                row.append(
+                    TableCell(
+                        row=r,
+                        col=c,
+                        text=content,
+                        page=page,
+                        char_start=start,
+                        char_end=start + len(content),
+                    )
+                )
             else:
                 row.append(None)
             pos += len(raw) + 1

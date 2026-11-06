@@ -157,11 +157,7 @@ def _normalised(
         return []
     places = scan_spans(index.full, fdef) + [(c.start, c.end, c.value) for c in rule_cands]
     return sorted(
-        {
-            (s, e)
-            for s, e, raw in places
-            if index.usable(s, e) and _norm(fdef, raw, index.full, s, e, opts) == target
-        }
+        {(s, e) for s, e, raw in places if index.usable(s, e) and _norm(fdef, raw, index.full, s, e, opts) == target}
     )
 
 
@@ -175,9 +171,7 @@ def _agrees(c: Candidate, s: int, e: int, index: TextIndex, fdef: dict, opts: di
     return mine is not None and _norm(fdef, c.value, index.full, c.start, c.end, opts) == mine
 
 
-def ground(
-    value: str, index: TextIndex, fdef: dict, rule_cands: list[Candidate], norm_opts: dict
-) -> Grounding:
+def ground(value: str, index: TextIndex, fdef: dict, rule_cands: list[Candidate], norm_opts: dict) -> Grounding:
     value = value.strip()
     if not value:
         return Grounding(UNGROUNDED)

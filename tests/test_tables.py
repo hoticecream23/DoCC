@@ -37,14 +37,21 @@ def _grid(table):
 
 # ------------------------------------------------------------- primitives
 
+
 def _w(text, x0, x1, y0=0.0, y1=10.0, start=None):
-    return {"text": text, "x0": x0, "x1": x1, "y0": y0, "y1": y1,
-            "char_start": start, "char_end": None if start is None else start + len(text)}
+    return {
+        "text": text,
+        "x0": x0,
+        "x1": x1,
+        "y0": y0,
+        "y1": y1,
+        "char_start": start,
+        "char_end": None if start is None else start + len(text),
+    }
 
 
 def test_a_wide_gap_ends_a_cell_and_a_space_does_not():
-    line = _Line(y0=0, y1=10, words=[_w("Widget", 0, 30), _w("assembly", 33, 70),
-                                     _w("2500.00", 120, 160)])
+    line = _Line(y0=0, y1=10, words=[_w("Widget", 0, 30), _w("assembly", 33, 70), _w("2500.00", 120, 160)])
     cells = _segment_cells(line, 0, gap_limit=8.0)
     assert [len(c.words) for c in cells] == [2, 1]
 
@@ -67,8 +74,7 @@ def test_two_cells_from_one_row_never_share_a_column():
 
 
 def test_blank_runs_are_the_columns_blank_on_every_line():
-    lines = ["Date        Description   Debit",
-             "01/03/2024  Opening        22.00"]
+    lines = ["Date        Description   Debit", "01/03/2024  Opening        22.00"]
     runs = _blank_runs(lines, max(len(x) for x in lines), min_width=2)
     assert (10, 12) in runs
 
@@ -76,20 +82,19 @@ def test_blank_runs_are_the_columns_blank_on_every_line():
 def test_a_row_of_numbers_is_not_a_header():
     from baseline.schema import TableCell
 
-    row = [TableCell(row=0, col=0, text="45000.00", page=0),
-           TableCell(row=0, col=1, text="7200.00", page=0)]
+    row = [TableCell(row=0, col=0, text="45000.00", page=0), TableCell(row=0, col=1, text="7200.00", page=0)]
     assert not _is_header_row(row, 2, {"require_full_row": True, "max_digit_ratio": 0.1})
 
 
 def test_a_full_row_of_labels_is_a_header():
     from baseline.schema import TableCell
 
-    row = [TableCell(row=0, col=0, text="Qty", page=0),
-           TableCell(row=0, col=1, text="Description", page=0)]
+    row = [TableCell(row=0, col=0, text="Qty", page=0), TableCell(row=0, col=1, text="Description", page=0)]
     assert _is_header_row(row, 2, {"require_full_row": True, "max_digit_ratio": 0.1})
 
 
 # ------------------------------------------------------ geometry strategy
+
 
 def test_invoice_line_items_come_out_of_the_boxes(corpus, cfg):
     row, rec = _tables_for(corpus / "invoice_native.pdf", cfg)
@@ -111,18 +116,18 @@ def test_a_two_row_table_still_counts(corpus, cfg):
 
 def test_table_cells_slice_the_canonical_text_back(corpus, cfg):
     """The contract every offset in this repo lives under."""
-    for name in ("invoice_native.pdf", "bank_statement.pdf",
-                 "purchase_order.pdf", "salary_slip.docx"):
+    for name in ("invoice_native.pdf", "bank_statement.pdf", "purchase_order.pdf", "salary_slip.docx"):
         row, rec = _tables_for(corpus / name, cfg)
         full = row["text"]["full"]
         assert rec.verify_offsets(full) == [], name
         placed = [c for t in rec.tables for c in t.cells if c.char_start is not None]
         assert placed, name
         for c in placed:
-            assert full[c.char_start:c.char_end] == c.text
+            assert full[c.char_start : c.char_end] == c.text
 
 
 # ----------------------------------------------------- text grid strategy
+
 
 def test_the_table_is_found_inside_a_band_with_no_blank_lines(corpus, cfg):
     """A PDF text layer drops blank lines, so the whole page arrives fused.
@@ -179,18 +184,21 @@ def test_a_label_value_block_is_not_a_table(corpus, cfg):
 
 def test_alignment_only_a_couple_of_rows_share_is_refused(tcfg):
     """Two aligned lines in a block of prose is a coincidence, not a column."""
-    body = "\n".join([
-        "alpha beta gamma delta epsilon zeta",
-        "one  two",
-        "three  four",
-        "a much longer line of ordinary prose that runs on",
-        "another long line of ordinary prose running on too",
-    ])
+    body = "\n".join(
+        [
+            "alpha beta gamma delta epsilon zeta",
+            "one  two",
+            "three  four",
+            "a much longer line of ordinary prose that runs on",
+            "another long line of ordinary prose running on too",
+        ]
+    )
     tables, _ = detect_text_grid(0, body, 0, tcfg)
     assert tables == []
 
 
 # ------------------------------------------------------------- abstention
+
 
 def test_a_band_that_does_not_line_up_is_refused_not_guessed(corpus, cfg):
     """Space aligned text rendered in a proportional font loses its columns.
@@ -229,6 +237,7 @@ def test_a_missing_sidecar_is_not_an_error(corpus, cfg):
 
 
 # ------------------------------------------------------------- guarantees
+
 
 def test_the_pass_is_reproducible(corpus, cfg):
     row, _ = _tables_for(corpus / "invoice_native.pdf", cfg)
@@ -282,6 +291,7 @@ def test_v0_never_claims_a_merged_cell(corpus, cfg):
 
 # ------------------------------------------------------------- .docx tables
 
+
 def test_a_word_table_comes_out_cell_for_cell(tmp_path, cfg):
     """A .docx table reaches the text tab joined, which text_grid cannot see."""
     import docx
@@ -289,9 +299,9 @@ def test_a_word_table_comes_out_cell_for_cell(tmp_path, cfg):
     d = docx.Document()
     d.add_paragraph("Annealing cycles, revised")
     t = d.add_table(rows=3, cols=3)
-    for r, row in enumerate([["Work Center", "Thk", "Cycle"],
-                             ["SPD-Bell", "<=6mm", "600C/2hrs"],
-                             ["HRD-Bell", "6-10 mm", "680C/1hr"]]):
+    for r, row in enumerate(
+        [["Work Center", "Thk", "Cycle"], ["SPD-Bell", "<=6mm", "600C/2hrs"], ["HRD-Bell", "6-10 mm", "680C/1hr"]]
+    ):
         for c, text in enumerate(row):
             t.cell(r, c).text = text
     path = tmp_path / "plan.docx"
@@ -300,28 +310,30 @@ def test_a_word_table_comes_out_cell_for_cell(tmp_path, cfg):
     row, rec = _tables_for(path, cfg)
     assert [tb.method for tb in rec.tables] == [TableMethod.TAB_DELIMITED]
     table = rec.tables[0]
-    assert _grid(table) == [["Work Center", "Thk", "Cycle"],
-                            ["SPD-Bell", "<=6mm", "600C/2hrs"],
-                            ["HRD-Bell", "6-10 mm", "680C/1hr"]]
+    assert _grid(table) == [
+        ["Work Center", "Thk", "Cycle"],
+        ["SPD-Bell", "<=6mm", "600C/2hrs"],
+        ["HRD-Bell", "6-10 mm", "680C/1hr"],
+    ]
     assert table.header == ["Work Center", "Thk", "Cycle"]
     full = row["text"]["full"]
-    assert all(full[c.char_start:c.char_end] == c.text for c in table.cells)
+    assert all(full[c.char_start : c.char_end] == c.text for c in table.cells)
     assert rec.diagnostics.errors == []
 
 
 def test_a_change_in_tab_count_ends_the_table(tcfg):
     """Rows of one table share a column count. A line that differs is not in it."""
-    body = "\n".join([
-        "Name\tQty\tRate",
-        "Bolt\t2\t10.00",
-        "Nut\t4\t2.50",
-        "Signed:\tA. Person",
-        "Prepared by the stores team",
-    ])
+    body = "\n".join(
+        [
+            "Name\tQty\tRate",
+            "Bolt\t2\t10.00",
+            "Nut\t4\t2.50",
+            "Signed:\tA. Person",
+            "Prepared by the stores team",
+        ]
+    )
     tables, _ = detect_tab_delimited(0, body, 0, tcfg)
-    assert [_grid(t) for t in tables] == [[["Name", "Qty", "Rate"],
-                                           ["Bolt", "2", "10.00"],
-                                           ["Nut", "4", "2.50"]]]
+    assert [_grid(t) for t in tables] == [[["Name", "Qty", "Rate"], ["Bolt", "2", "10.00"], ["Nut", "4", "2.50"]]]
 
 
 def test_one_tabbed_line_is_not_a_table(tcfg):
@@ -331,6 +343,7 @@ def test_one_tabbed_line_is_not_a_table(tcfg):
 
 
 # ------------------------------------------------------------- failure paths
+
 
 def test_a_strategy_that_raises_is_recorded_not_raised(corpus, cfg, tcfg, monkeypatch):
     import baseline.tables.records as records
@@ -342,8 +355,7 @@ def test_a_strategy_that_raises_is_recorded_not_raised(corpus, cfg, tcfg, monkey
     row, _ = _tables_for(corpus / "bank_statement.pdf", cfg)
     rec = build_record(row, [], {**tcfg, "strategies": ["text_grid", "nonsense"]})
     assert rec.tables == []
-    assert rec.diagnostics.errors == ["text_grid: ValueError: bad page",
-                                      "unknown strategy 'nonsense'"]
+    assert rec.diagnostics.errors == ["text_grid: ValueError: bad page", "unknown strategy 'nonsense'"]
     assert rec.diagnostics.strategies_tried == ["text_grid"]
 
 
@@ -364,8 +376,9 @@ def test_the_whole_pass_writes_records_and_a_report(corpus, cfg, tmp_path):
     bdir = tmp_path / "results.jsonl.bboxes"
     bdir.mkdir()
     (bdir / f"{row['doc_id']}.json.gz").write_bytes(b"corrupt")  # falls back to no boxes
-    res = build(inp, tmp_path / "tables.jsonl", cfg.tables,
-                report_path=tmp_path / "tables.md", deterministic_timings=True)
+    res = build(
+        inp, tmp_path / "tables.jsonl", cfg.tables, report_path=tmp_path / "tables.md", deterministic_timings=True
+    )
     st = res["stats"]
     assert (st["documents"], st["documents_with_tables"], st["tables"], st["errors"]) == (1, 1, 1, 0)
     assert sum(st["by_method"].values()) == 1

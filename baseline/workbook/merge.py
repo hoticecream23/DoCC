@@ -62,9 +62,13 @@ class PriorReview:
 
 def _reviewed(row: dict[str, str]) -> bool:
     """Did a human actually write anything on this row."""
-    return bool(row.get("VERDICT") or row.get("CLASS_VERDICT")
-                or row.get("CORRECTED_VALUE") or row.get("CLASS_CORRECTED")
-                or row.get("IS_GOLD"))
+    return bool(
+        row.get("VERDICT")
+        or row.get("CLASS_VERDICT")
+        or row.get("CORRECTED_VALUE")
+        or row.get("CLASS_CORRECTED")
+        or row.get("IS_GOLD")
+    )
 
 
 def load_prior_review(path: str | Path) -> PriorReview:
@@ -111,8 +115,7 @@ def _note(prior_note: str, added: str) -> str:
     return f"{prior_note} | {added}" if prior_note else added
 
 
-def _carry_document(prior_row: dict[str, str], new_label: str,
-                    counts: Counter) -> list[Any]:
+def _carry_document(prior_row: dict[str, str], new_label: str, counts: Counter) -> list[Any]:
     """The six review cells of a Documents row, carried or invalidated."""
     verdict = (prior_row.get("CLASS_VERDICT") or "").strip()
     corrected = (prior_row.get("CLASS_CORRECTED") or "").strip()
@@ -126,8 +129,14 @@ def _carry_document(prior_row: dict[str, str], new_label: str,
         if new_label.casefold() == corrected.casefold():
             # The pipeline has caught up. There is nothing left to correct.
             counts["document_corrections_now_agreed"] += 1
-            return ["", "OK", prior_row.get("IS_GOLD", ""), who, when,
-                    _note(notes, f"pipeline now agrees, was {was or 'unset'}")]
+            return [
+                "",
+                "OK",
+                prior_row.get("IS_GOLD", ""),
+                who,
+                when,
+                _note(notes, f"pipeline now agrees, was {was or 'unset'}"),
+            ]
         counts["document_corrections_carried"] += 1
         return [corrected, verdict or "wrong", prior_row.get("IS_GOLD", ""), who, when, notes]
 
@@ -135,15 +144,13 @@ def _carry_document(prior_row: dict[str, str], new_label: str,
         # A confirmation of a prediction that has since changed. The approval
         # cannot transfer to an answer nobody has looked at.
         counts["document_confirmations_invalidated"] += 1
-        return ["", "", "", who, when,
-                _note(notes, f"re-review: was {was}, confirmed; now {new_label}")]
+        return ["", "", "", who, when, _note(notes, f"re-review: was {was}, confirmed; now {new_label}")]
 
     counts["document_confirmations_carried"] += 1
     return ["", verdict, prior_row.get("IS_GOLD", ""), who, when, notes]
 
 
-def _carry_metadata(prior: PriorReview, doc_id: str, name: str, value: str,
-                    counts: Counter) -> list[Any]:
+def _carry_metadata(prior: PriorReview, doc_id: str, name: str, value: str, counts: Counter) -> list[Any]:
     """The six review cells of a Metadata row.
 
     Exact match first, on the value the reviewer was actually looking at. Only
@@ -156,9 +163,14 @@ def _carry_metadata(prior: PriorReview, doc_id: str, name: str, value: str,
         verdict = (exact.get("VERDICT") or "").strip()
         corrected = (exact.get("CORRECTED_VALUE") or "").strip()
         counts["field_reviews_carried"] += 1
-        return [corrected, verdict, exact.get("IS_GOLD", ""),
-                exact.get("REVIEWED_BY", ""), exact.get("REVIEW_DATE", ""),
-                exact.get("NOTES", "")]
+        return [
+            corrected,
+            verdict,
+            exact.get("IS_GOLD", ""),
+            exact.get("REVIEWED_BY", ""),
+            exact.get("REVIEW_DATE", ""),
+            exact.get("NOTES", ""),
+        ]
 
     for row in prior.metadata_by_field.get((doc_id, name), []):
         if row["_id"] in prior.matched:
@@ -170,33 +182,40 @@ def _carry_metadata(prior: PriorReview, doc_id: str, name: str, value: str,
         if corrected == value:
             # The pipeline now produces what the reviewer asked for.
             counts["field_corrections_now_agreed"] += 1
-            return ["", "OK", row.get("IS_GOLD", ""), row.get("REVIEWED_BY", ""),
-                    row.get("REVIEW_DATE", ""),
-                    _note(row.get("NOTES", ""),
-                          f"pipeline now agrees, was {row.get('VALUE') or 'unset'}")]
+            return [
+                "",
+                "OK",
+                row.get("IS_GOLD", ""),
+                row.get("REVIEWED_BY", ""),
+                row.get("REVIEW_DATE", ""),
+                _note(row.get("NOTES", ""), f"pipeline now agrees, was {row.get('VALUE') or 'unset'}"),
+            ]
         counts["field_corrections_carried"] += 1
-        return [corrected, row.get("VERDICT") or "wrong", row.get("IS_GOLD", ""),
-                row.get("REVIEWED_BY", ""), row.get("REVIEW_DATE", ""),
-                _note(row.get("NOTES", ""),
-                      f"correction kept, pipeline was {row.get('VALUE') or 'unset'}")]
+        return [
+            corrected,
+            row.get("VERDICT") or "wrong",
+            row.get("IS_GOLD", ""),
+            row.get("REVIEWED_BY", ""),
+            row.get("REVIEW_DATE", ""),
+            _note(row.get("NOTES", ""), f"correction kept, pipeline was {row.get('VALUE') or 'unset'}"),
+        ]
 
     return [""] * 6
 
 
 def _carry_tag(prior: PriorReview, doc_id: str, name: str, counts: Counter) -> list[Any]:
     """The four review cells of a Tags row. A tag has no value, so the tag
-    name is the whole of what was reviewed and a match is always exact."""
+    name is the whole of what was reviewed and a match is always exact.
+    """
     row = prior.tags.get((doc_id, name))
     if row is None:
         return [""] * 4
     prior.matched_tags.add((doc_id, name))
     counts["tag_reviews_carried"] += 1
-    return [row.get("VERDICT", ""), row.get("IS_GOLD", ""),
-            row.get("REVIEWED_BY", ""), row.get("REVIEW_DATE", "")]
+    return [row.get("VERDICT", ""), row.get("IS_GOLD", ""), row.get("REVIEWED_BY", ""), row.get("REVIEW_DATE", "")]
 
 
-def _rescue_metadata(prior: PriorReview, doc_ids: set[str],
-                     counts: Counter) -> list[tuple[str, list[Any]]]:
+def _rescue_metadata(prior: PriorReview, doc_ids: set[str], counts: Counter) -> list[tuple[str, list[Any]]]:
     """Reviewed field rows the new run no longer produces.
 
     Both a correction and a confirmation say something true about the document,
@@ -219,25 +238,45 @@ def _rescue_metadata(prior: PriorReview, doc_ids: set[str],
             if VERDICTS.get(verdict) == "spurious":
                 counts["field_spurious_resolved"] += 1
                 continue
-            value = (row.get("CORRECTED_VALUE") or "").strip() \
-                or (row.get("NORMALIZED_VALUE") or "").strip() \
+            value = (
+                (row.get("CORRECTED_VALUE") or "").strip()
+                or (row.get("NORMALIZED_VALUE") or "").strip()
                 or (row.get("VALUE") or "").strip()
+            )
             if not value:
                 continue
             counts["field_reviews_rescued"] += 1
-            out.append((doc_id, [
-                f"{doc_id}_human_{name}", doc_id, "human", name, value, value,
-                "", "", "", "", "", "human", "", "",
-                value, "missing", row.get("IS_GOLD", ""), row.get("REVIEWED_BY", ""),
-                row.get("REVIEW_DATE", ""),
-                _note(row.get("NOTES", ""),
-                      "kept from an earlier review; the pipeline no longer finds this"),
-            ]))
+            out.append(
+                (
+                    doc_id,
+                    [
+                        f"{doc_id}_human_{name}",
+                        doc_id,
+                        "human",
+                        name,
+                        value,
+                        value,
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "human",
+                        "",
+                        "",
+                        value,
+                        "missing",
+                        row.get("IS_GOLD", ""),
+                        row.get("REVIEWED_BY", ""),
+                        row.get("REVIEW_DATE", ""),
+                        _note(row.get("NOTES", ""), "kept from an earlier review; the pipeline no longer finds this"),
+                    ],
+                )
+            )
     return out
 
 
-def _rescue_tags(prior: PriorReview, doc_ids: set[str],
-                 counts: Counter) -> list[list[Any]]:
+def _rescue_tags(prior: PriorReview, doc_ids: set[str], counts: Counter) -> list[list[Any]]:
     """Confirmed tags the new run has stopped emitting.
 
     A confirmed tag is a statement that it belongs on the document, so it comes
@@ -254,8 +293,17 @@ def _rescue_tags(prior: PriorReview, doc_ids: set[str],
         if verdict != "ok":
             continue
         counts["tag_reviews_rescued"] += 1
-        out.append([
-            doc_id, name, "human", "", "human", "missing", row.get("IS_GOLD", ""),
-            row.get("REVIEWED_BY", ""), row.get("REVIEW_DATE", ""),
-        ])
+        out.append(
+            [
+                doc_id,
+                name,
+                "human",
+                "",
+                "human",
+                "missing",
+                row.get("IS_GOLD", ""),
+                row.get("REVIEWED_BY", ""),
+                row.get("REVIEW_DATE", ""),
+            ]
+        )
     return out

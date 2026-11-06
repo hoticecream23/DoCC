@@ -29,6 +29,7 @@ def _require_ocr(cfg):
 
 # ---------------------------------------------------------------- routing
 
+
 def test_scanned_pdf_routes_to_ocr(corpus, cfg):
     res = extract(corpus / "receipt_scanned.pdf", cfg)
     assert res.method == ExtractionMethod.OCR
@@ -54,6 +55,7 @@ def test_native_pdf_is_still_never_ocred(corpus, cfg):
 
 # ---------------------------------------------------------------- hybrid
 
+
 def test_hybrid_document_routes_each_page_separately(corpus, cfg):
     res = extract(corpus / "invoice_hybrid.pdf", cfg)
     assert res.method == ExtractionMethod.HYBRID
@@ -69,7 +71,7 @@ def test_hybrid_offsets_survive_the_route_change(corpus, cfg):
     pages_used = {m.page for m in record.metadata}
     assert pages_used == {0, 1}, "expected fields from both routes"
     for m in record.metadata:
-        assert record.text.full[m.char_start:m.char_end] == m.value
+        assert record.text.full[m.char_start : m.char_end] == m.value
 
 
 def test_hybrid_word_boxes_from_both_routes_are_canonical(corpus, cfg):
@@ -78,20 +80,18 @@ def test_hybrid_word_boxes_from_both_routes_are_canonical(corpus, cfg):
     assert pages == {0, 1}
     for w in sidecar.words:
         if w.char_start is not None:
-            assert record.text.full[w.char_start:w.char_end] == w.text
+            assert record.text.full[w.char_start : w.char_end] == w.text
 
 
 def test_hybrid_confidence_sits_between_the_two_routes(corpus, cfg):
     res = extract(corpus / "invoice_hybrid.pdf", cfg)
     native_conf = float(cfg.extract_opts().get("native_confidence", 0.98))
-    ocr_page = [
-        c for m, c in zip(res.page_methods, res.page_confidences)
-        if m == ExtractionMethod.OCR
-    ][0]
+    ocr_page = [c for m, c in zip(res.page_methods, res.page_confidences) if m == ExtractionMethod.OCR][0]
     assert ocr_page < res.confidence() < native_conf
 
 
 # ---------------------------------------------------------------- confidence
+
 
 def test_ocr_confidence_is_lower_than_native(corpus, cfg):
     ocr = extract(corpus / "receipt_scanned.pdf", cfg).confidence()
@@ -115,6 +115,7 @@ def test_ocr_confidence_of_nothing_is_zero():
 
 
 # ---------------------------------------------------------------- quality
+
 
 def test_ocr_recovers_the_same_fields_as_the_native_route(corpus, cfg):
     """Same content, two routes. Extracted values must agree."""
@@ -148,14 +149,13 @@ def test_scanned_document_still_classifies(corpus, cfg):
 
 # ---------------------------------------------------------------- determinism
 
+
 def test_ocr_output_is_reproducible(corpus, cfg):
     a = extract(corpus / "receipt_scanned.pdf", cfg)
     b = extract(corpus / "receipt_scanned.pdf", cfg)
     assert a.pages == b.pages
     assert a.page_confidences == b.page_confidences
-    assert [(w.text, w.char_start) for w in a.words] == [
-        (w.text, w.char_start) for w in b.words
-    ]
+    assert [(w.text, w.char_start) for w in a.words] == [(w.text, w.char_start) for w in b.words]
 
 
 def test_batch_with_ocr_is_byte_identical_across_worker_counts(corpus, serial_run, tmp_path):
@@ -166,6 +166,7 @@ def test_batch_with_ocr_is_byte_identical_across_worker_counts(corpus, serial_ru
 
 
 # ---------------------------------------------------------------- engine interface
+
 
 def test_engine_is_pluggable_and_null_engine_is_never_available():
     null = get_engine("null")
@@ -179,6 +180,7 @@ def test_unknown_engine_name_fails_loudly():
 
 
 # ------------------------------------------------- upscale and coordinates
+
 
 def test_upscale_only_enlarges_below_target():
     from PIL import Image
@@ -208,8 +210,7 @@ def test_ocr_words_land_in_page_coordinate_space():
     """
     from baseline.extract import _ocr_words
 
-    word = OCRWord(text="x", x0=100, y0=200, x1=140, y1=260, conf=0.9,
-                   char_start=0, char_end=1)
+    word = OCRWord(text="x", x0=100, y0=200, x1=140, y1=260, conf=0.9, char_start=0, char_end=1)
     at_300dpi = _ocr_words([word], pno=2, scale=300 / 72.0)[0]
     assert at_300dpi.page == 2
     assert at_300dpi.x0 == pytest.approx(24.0)

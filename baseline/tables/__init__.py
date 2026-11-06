@@ -32,6 +32,12 @@ from .tab_delimited import detect_tab_delimited
 from .text_grid import detect_text_grid
 
 __all__ = [
-    "build", "build_record", "detect_geometry", "detect_tab_delimited", "detect_text_grid",
-    "load_results", "load_words", "render_report",
+    "build",
+    "build_record",
+    "detect_geometry",
+    "detect_tab_delimited",
+    "detect_text_grid",
+    "load_results",
+    "load_words",
+    "render_report",
 ]

@@ -21,15 +21,12 @@ PAGE_A = (
     "GSTIN: 27AAPFU0939F1ZV\n"
     "PAN: AAPFU0939F\n"
 )
-PAGE_B = (
-    "Grand Total: Rs. 11,800.00\n"
-    "IFSC: HDFC0001234\n"
-    "Aadhaar: 2698 3765 4322\n"
-)
+PAGE_B = "Grand Total: Rs. 11,800.00\n" "IFSC: HDFC0001234\n" "Aadhaar: 2698 3765 4322\n"
 PAGE_C = "Account Number: 502010123456789\nEmail: pay@acme.example\n"
 
 
 # ---------------------------------------------------------------- canonical text
+
 
 def test_canonical_text_is_pages_joined_by_the_separator():
     pages = [PAGE_A, PAGE_B, PAGE_C]
@@ -66,14 +63,15 @@ def test_single_page_canonical_text_has_no_separator():
 
 # ---------------------------------------------------------------- extraction offsets
 
+
 @pytest.mark.parametrize(
     "pages",
     [
         [PAGE_A],
         [PAGE_A, PAGE_B],
         [PAGE_A, PAGE_B, PAGE_C],
-        ["", PAGE_A, "", PAGE_B],          # empty pages must not shift anything
-        [PAGE_C, PAGE_A, PAGE_B],          # order must not matter
+        ["", PAGE_A, "", PAGE_B],  # empty pages must not shift anything
+        [PAGE_C, PAGE_A, PAGE_B],  # order must not matter
     ],
 )
 def test_every_field_offset_slices_back_to_its_value(cfg, pages):
@@ -81,7 +79,7 @@ def test_every_field_offset_slices_back_to_its_value(cfg, pages):
     fields, errors = extract_fields(full, pages, cfg, doc_class="invoice")
     assert fields, "expected at least one field"
     for f in fields:
-        assert full[f.char_start:f.char_end] == f.value
+        assert full[f.char_start : f.char_end] == f.value
 
 
 def test_offsets_stay_correct_past_a_page_break(cfg):
@@ -95,7 +93,7 @@ def test_offsets_stay_correct_past_a_page_break(cfg):
     assert by_name["total_amount"].page == 1
     assert by_name["gstin"].page == 0
     for f in fields:
-        assert full[f.char_start:f.char_end] == f.value
+        assert full[f.char_start : f.char_end] == f.value
 
 
 def test_page_attribution_matches_the_span_table(cfg):
@@ -142,6 +140,7 @@ def test_empty_document_yields_no_fields_and_no_errors(cfg):
 
 # ---------------------------------------------------------------- normalisation
 
+
 def test_normalized_value_is_separate_from_the_raw_span(cfg):
     """Offsets point at raw text. Normalisation must never move them."""
     pages = [PAGE_B]
@@ -150,9 +149,9 @@ def test_normalized_value_is_separate_from_the_raw_span(cfg):
     by_name = {f.field: f for f in fields}
 
     aadhaar = by_name["aadhaar"]
-    assert aadhaar.value == "2698 3765 4322"        # raw, with spaces
+    assert aadhaar.value == "2698 3765 4322"  # raw, with spaces
     assert aadhaar.normalized_value == "269837654322"
-    assert full[aadhaar.char_start:aadhaar.char_end] == aadhaar.value
+    assert full[aadhaar.char_start : aadhaar.char_end] == aadhaar.value
 
     total = by_name["total_amount"]
     assert total.value == "11,800.00"
@@ -167,7 +166,7 @@ def test_dates_normalise_to_iso_without_moving_offsets(cfg):
     d = {f.field: f for f in fields}["invoice_date"]
     assert d.value == "14/03/2024"
     assert d.normalized_value == "2024-03-14"
-    assert full[d.char_start:d.char_end] == "14/03/2024"
+    assert full[d.char_start : d.char_end] == "14/03/2024"
 
 
 def test_normalizer_version_is_recorded(cfg):
@@ -177,6 +176,7 @@ def test_normalizer_version_is_recorded(cfg):
 
 
 # ---------------------------------------------------------------- strict mode
+
 
 def test_strict_mode_raises_on_a_deliberately_broken_offset(cfg, monkeypatch):
     """Prove the guard fires rather than silently passing bad spans through."""
@@ -194,8 +194,11 @@ def test_strict_mode_raises_on_a_deliberately_broken_offset(cfg, monkeypatch):
     strict = dict(cfg.pipeline)
     strict["metadata"] = {**strict.get("metadata", {}), "strict_offsets": True}
     broken = type(cfg)(
-        config_dir=cfg.config_dir, pipeline=strict,
-        classes=cfg.classes, fields=cfg.fields, tags=cfg.tags,
+        config_dir=cfg.config_dir,
+        pipeline=strict,
+        classes=cfg.classes,
+        fields=cfg.fields,
+        tags=cfg.tags,
     )
     pages = [PAGE_A]
     with pytest.raises(OffsetMismatch):

@@ -1,8 +1,7 @@
 import pytest
 import yaml
-from pydantic import ValidationError
-
 from conftest import ROOT
+from pydantic import ValidationError
 
 
 def _write(tmp_path, data):

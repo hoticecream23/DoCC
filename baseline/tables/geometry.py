@@ -180,8 +180,7 @@ def _build_columns(cells: list[_Cell], ratio: float) -> tuple[list[list[_Cell]],
             fits,
             key=lambda i: (
                 round(
-                    sum(_overlap_ratio(cell.x0, cell.x1, m.x0, m.x1) for m in columns[i])
-                    / len(columns[i]),
+                    sum(_overlap_ratio(cell.x0, cell.x1, m.x0, m.x1) for m in columns[i]) / len(columns[i]),
                     6,
                 ),
                 -i,
@@ -189,8 +188,7 @@ def _build_columns(cells: list[_Cell], ratio: float) -> tuple[list[list[_Cell]],
         )
         columns[best].append(cell)
 
-    columns.sort(key=lambda col: (round(min(m.x0 for m in col), 3),
-                                  round(min(m.x1 for m in col), 3)))
+    columns.sort(key=lambda col: (round(min(m.x0 for m in col), 3), round(min(m.x1 for m in col), 3)))
     return columns, ambiguous
 
 
@@ -207,7 +205,7 @@ def _geometry_bands(
 
     bands: list[list[tuple[int, list[_Cell]]]] = []
     cur: list[tuple[int, list[_Cell]]] = []
-    for (i, cells) in segmented:
+    for i, cells in segmented:
         wide_enough = len(cells) >= min_cols
         breaks = False
         if cur and wide_enough:
@@ -230,9 +228,7 @@ def _geometry_bands(
 # --------------------------------------------------------------------------
 
 
-def detect_geometry(
-    page: int, words: list[dict], full: str, tcfg: dict
-) -> tuple[list[Table], list[str]]:
+def detect_geometry(page: int, words: list[dict], full: str, tcfg: dict) -> tuple[list[Table], list[str]]:
     """Tables on one page from its word boxes."""
     gcfg = dict(tcfg.get("geometry", {}))
     min_rows = int(tcfg.get("min_rows", 2))
@@ -272,15 +268,11 @@ def detect_geometry(
             # More columns than the widest row has cells means the rows do not
             # actually line up. Common when text is space aligned but rendered
             # in a proportional font, where the header drifts off its data.
-            abstained.append(
-                f"{where}: {len(columns)} columns but the widest row holds {widest} cells"
-            )
+            abstained.append(f"{where}: {len(columns)} columns but the widest row holds {widest} cells")
             continue
         thin = [i for i, col in enumerate(columns) if len(col) < support]
         if thin:
-            abstained.append(
-                f"{where}: column(s) {thin} stand on fewer than {support} cells"
-            )
+            abstained.append(f"{where}: column(s) {thin} stand on fewer than {support} cells")
             continue
         if len(flat) < min_cells:
             continue
@@ -290,9 +282,7 @@ def detect_geometry(
             for c in col:
                 cells.append(_cell_from_words(c.row, ci, page, c.words, full))
         cells.sort(key=lambda c: (c.row, c.col))
-        tables.append(
-            _assemble(page, len(band), len(columns), TableMethod.GEOMETRY, cells, tcfg)
-        )
+        tables.append(_assemble(page, len(band), len(columns), TableMethod.GEOMETRY, cells, tcfg))
 
     return tables, abstained
 
@@ -316,10 +306,26 @@ def _cell_from_words(row: int, col: int, page: int, words: list[dict], full: str
         slice_ = full[s:e]
         if "\n" not in slice_ and PAGE_SEP not in slice_:
             return TableCell(
-                row=row, col=col, text=slice_, page=page,
-                char_start=s, char_end=e, x0=x0, y0=y0, x1=x1, y1=y1,
+                row=row,
+                col=col,
+                text=slice_,
+                page=page,
+                char_start=s,
+                char_end=e,
+                x0=x0,
+                y0=y0,
+                x1=x1,
+                y1=y1,
             )
     return TableCell(
-        row=row, col=col, text=" ".join(w["text"] for w in words), page=page,
-        char_start=None, char_end=None, x0=x0, y0=y0, x1=x1, y1=y1,
+        row=row,
+        col=col,
+        text=" ".join(w["text"] for w in words),
+        page=page,
+        char_start=None,
+        char_end=None,
+        x0=x0,
+        y0=y0,
+        x1=x1,
+        y1=y1,
     )

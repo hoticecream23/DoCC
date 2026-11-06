@@ -77,8 +77,10 @@ def convert(parquet: Path, split: str, out: Path) -> None:
 
     table = pq.read_table(parquet, columns=["key", "image", "entities", "words"])
     n_docs, all_skipped = 0, []
-    with open(out / split / "gold_images.jsonl", "w", encoding="utf-8") as gold_images, \
-         open(out / split / "gold_text.jsonl", "w", encoding="utf-8") as gold_text:
+    with (
+        open(out / split / "gold_images.jsonl", "w", encoding="utf-8") as gold_images,
+        open(out / split / "gold_text.jsonl", "w", encoding="utf-8") as gold_text,
+    ):
         for batch in table.to_batches(max_chunksize=64):
             for row in batch.to_pylist():
                 key = row["key"]

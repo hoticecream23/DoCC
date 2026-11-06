@@ -18,13 +18,15 @@ import os
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 from urllib.parse import urlparse
 
 from .config import VLMSettings
 
 log = logging.getLogger(__name__)
+
 
 class VLMError(RuntimeError):
     """The server could not give an answer."""
@@ -57,7 +59,7 @@ def check_local(url: str, allowed_hosts: list[str]) -> None:
         raise ValueError(f"VLM url must not contain userinfo: {url!r}")
 
     # Check for suspicious characters in netloc (%, \, @)
-    if any(c in parsed.netloc for c in ['%', '\\', '@']):
+    if any(c in parsed.netloc for c in ["%", "\\", "@"]):
         raise ValueError(f"VLM url contains suspicious characters in netloc: {url!r}")
 
     # Check for query or fragment
@@ -94,8 +96,7 @@ def _reply(payload: dict) -> VLMReply:
         raise VLMError(f"unexpected response shape: {exc!r}") from exc
     if not isinstance(content, str):
         raise VLMError("message content is not a string")
-    return VLMReply(content=content, model=str(payload.get("model", "")),
-                    finish_reason=choice.get("finish_reason"))
+    return VLMReply(content=content, model=str(payload.get("model", "")), finish_reason=choice.get("finish_reason"))
 
 
 class VLMClient:
@@ -119,17 +120,19 @@ class VLMClient:
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
     def complete(self, messages: list[dict], schema: dict) -> VLMReply:
-        body = json.dumps({
-            **self._s.extra_body,
-            "model": self._s.model,
-            "messages": messages,
-            "temperature": 0,
-            "max_tokens": self._s.max_tokens,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": "document", "schema": schema, "strict": True},
-            },
-        }).encode("utf-8")
+        body = json.dumps(
+            {
+                **self._s.extra_body,
+                "model": self._s.model,
+                "messages": messages,
+                "temperature": 0,
+                "max_tokens": self._s.max_tokens,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"name": "document", "schema": schema, "strict": True},
+                },
+            }
+        ).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self._key:
             headers["Authorization"] = f"Bearer {self._key}"

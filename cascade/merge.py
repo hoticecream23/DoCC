@@ -57,14 +57,24 @@ def decide_class(
         # Ties break on name so the output is stable, as in the baseline.
         label, score = sorted(rules.items(), key=lambda kv: (-kv[1], kv[0]))[0]
         if score >= short_circuit:
-            prov = {"source": "rule", "label": label, "vlm_label": answer.label,
-                    "disagrees": answer.label not in (label, unknown)}
-            return Classification(label=label, confidence=round(score, 4),
-                                  all_scores=all_scores, method=ClassifyMethod.RULE), prov
+            prov = {
+                "source": "rule",
+                "label": label,
+                "vlm_label": answer.label,
+                "disagrees": answer.label not in (label, unknown),
+            }
+            return (
+                Classification(
+                    label=label, confidence=round(score, 4), all_scores=all_scores, method=ClassifyMethod.RULE
+                ),
+                prov,
+            )
     confidence = 0.0 if answer.label == unknown else tiers.vlm_class
     prov = {"source": "vlm", "label": answer.label, "vlm_label": answer.label, "disagrees": False}
-    return Classification(label=answer.label, confidence=confidence,
-                          all_scores=all_scores, method=ClassifyMethod.VLM), prov
+    return (
+        Classification(label=answer.label, confidence=confidence, all_scores=all_scores, method=ClassifyMethod.VLM),
+        prov,
+    )
 
 
 def _in_scope(fdef: dict, doc_class: str, cfg: Config) -> bool:
@@ -160,9 +170,16 @@ def decide_fields(
         for value, g in tried:
             if kept and not multi:
                 break
-            item = {"field": name, "vlm_value": value, "outcome": g.outcome,
-                    "n_matches": g.n_matches, "rule_agrees": g.rule_agrees,
-                    "char_start": g.start, "char_end": g.end, "emitted": False}
+            item = {
+                "field": name,
+                "vlm_value": value,
+                "outcome": g.outcome,
+                "n_matches": g.n_matches,
+                "rule_agrees": g.rule_agrees,
+                "char_start": g.start,
+                "char_end": g.end,
+                "emitted": False,
+            }
             prov.append(item)
             if not g.grounded:
                 continue
@@ -198,23 +215,31 @@ def decide_fields(
             seen.add(key)
             item["emitted"] = True
             model_emitted = True
-            kept.append(MetadataField(
-                field=name,
-                value=raw,
-                normalized_value=normalized,
-                page=page_for_offset(index.spans, g.start),
-                char_start=g.start,
-                char_end=g.end,
-                confidence=round(confidence, 4),
-                method=method,
-                validated=validated,
-                normalizer_version=cfg.normalizer_version,
-                currency=extras.get("currency"),
-            ))
+            kept.append(
+                MetadataField(
+                    field=name,
+                    value=raw,
+                    normalized_value=normalized,
+                    page=page_for_offset(index.spans, g.start),
+                    char_start=g.start,
+                    char_end=g.end,
+                    confidence=round(confidence, 4),
+                    method=method,
+                    validated=validated,
+                    normalizer_version=cfg.normalizer_version,
+                    currency=extras.get("currency"),
+                )
+            )
 
         if not checksummed and not model_emitted and from_baseline[name]:
-            prov.append({"field": name, "outcome": "rule_only",
-                         "baseline_values": [m.value for m in from_baseline[name]], "emitted": False})
+            prov.append(
+                {
+                    "field": name,
+                    "outcome": "rule_only",
+                    "baseline_values": [m.value for m in from_baseline[name]],
+                    "emitted": False,
+                }
+            )
         out.extend(kept)
 
     out.sort(key=lambda m: (m.char_start, m.field))

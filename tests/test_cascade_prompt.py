@@ -81,20 +81,23 @@ def test_parse_answer_strips_drops_empties_and_deduplicates(cfg):
     assert a.fields == {"invoice_number": ["INV-1"]}
 
 
-@pytest.mark.parametrize("content, message", [
-    ("not json", "not JSON"),
-    ("[]", "not an object"),
-    (json.dumps({"class": "invoice", "fields": {}, "extra": 1}), "unexpected keys"),
-    (json.dumps({"class": "made_up", "fields": {}}), "not a declared class"),
-    (json.dumps({"class": ["invoice"], "fields": {}}), "not a declared class"),
-    (json.dumps({"fields": {}}), "not a declared class"),
-    (json.dumps({"class": "invoice", "fields": {"made_up": ["x"]}}), "undeclared fields"),
-    (json.dumps({"class": "invoice", "fields": {"pan": "ABCDE1234F"}}), "list of strings"),
-    (json.dumps({"class": "invoice", "fields": {"pan": [1]}}), "list of strings"),
-    (json.dumps({"class": "invoice", "fields": []}), "fields is not an object"),
-    (json.dumps({"class": "invoice"}), "answer has no fields"),
-    (json.dumps({"class": "invoice", "fields": {"pan": []}}), "missing fields: .*'invoice_number'"),
-])
+@pytest.mark.parametrize(
+    "content, message",
+    [
+        ("not json", "not JSON"),
+        ("[]", "not an object"),
+        (json.dumps({"class": "invoice", "fields": {}, "extra": 1}), "unexpected keys"),
+        (json.dumps({"class": "made_up", "fields": {}}), "not a declared class"),
+        (json.dumps({"class": ["invoice"], "fields": {}}), "not a declared class"),
+        (json.dumps({"fields": {}}), "not a declared class"),
+        (json.dumps({"class": "invoice", "fields": {"made_up": ["x"]}}), "undeclared fields"),
+        (json.dumps({"class": "invoice", "fields": {"pan": "ABCDE1234F"}}), "list of strings"),
+        (json.dumps({"class": "invoice", "fields": {"pan": [1]}}), "list of strings"),
+        (json.dumps({"class": "invoice", "fields": []}), "fields is not an object"),
+        (json.dumps({"class": "invoice"}), "answer has no fields"),
+        (json.dumps({"class": "invoice", "fields": {"pan": []}}), "missing fields: .*'invoice_number'"),
+    ],
+)
 def test_parse_answer_rejects_anything_off_schema(cfg, content, message):
     from cascade.prompt import VLMOutputError, parse_answer
 

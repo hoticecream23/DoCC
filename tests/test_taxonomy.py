@@ -61,9 +61,7 @@ def test_conflicting_rows_are_recorded_not_deduplicated(taxonomy):
         assert len(c["labels"]) == 2
         # Every conflict collapses to one class, so none of them can change a
         # class level score. That is the only reason they are safe to carry.
-        classes = {
-            m["class"] for m in taxonomy["mappings"] if m["label"] in c["labels"]
-        }
+        classes = {m["class"] for m in taxonomy["mappings"] if m["label"] in c["labels"]}
         assert len(classes) == 1, f"{c['file']} spans classes {classes}"
 
 
@@ -74,10 +72,7 @@ def test_unscored_classes_are_genuinely_absent_from_the_labels(cfg, taxonomy):
         if name in mapped:
             # court_document is both mapped and listed, because the labelled
             # set reaches it only through lossy labels.
-            lossy = [
-                m["label"] for m in taxonomy["mappings"]
-                if m.get("class") == name and not m.get("lossy")
-            ]
+            lossy = [m["label"] for m in taxonomy["mappings"] if m.get("class") == name and not m.get("lossy")]
             assert not lossy, f"{name} is reachable losslessly from {lossy}"
 
 
@@ -113,7 +108,8 @@ def test_the_provenance_marker_alone_cannot_short_circuit(cfg):
     short_circuit = float(cfg.classify_opts().get("rule_short_circuit", 0.9))
     classes = {c["name"]: c for c in cfg.classes["classes"]}
     banner = [
-        m for m in classes["court_document"]["markers"]
+        m
+        for m in classes["court_document"]["markers"]
         if "indiankanoon" not in str(m) and r"\bon\s+\d{1,2}" in str(m.get("pattern", ""))
     ]
     assert banner, "the provenance marker is gone; drop this test with it"
@@ -129,9 +125,7 @@ def test_court_document_needs_only_a_yaml_edit(tmp_path, cfg):
     cfgdir.mkdir()
     for name in ("pipeline.yaml", "fields.yaml", "tags.yaml"):
         shutil.copyfile(cfg.config_dir / name, cfgdir / name)
-    classes = yaml.safe_load(
-        (cfg.config_dir / "classes.yaml").read_text(encoding="utf-8")
-    )
+    classes = yaml.safe_load((cfg.config_dir / "classes.yaml").read_text(encoding="utf-8"))
     for c in classes["classes"]:
         if c["name"] == "court_document":
             c["name"] = "tribunal_ruling"
@@ -143,6 +137,7 @@ def test_court_document_needs_only_a_yaml_edit(tmp_path, cfg):
 
 
 # ------------------------------------------- the cascade must reach the rules
+
 
 def test_a_quiet_model_does_not_veto_a_confident_rule(cfg, tmp_path):
     """A model below its threshold has declined, not disagreed.
@@ -378,8 +373,7 @@ def test_an_invoice_with_a_gst_no_line_and_due_date_stays_an_invoice(cfg):
 
 def test_an_invoice_with_a_rounding_line_and_bill_to_stays_an_invoice(cfg):
     text = (
-        "Invoice No: 7781\nBill To: Mehta Exports\nGST Summary\nFreight 12,499.60\n"
-        "Rounding 0.40\nTotal 12,500.00\n"
+        "Invoice No: 7781\nBill To: Mehta Exports\nGST Summary\nFreight 12,499.60\n" "Rounding 0.40\nTotal 12,500.00\n"
     )
     assert classify(text, [text], cfg, model=None).label == "invoice"
 
@@ -409,8 +403,14 @@ def test_the_receipt_and_tax_form_markers_stay_linear(cfg):
     from baseline.rules import best_marker_score
 
     markers = [m for c in cfg.classes["classes"] if c["name"] in ("receipt", "tax_form") for m in c.get("markers", [])]
-    for text in ("gst reg " * 25000, "cash\n" * 40000, "cash\nchange x\n" * 15000, "rounding " * 25000,
-                 "cash" + " " * 50000 + "x", "cash  \n" * 5000 + "x"):
+    for text in (
+        "gst reg " * 25000,
+        "cash\n" * 40000,
+        "cash\nchange x\n" * 15000,
+        "rounding " * 25000,
+        "cash" + " " * 50000 + "x",
+        "cash  \n" * 5000 + "x",
+    ):
         t = time.perf_counter()
         best_marker_score(markers, text, [text], 600)
         assert time.perf_counter() - t < 1.0

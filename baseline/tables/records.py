@@ -36,10 +36,7 @@ def _attach_boxes(tables: list[Table], words: list[dict]) -> None:
         for c in t.cells:
             if c.char_start is None or c.x0 is not None:
                 continue
-            inside = [
-                w for w in placed
-                if w["char_start"] >= c.char_start and w["char_end"] <= c.char_end
-            ]
+            inside = [w for w in placed if w["char_start"] >= c.char_start and w["char_end"] <= c.char_end]
             if not inside:
                 continue
             c.x0 = min(w["x0"] for w in inside)
@@ -48,9 +45,7 @@ def _attach_boxes(tables: list[Table], words: list[dict]) -> None:
             c.y1 = max(w["y1"] for w in inside)
 
 
-def build_record(
-    record: dict, words: list[dict], tcfg: dict, deterministic_timings: bool = False
-) -> TableRecord:
+def build_record(record: dict, words: list[dict], tcfg: dict, deterministic_timings: bool = False) -> TableRecord:
     """All tables in one document. Strategies in config order, first hit wins."""
     doc_id = str(record.get("doc_id", ""))
     text = record.get("text", {}) or {}
@@ -109,8 +104,7 @@ def build_record(
     # back is a bug, and it gets recorded rather than shipped silently.
     problems = rec.verify_offsets(full)
     if problems:
-        log.error("table offset verification failed",
-                  extra={"doc_id": doc_id, "n": len(problems)})
+        log.error("table offset verification failed", extra={"doc_id": doc_id, "n": len(problems)})
         rec.diagnostics.errors.extend(problems)
     return rec
 
@@ -145,8 +139,7 @@ def render_report(records: list[TableRecord], stats: dict, source: str) -> str:
     a("")
     a("| metric | value |")
     a("| --- | --- |")
-    for k in ("documents", "documents_with_tables", "tables", "cells", "placed_cells",
-              "abstentions"):
+    for k in ("documents", "documents_with_tables", "tables", "cells", "placed_cells", "abstentions"):
         a(f"| {k.replace('_', ' ')} | {stats[k]} |")
     a("")
     a("## By strategy")
@@ -165,8 +158,10 @@ def render_report(records: list[TableRecord], stats: dict, source: str) -> str:
             any_table = True
             a(f"### `{rec.filename}` page {t.page}")
             a("")
-            a(f"{t.n_rows} rows x {t.n_cols} cols, {t.method.value}, "
-              f"fill {t.confidence}, span {t.char_start}-{t.char_end}")
+            a(
+                f"{t.n_rows} rows x {t.n_cols} cols, {t.method.value}, "
+                f"fill {t.confidence}, span {t.char_start}-{t.char_end}"
+            )
             a("")
             grid = {(c.row, c.col): c.text for c in t.cells}
             for r in range(t.n_rows):
@@ -226,9 +221,7 @@ def build(
         "documents_with_tables": sum(1 for r in records if r.tables),
         "tables": sum(len(r.tables) for r in records),
         "cells": sum(len(t.cells) for r in records for t in r.tables),
-        "placed_cells": sum(
-            1 for r in records for t in r.tables for c in t.cells if c.char_start is not None
-        ),
+        "placed_cells": sum(1 for r in records for t in r.tables for c in t.cells if c.char_start is not None),
         "abstentions": sum(len(r.diagnostics.abstained) for r in records),
         "errors": sum(len(r.diagnostics.errors) for r in records),
         "by_method": {},

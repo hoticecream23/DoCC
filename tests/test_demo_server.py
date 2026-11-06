@@ -33,8 +33,7 @@ def base():
 
 
 def call(url, data=None, headers=None):
-    req = urllib.request.Request(url, data=data, headers=headers or {},
-                                 method="POST" if data is not None else "GET")
+    req = urllib.request.Request(url, data=data, headers=headers or {}, method="POST" if data is not None else "GET")
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
             return r.status, json.loads(r.read())

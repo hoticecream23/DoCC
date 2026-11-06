@@ -9,12 +9,12 @@ from baseline.evaluate import (
     coverage_at_error,
     eval_classification,
     eval_metadata,
+    eval_tables,
     eval_tagging,
     evaluate,
     join,
     levenshtein,
     prf,
-    eval_tables,
 )
 
 
@@ -30,14 +30,14 @@ def _pred(path, label, conf=0.9, fields=(), tags=(), text=""):
 
 
 def _gold(path, label, fields=(), tags=(), text=None):
-    row = {"path": path, "label": label, "metadata": [dict(f) for f in fields],
-           "tags": list(tags)}
+    row = {"path": path, "label": label, "metadata": [dict(f) for f in fields], "tags": list(tags)}
     if text is not None:
         row["text"] = text
     return row
 
 
 # ---------------------------------------------------------------- primitives
+
 
 def test_prf_is_arithmetically_right():
     assert prf(0, 0, 0)["f1"] == 0.0
@@ -47,14 +47,14 @@ def test_prf_is_arithmetically_right():
 
 @pytest.mark.parametrize(
     "a,b,want",
-    [("", "", 0), ("abc", "abc", 0), ("abc", "abd", 1), ("abc", "", 3),
-     ("kitten", "sitting", 3)],
+    [("", "", 0), ("abc", "abc", 0), ("abc", "abd", 1), ("abc", "", 3), ("kitten", "sitting", 3)],
 )
 def test_levenshtein(a, b, want):
     assert levenshtein(a, b) == want
 
 
 # ---------------------------------------------------------------- joining
+
 
 def test_join_matches_on_doc_id_then_path_then_filename():
     gold = [{"doc_id": "abc", "label": "x"}, {"path": "dir/b.pdf", "label": "y"}]
@@ -80,6 +80,7 @@ def test_join_reports_predictions_with_no_gold():
 
 
 # ---------------------------------------------------------------- classification
+
 
 def test_perfect_classification_scores_one():
     pairs = [
@@ -139,42 +140,43 @@ def test_coverage_at_error_is_zero_when_the_top_answer_is_wrong():
 
 # ---------------------------------------------------------------- metadata
 
+
 def test_metadata_value_scoring_counts_misses_and_spurious_hits():
-    gold = _gold("a", "invoice", fields=[
-        {"field": "pan", "normalized_value": "AAPFU0939F"},
-        {"field": "ifsc", "normalized_value": "HDFC0001234"},
-    ])
-    pred = _pred("a", "invoice", fields=[
-        {"field": "pan", "normalized_value": "AAPFU0939F", "char_start": 0, "char_end": 10},
-        {"field": "email", "normalized_value": "x@y.z", "char_start": 0, "char_end": 5},
-    ])
+    gold = _gold(
+        "a",
+        "invoice",
+        fields=[
+            {"field": "pan", "normalized_value": "AAPFU0939F"},
+            {"field": "ifsc", "normalized_value": "HDFC0001234"},
+        ],
+    )
+    pred = _pred(
+        "a",
+        "invoice",
+        fields=[
+            {"field": "pan", "normalized_value": "AAPFU0939F", "char_start": 0, "char_end": 10},
+            {"field": "email", "normalized_value": "x@y.z", "char_start": 0, "char_end": 5},
+        ],
+    )
     r = eval_metadata([(gold, pred)])
     per = r["value"]["per_field"]
     assert per["pan"]["f1"] == 1.0
-    assert per["ifsc"]["recall"] == 0.0     # missed
+    assert per["ifsc"]["recall"] == 0.0  # missed
     assert per["email"]["precision"] == 0.0  # invented
 
 
 def test_span_scoring_is_skipped_without_gold_offsets():
     gold = _gold("a", "invoice", fields=[{"field": "pan", "normalized_value": "X"}])
-    pred = _pred("a", "invoice",
-                 fields=[{"field": "pan", "normalized_value": "X",
-                          "char_start": 3, "char_end": 4}])
+    pred = _pred("a", "invoice", fields=[{"field": "pan", "normalized_value": "X", "char_start": 3, "char_end": 4}])
     r = eval_metadata([(gold, pred)])
     assert r["span_scored_docs"] == 0
     assert "note" in r["span"]
 
 
 def test_span_scoring_runs_when_gold_has_offsets():
-    gold = _gold("a", "invoice", fields=[
-        {"field": "pan", "normalized_value": "X", "char_start": 3, "char_end": 4}
-    ])
-    right = _pred("a", "invoice", fields=[
-        {"field": "pan", "normalized_value": "X", "char_start": 3, "char_end": 4}
-    ])
-    wrong = _pred("a", "invoice", fields=[
-        {"field": "pan", "normalized_value": "X", "char_start": 9, "char_end": 10}
-    ])
+    gold = _gold("a", "invoice", fields=[{"field": "pan", "normalized_value": "X", "char_start": 3, "char_end": 4}])
+    right = _pred("a", "invoice", fields=[{"field": "pan", "normalized_value": "X", "char_start": 3, "char_end": 4}])
+    wrong = _pred("a", "invoice", fields=[{"field": "pan", "normalized_value": "X", "char_start": 9, "char_end": 10}])
     assert eval_metadata([(gold, right)])["span"]["micro"]["f1"] == 1.0
     # Right answer, wrong place. Value scoring passes, span scoring does not.
     r = eval_metadata([(gold, wrong)])
@@ -184,10 +186,11 @@ def test_span_scoring_runs_when_gold_has_offsets():
 
 def test_validated_precision_catches_a_lying_checksum():
     gold = _gold("a", "invoice", fields=[{"field": "pan", "normalized_value": "RIGHT"}])
-    pred = _pred("a", "invoice", fields=[
-        {"field": "pan", "normalized_value": "WRONG", "char_start": 0,
-         "char_end": 5, "validated": True}
-    ])
+    pred = _pred(
+        "a",
+        "invoice",
+        fields=[{"field": "pan", "normalized_value": "WRONG", "char_start": 0, "char_end": 5, "validated": True}],
+    )
     r = eval_metadata([(gold, pred)])
     assert r["validated_precision"] == 0.0
     assert r["validated_wrong"] == 1
@@ -195,14 +198,16 @@ def test_validated_precision_catches_a_lying_checksum():
 
 def test_unvalidated_field_does_not_count_against_validated_precision():
     gold = _gold("a", "invoice", fields=[{"field": "pan", "normalized_value": "RIGHT"}])
-    pred = _pred("a", "invoice", fields=[
-        {"field": "pan", "normalized_value": "WRONG", "char_start": 0,
-         "char_end": 5, "validated": False}
-    ])
+    pred = _pred(
+        "a",
+        "invoice",
+        fields=[{"field": "pan", "normalized_value": "WRONG", "char_start": 0, "char_end": 5, "validated": False}],
+    )
     assert eval_metadata([(gold, pred)])["validated_precision"] is None
 
 
 # ---------------------------------------------------------------- tagging
+
 
 def test_tagging_is_scored_per_tag_not_as_a_set():
     gold = _gold("a", "invoice", tags=["gst_applicable", "signed"])
@@ -216,6 +221,7 @@ def test_tagging_is_scored_per_tag_not_as_a_set():
 
 # ---------------------------------------------------------------- end to end
 
+
 def _write(tmp_path, name, rows):
     p = tmp_path / name
     with open(p, "w", encoding="utf-8", newline="\n") as fh:
@@ -226,12 +232,12 @@ def _write(tmp_path, name, rows):
 
 def test_a_perfect_run_scores_one_everywhere(tmp_path):
     fields = [{"field": "pan", "normalized_value": "AAPFU0939F"}]
-    gold = _write(tmp_path, "g.jsonl",
-                  [_gold("a", "invoice", fields=fields, tags=["signed"])])
-    pred = _write(tmp_path, "p.jsonl", [
-        _pred("a", "invoice",
-              fields=[{**fields[0], "char_start": 0, "char_end": 10}], tags=["signed"])
-    ])
+    gold = _write(tmp_path, "g.jsonl", [_gold("a", "invoice", fields=fields, tags=["signed"])])
+    pred = _write(
+        tmp_path,
+        "p.jsonl",
+        [_pred("a", "invoice", fields=[{**fields[0], "char_start": 0, "char_end": 10}], tags=["signed"])],
+    )
     res = evaluate(gold, pred)
     assert res["matched"] == 1
     assert res["classification"]["macro_f1"] == 1.0
@@ -256,9 +262,7 @@ def test_cer_ignores_layout_whitespace(tmp_path):
 def test_compare_flags_a_regression(tmp_path):
     fields = [{"field": "pan", "normalized_value": "AAPFU0939F"}]
     gold = _write(tmp_path, "g.jsonl", [_gold("a", "invoice", fields=fields)])
-    good = _write(tmp_path, "a.jsonl", [
-        _pred("a", "invoice", fields=[{**fields[0], "char_start": 0, "char_end": 10}])
-    ])
+    good = _write(tmp_path, "a.jsonl", [_pred("a", "invoice", fields=[{**fields[0], "char_start": 0, "char_end": 10}])])
     bad = _write(tmp_path, "b.jsonl", [_pred("a", "invoice", fields=[])])
 
     worse = compare(gold, good, bad)
@@ -289,20 +293,21 @@ def test_harness_scores_the_real_baseline_output(tmp_path):
 
 
 def _gold_table(cells, **kw):
-    row = {"doc_id": "a" * 16, "label": "invoice", "tags": [], "metadata": [],
-           "tables": [{"page": 0, "cells": cells}]}
+    row = {"doc_id": "a" * 16, "label": "invoice", "tags": [], "metadata": [], "tables": [{"page": 0, "cells": cells}]}
     row.update(kw)
     return row
 
 
 def _pred_table(grid):
-    cells = [
-        {"row": r, "col": c, "text": v, "page": 0}
-        for r, row in enumerate(grid) for c, v in enumerate(row) if v
-    ]
-    return {"doc_id": "a" * 16, "source_path": "x.pdf", "filename": "x.pdf",
-            "tables": [{"table_id": "t", "page": 0, "n_rows": len(grid),
-                        "n_cols": max(len(r) for r in grid), "cells": cells}]}
+    cells = [{"row": r, "col": c, "text": v, "page": 0} for r, row in enumerate(grid) for c, v in enumerate(row) if v]
+    return {
+        "doc_id": "a" * 16,
+        "source_path": "x.pdf",
+        "filename": "x.pdf",
+        "tables": [
+            {"table_id": "t", "page": 0, "n_rows": len(grid), "n_cols": max(len(r) for r in grid), "cells": cells}
+        ],
+    }
 
 
 GRID = [["Qty", "Rate", "Amount"], ["2", "10.00", "20.00"]]
@@ -324,8 +329,7 @@ def test_a_value_in_the_wrong_column_keeps_cell_f1_but_loses_adjacency():
 
 
 def test_a_table_invented_where_gold_has_none_costs_precision():
-    gold = {"doc_id": "a" * 16, "label": "contract", "tags": [], "metadata": [],
-            "tables": []}
+    gold = {"doc_id": "a" * 16, "label": "contract", "tags": [], "metadata": [], "tables": []}
     res = eval_tables([(gold, _pred_table(GRID))])
     assert res["cells"]["precision"] == 0.0
     assert res["cells"]["recall"] == 0.0
@@ -367,10 +371,10 @@ def test_tune_thresholds_skips_and_counts_a_malformed_prediction_line(tmp_path, 
     ann = tmp_path / "ann.jsonl"
     ann.write_text(json.dumps({"doc_id": "a", "tags": ["t"]}) + "\n", encoding="utf-8")
     pred = tmp_path / "pred.jsonl"
-    pred.write_text('{"doc_id": "a", "text": {"full": "x"}}\n{"doc_id": "b", "te\n',
-                    encoding="utf-8")
+    pred.write_text('{"doc_id": "a", "text": {"full": "x"}}\n{"doc_id": "b", "te\n', encoding="utf-8")
     args = cli.build_parser().parse_args(
-        ["tune-thresholds", "--annotations", str(ann), "--predictions", str(pred), "--dry-run"])
+        ["tune-thresholds", "--annotations", str(ann), "--predictions", str(pred), "--dry-run"]
+    )
     with caplog.at_level("WARNING"):
         assert cli.cmd_tune_thresholds(args) == 0
     assert "skipped 1 malformed prediction lines" in caplog.text
@@ -386,12 +390,17 @@ def test_calibration_buckets_precision_and_ece(tmp_path):
 
     gold_rows, pred_rows = [], []
     # Four values at 0.95 (3 right), two at 0.6 (1 right).
-    for i, (conf, right) in enumerate([(0.95, 1), (0.95, 1), (0.95, 1), (0.95, 0),
-                                       (0.6, 1), (0.6, 0)]):
+    for i, (conf, right) in enumerate([(0.95, 1), (0.95, 1), (0.95, 1), (0.95, 0), (0.6, 1), (0.6, 0)]):
         doc = f"d{i}"
         gold_rows.append(_gold(doc, "invoice", fields=[{"field": "total", "value": "10"}]))
-        pred_rows.append(_pred(doc, "invoice", conf=conf, fields=[
-            {"field": "total", "value": "10" if right else "99", "confidence": conf}]))
+        pred_rows.append(
+            _pred(
+                doc,
+                "invoice",
+                conf=conf,
+                fields=[{"field": "total", "value": "10" if right else "99", "confidence": conf}],
+            )
+        )
     gold = _write(tmp_path, "g.jsonl", gold_rows)
     pred = _write(tmp_path, "p.jsonl", pred_rows)
     res = evaluate(gold, pred)
@@ -429,15 +438,29 @@ def test_calibration_buckets_precision_and_ece(tmp_path):
 def test_a_field_the_gold_never_labels_is_unscored_in_the_covered_view(tmp_path):
     from baseline.evaluate import render_report
 
-    gold = _write(tmp_path, "g.jsonl", [
-        _gold("d1", "invoice", fields=[{"field": "A", "value": "1"}]),
-        _gold("d2", "invoice", fields=[{"field": "B", "value": "2"}]),
-    ])
-    pred = _write(tmp_path, "p.jsonl", [
-        _pred("d1", "invoice", fields=[{"field": "A", "value": "1", "confidence": 0.95},
-                                       {"field": "C", "value": "x", "confidence": 0.95}]),
-        _pred("d2", "invoice", fields=[{"field": "B", "value": "2", "confidence": 0.95}]),
-    ])
+    gold = _write(
+        tmp_path,
+        "g.jsonl",
+        [
+            _gold("d1", "invoice", fields=[{"field": "A", "value": "1"}]),
+            _gold("d2", "invoice", fields=[{"field": "B", "value": "2"}]),
+        ],
+    )
+    pred = _write(
+        tmp_path,
+        "p.jsonl",
+        [
+            _pred(
+                "d1",
+                "invoice",
+                fields=[
+                    {"field": "A", "value": "1", "confidence": 0.95},
+                    {"field": "C", "value": "x", "confidence": 0.95},
+                ],
+            ),
+            _pred("d2", "invoice", fields=[{"field": "B", "value": "2", "confidence": 0.95}]),
+        ],
+    )
     res = evaluate(gold, pred)
 
     cov = res["covered"]

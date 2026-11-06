@@ -170,9 +170,7 @@ class DocumentRecord(Strict):
                 continue
             got = full[m.char_start : m.char_end]
             if got != m.value:
-                problems.append(
-                    f"{m.field}: text[{m.char_start}:{m.char_end}]={got!r} != {m.value!r}"
-                )
+                problems.append(f"{m.field}: text[{m.char_start}:{m.char_end}]={got!r} != {m.value!r}")
         return problems
 
 
@@ -329,15 +327,12 @@ class TableRecord(Strict):
                 if c.char_start is None or c.char_end is None:
                     continue
                 if c.char_end > len(full):
-                    problems.append(
-                        f"{t.table_id} r{c.row}c{c.col}: offset {c.char_end} past end {len(full)}"
-                    )
+                    problems.append(f"{t.table_id} r{c.row}c{c.col}: offset {c.char_end} past end {len(full)}")
                     continue
                 got = full[c.char_start : c.char_end]
                 if got != c.text:
                     problems.append(
-                        f"{t.table_id} r{c.row}c{c.col}: "
-                        f"text[{c.char_start}:{c.char_end}]={got!r} != {c.text!r}"
+                        f"{t.table_id} r{c.row}c{c.col}: " f"text[{c.char_start}:{c.char_end}]={got!r} != {c.text!r}"
                     )
         return problems
 
@@ -348,7 +343,7 @@ def read_jsonl(path: str | Path) -> list[dict]:
     on U+2028, either of which would cut a record in half.
     """
     rows = []
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         for i, line in enumerate(fh, 1):
             line = line.strip()
             if not line:

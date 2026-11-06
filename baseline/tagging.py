@@ -89,9 +89,7 @@ def _eval_condition(cond: dict, by_field: dict[str, list[MetadataField]], facts:
     return True
 
 
-def derived_scores(
-    metadata: list[MetadataField], facts: dict, cfg: Config
-) -> dict[str, float]:
+def derived_scores(metadata: list[MetadataField], facts: dict, cfg: Config) -> dict[str, float]:
     by_field: dict[str, list[MetadataField]] = {}
     for m in metadata:
         by_field.setdefault(m.field, []).append(m)
@@ -132,15 +130,23 @@ def build_estimator(cv_folds: int):
             (
                 "word",
                 TfidfVectorizer(
-                    analyzer="word", ngram_range=(1, 2), min_df=1,
-                    sublinear_tf=True, lowercase=True, strip_accents="unicode",
+                    analyzer="word",
+                    ngram_range=(1, 2),
+                    min_df=1,
+                    sublinear_tf=True,
+                    lowercase=True,
+                    strip_accents="unicode",
                 ),
             ),
             (
                 "char",
                 TfidfVectorizer(
-                    analyzer="char_wb", ngram_range=(3, 5), min_df=1,
-                    sublinear_tf=True, lowercase=True, strip_accents="unicode",
+                    analyzer="char_wb",
+                    ngram_range=(3, 5),
+                    min_df=1,
+                    sublinear_tf=True,
+                    lowercase=True,
+                    strip_accents="unicode",
                 ),
             ),
         ]
@@ -238,9 +244,7 @@ def fit_threshold(y_true: list[int], y_prob: list[float]) -> tuple[float, float]
     return round(best_t, 4), round(best_f1, 4)
 
 
-def tune_thresholds(
-    truth: dict[str, list[int]], probs: dict[str, list[float]]
-) -> dict[str, dict]:
+def tune_thresholds(truth: dict[str, list[int]], probs: dict[str, list[float]]) -> dict[str, dict]:
     """Per tag F1 optimal thresholds. Rare tags land lower, as they should."""
     out: dict[str, dict] = {}
     for tag in sorted(truth):

@@ -114,9 +114,18 @@ def main(results, out_dir, baseline_models, folds=5, seed=0):
         for r in preds:
             fh.write(json.dumps(r) + "\n")
 
-    report = {"n_docs": len(docs), "class_counts": dict(collections.Counter(golds)),
-              "dropped": dict(dropped), "duplicate_doc_ids_dropped": dupes,
-              "current_model_dir": str(base_dir), "new_model": "fitted per fold", "folds": folds, "seed": seed, "per_fold": [], "pooled": {}}
+    report = {
+        "n_docs": len(docs),
+        "class_counts": dict(collections.Counter(golds)),
+        "dropped": dict(dropped),
+        "duplicate_doc_ids_dropped": dupes,
+        "current_model_dir": str(base_dir),
+        "new_model": "fitted per fold",
+        "folds": folds,
+        "seed": seed,
+        "per_fold": [],
+        "pooled": {},
+    }
     keys = ["current_model", "new_model", "current_full", "new_full"]
     for k in range(folds):
         rows = [r for r in preds if r["fold"] == k]
@@ -130,11 +139,21 @@ def main(results, out_dir, baseline_models, folds=5, seed=0):
     print("current_* columns use", base_dir, "| new_* columns use a model fitted per fold")
     print("fold  " + "  ".join(f"{k:>24}" for k in keys) + "   (coverage / min class P / macro F1)")
     for k, f in enumerate(report["per_fold"]):
-        print(f"{k:>4}  " + "  ".join(
-            f"{f[x]['coverage']:.3f}/{f[x]['min_precision']:.3f}/{f[x]['macro_f1']:.3f}".rjust(24) for x in keys))
-    for label, fn in (("mean", lambda x: [sum(f[x][m] for f in report["per_fold"]) / folds
-                                           for m in ("coverage", "min_precision", "macro_f1")]),
-                      ("pool", lambda x: [report["pooled"][x][m] for m in ("coverage", "min_precision", "macro_f1")])):
+        print(
+            f"{k:>4}  "
+            + "  ".join(
+                f"{f[x]['coverage']:.3f}/{f[x]['min_precision']:.3f}/{f[x]['macro_f1']:.3f}".rjust(24) for x in keys
+            )
+        )
+    for label, fn in (
+        (
+            "mean",
+            lambda x: [
+                sum(f[x][m] for f in report["per_fold"]) / folds for m in ("coverage", "min_precision", "macro_f1")
+            ],
+        ),
+        ("pool", lambda x: [report["pooled"][x][m] for m in ("coverage", "min_precision", "macro_f1")]),
+    ):
         print(f"{label:>4}  " + "  ".join("{:.3f}/{:.3f}/{:.3f}".format(*fn(x)).rjust(24) for x in keys))
     for x in keys:
         print(x, {c: f"{a}/{b}" for c, (a, b) in report["pooled"][x]["precision"].items()})

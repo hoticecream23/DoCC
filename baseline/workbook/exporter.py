@@ -135,15 +135,17 @@ def export_workbook(
     taxo = wb.create_sheet("Taxonomy")
     items = wb.create_sheet("Line items")
     for ws, cols in (
-        (docs, DOCUMENT_COLUMNS), (meta, [*METADATA_COLUMNS, PRIORITY_COLUMN]), (tags_ws, TAG_COLUMNS),
-        (taxo, TAXONOMY_COLUMNS), (items, LINE_ITEM_COLUMNS),
+        (docs, DOCUMENT_COLUMNS),
+        (meta, [*METADATA_COLUMNS, PRIORITY_COLUMN]),
+        (tags_ws, TAG_COLUMNS),
+        (taxo, TAXONOMY_COLUMNS),
+        (items, LINE_ITEM_COLUMNS),
     ):
         _write_row(ws, cols)
 
     prior = load_prior_review(merge_from) if merge_from else PriorReview()
     counts = Counter()
-    seen_docs = _write_document_rows(records, docs, meta, tags_ws, prior, counts,
-                                     run_id, extracted_at)
+    seen_docs = _write_document_rows(records, docs, meta, tags_ws, prior, counts, run_id, extracted_at)
 
     # Reviewed rows the new run no longer produces. They are appended rather
     # than dropped, because what the reviewer said is still true about the
@@ -163,9 +165,16 @@ def export_workbook(
     return dict(counts)
 
 
-def _write_document_rows(records: list[dict[str, Any]], docs, meta, tags_ws,
-                         prior: PriorReview, counts: Counter,
-                         run_id: str, extracted_at: str) -> set[str]:
+def _write_document_rows(
+    records: list[dict[str, Any]],
+    docs,
+    meta,
+    tags_ws,
+    prior: PriorReview,
+    counts: Counter,
+    run_id: str,
+    extracted_at: str,
+) -> set[str]:
     """One Documents row per record, plus its Metadata and Tags rows.
 
     Returns the doc_ids written, so the caller can tell which reviewed rows the
@@ -182,50 +191,88 @@ def _write_document_rows(records: list[dict[str, Any]], docs, meta, tags_ws,
         errors = diag.get("errors") or []
         source = rec.get("source_path", "")
 
-        _write_row(docs, [
-            doc_id, run_id, extracted_at, rec.get("schema_version", ""), source,
-            rec.get("filename", ""),
-            source.rsplit(".", 1)[-1].lower() if "." in source else "",
-            diag.get("page_count", ""), text.get("method", ""),
-            ", ".join(text.get("page_methods") or []),
-            diag.get("has_native_text", ""), diag.get("is_scanned", ""),
-            text.get("extraction_confidence", ""), text.get("char_count", ""),
-            hashlib.sha256(full.encode("utf-8")).hexdigest(), _preview(full),
-            cls.get("label", ""), cls.get("confidence", ""), cls.get("method", ""),
-            runner, runner_conf, len(errors), "; ".join(errors),
-            # LANGUAGE and QUALITY have no pipeline source. They are the
-            # reviewer's, and inventing a value for them would be a guess
-            # wearing the pipeline's clothes.
-            "", "",
-            *(_carry_document(prior.documents[doc_id], str(cls.get("label") or ""), counts)
-              if doc_id in prior.documents else [""] * 6),
-        ])
+        _write_row(
+            docs,
+            [
+                doc_id,
+                run_id,
+                extracted_at,
+                rec.get("schema_version", ""),
+                source,
+                rec.get("filename", ""),
+                source.rsplit(".", 1)[-1].lower() if "." in source else "",
+                diag.get("page_count", ""),
+                text.get("method", ""),
+                ", ".join(text.get("page_methods") or []),
+                diag.get("has_native_text", ""),
+                diag.get("is_scanned", ""),
+                text.get("extraction_confidence", ""),
+                text.get("char_count", ""),
+                hashlib.sha256(full.encode("utf-8")).hexdigest(),
+                _preview(full),
+                cls.get("label", ""),
+                cls.get("confidence", ""),
+                cls.get("method", ""),
+                runner,
+                runner_conf,
+                len(errors),
+                "; ".join(errors),
+                # LANGUAGE and QUALITY have no pipeline source. They are the
+                # reviewer's, and inventing a value for them would be a guess
+                # wearing the pipeline's clothes.
+                "",
+                "",
+                *(
+                    _carry_document(prior.documents[doc_id], str(cls.get("label") or ""), counts)
+                    if doc_id in prior.documents
+                    else [""] * 6
+                ),
+            ],
+        )
         seen_docs.add(doc_id)
         counts["documents"] += 1
 
         for n, m in enumerate(rec.get("metadata") or [], start=1):
-            _write_row(meta, [
-                f"{doc_id}_{n}", doc_id, "pipeline", m.get("field", ""),
-                m.get("value", ""), m.get("normalized_value", ""), m.get("currency", ""),
-                m.get("page", ""), m.get("char_start", ""), m.get("char_end", ""),
-                m.get("confidence", ""),
-                # regex_checksum and regex_format stay distinct. Collapsing them
-                # to "regex" reintroduces the first bug the eval harness ever
-                # caught, at the human layer where nothing would catch it again.
-                m.get("method", ""),
-                m.get("validated", ""), m.get("normalizer_version", ""),
-                *_carry_metadata(prior, doc_id, str(m.get("field") or "").casefold(),
-                                 str(m.get("value") or ""), counts),
-                review_priority(m),
-            ])
+            _write_row(
+                meta,
+                [
+                    f"{doc_id}_{n}",
+                    doc_id,
+                    "pipeline",
+                    m.get("field", ""),
+                    m.get("value", ""),
+                    m.get("normalized_value", ""),
+                    m.get("currency", ""),
+                    m.get("page", ""),
+                    m.get("char_start", ""),
+                    m.get("char_end", ""),
+                    m.get("confidence", ""),
+                    # regex_checksum and regex_format stay distinct. Collapsing them
+                    # to "regex" reintroduces the first bug the eval harness ever
+                    # caught, at the human layer where nothing would catch it again.
+                    m.get("method", ""),
+                    m.get("validated", ""),
+                    m.get("normalizer_version", ""),
+                    *_carry_metadata(
+                        prior, doc_id, str(m.get("field") or "").casefold(), str(m.get("value") or ""), counts
+                    ),
+                    review_priority(m),
+                ],
+            )
             counts["metadata"] += 1
 
         for t in rec.get("tags") or []:
-            _write_row(tags_ws, [
-                doc_id, t.get("tag", ""), "pipeline",
-                t.get("confidence", ""), t.get("method", ""),
-                *_carry_tag(prior, doc_id, str(t.get("tag") or "").casefold(), counts),
-            ])
+            _write_row(
+                tags_ws,
+                [
+                    doc_id,
+                    t.get("tag", ""),
+                    "pipeline",
+                    t.get("confidence", ""),
+                    t.get("method", ""),
+                    *_carry_tag(prior, doc_id, str(t.get("tag") or "").casefold(), counts),
+                ],
+            )
             counts["tags"] += 1
     return seen_docs
 
@@ -240,11 +287,17 @@ def _write_taxonomy(ws, cfg: Config, counts: Counter) -> None:
         _write_row(ws, ["class", c.get("name", ""), c.get("description", ""), "", "", ""])
         counts["taxonomy"] += 1
     for f in cfg.field_defs:
-        _write_row(ws, [
-            "field", f.get("name", ""), f.get("description", ""), f.get("type", ""),
-            (f.get("pattern") or {}).get("regex", ""),
-            ", ".join(f.get("classes") or []) or "all",
-        ])
+        _write_row(
+            ws,
+            [
+                "field",
+                f.get("name", ""),
+                f.get("description", ""),
+                f.get("type", ""),
+                (f.get("pattern") or {}).get("regex", ""),
+                ", ".join(f.get("classes") or []) or "all",
+            ],
+        )
         counts["taxonomy"] += 1
     for t in cfg.tag_defs:
         _write_row(ws, ["tag", t.get("name", ""), t.get("description", ""), "bool", "", ""])
@@ -257,11 +310,21 @@ def _write_line_items(ws, tables: list[dict[str, Any]] | None, counts: Counter) 
         doc_id = rec.get("doc_id", "")
         for table in rec.get("tables") or []:
             for cell in table.get("cells") or []:
-                _write_row(ws, [
-                    doc_id, table.get("table_id", ""), table.get("page", ""),
-                    table.get("method", ""), table.get("n_rows", ""), table.get("n_cols", ""),
-                    cell.get("row", ""), cell.get("col", ""), cell.get("text", ""),
-                    cell.get("char_start", ""), cell.get("char_end", ""),
-                    bool(table.get("header")) and cell.get("row") == 0,
-                ])
+                _write_row(
+                    ws,
+                    [
+                        doc_id,
+                        table.get("table_id", ""),
+                        table.get("page", ""),
+                        table.get("method", ""),
+                        table.get("n_rows", ""),
+                        table.get("n_cols", ""),
+                        cell.get("row", ""),
+                        cell.get("col", ""),
+                        cell.get("text", ""),
+                        cell.get("char_start", ""),
+                        cell.get("char_end", ""),
+                        bool(table.get("header")) and cell.get("row") == 0,
+                    ],
+                )
                 counts["line_items"] += 1

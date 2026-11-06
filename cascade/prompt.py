@@ -81,7 +81,8 @@ def response_schema(cfg: Config) -> dict:
                 "properties": {
                     f["name"]: {"type": "array", "items": {"type": "string"}}
                     | ({} if f.get("multi") or f["name"] in _OFTEN_SEVERAL else {"maxItems": 1})
-                    for f in cfg.field_defs if f.get("name")
+                    for f in cfg.field_defs
+                    if f.get("name")
                 },
                 "required": names,
                 "additionalProperties": False,
@@ -100,7 +101,9 @@ def _system_text(cfg: Config) -> str:
     lines.append("Fields:")
     for f in cfg.field_defs:
         scope = ", ".join(f.get("classes") or []) or "any class"
-        lines.append(f"- {f['name']} (applies to: {scope}): {f.get('description', '')} {_NOT.get(f['name'], '')}".rstrip())
+        lines.append(
+            f"- {f['name']} (applies to: {scope}): {f.get('description', '')} {_NOT.get(f['name'], '')}".rstrip()
+        )
     return "\n".join(lines)
 
 
@@ -115,11 +118,12 @@ def build_messages(cfg: Config, pages: list[str], images: list[bytes], max_text_
         budget -= len(chunk)
         parts.append(f"--- page {i + 1} ---\n{chunk}")
     if parts:
-        content.append({
-            "type": "text",
-            "text": "Page text read from the document by OCR or from its text layer:\n\n"
-                    + "\n\n".join(parts),
-        })
+        content.append(
+            {
+                "type": "text",
+                "text": "Page text read from the document by OCR or from its text layer:\n\n" + "\n\n".join(parts),
+            }
+        )
     for img in images:
         url = "data:image/png;base64," + base64.b64encode(img).decode("ascii")
         content.append({"type": "image_url", "image_url": {"url": url}})

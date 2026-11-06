@@ -101,15 +101,23 @@ def build_estimator(min_class_count: int):
             (
                 "word",
                 TfidfVectorizer(
-                    analyzer="word", ngram_range=(1, 2), min_df=1,
-                    sublinear_tf=True, lowercase=True, strip_accents="unicode",
+                    analyzer="word",
+                    ngram_range=(1, 2),
+                    min_df=1,
+                    sublinear_tf=True,
+                    lowercase=True,
+                    strip_accents="unicode",
                 ),
             ),
             (
                 "char",
                 TfidfVectorizer(
-                    analyzer="char_wb", ngram_range=(3, 5), min_df=1,
-                    sublinear_tf=True, lowercase=True, strip_accents="unicode",
+                    analyzer="char_wb",
+                    ngram_range=(3, 5),
+                    min_df=1,
+                    sublinear_tf=True,
+                    lowercase=True,
+                    strip_accents="unicode",
                 ),
             ),
         ]
@@ -117,9 +125,7 @@ def build_estimator(min_class_count: int):
     folds = max(2, min(5, min_class_count))
     # shuffle off so a rerun on the same data gives the same model
     cv = StratifiedKFold(n_splits=folds, shuffle=False)
-    clf = CalibratedClassifierCV(
-        LinearSVC(random_state=0, dual="auto"), method="sigmoid", cv=cv
-    )
+    clf = CalibratedClassifierCV(LinearSVC(random_state=0, dual="auto"), method="sigmoid", cv=cv)
     return Pipeline([("features", features), ("clf", clf)])
 
 
@@ -147,9 +153,7 @@ def train(texts: list[str], labels: list[str], out_dir: str | Path) -> dict:
     smallest = min(counts.values())
     if smallest < 2:
         rare = [k for k, v in counts.items() if v < 2]
-        raise ValueError(
-            "every class needs at least 2 examples for calibration, thin: " + str(rare)
-        )
+        raise ValueError("every class needs at least 2 examples for calibration, thin: " + str(rare))
 
     pipe = build_estimator(smallest)
     pipe.fit(texts, labels)
@@ -191,9 +195,7 @@ def load_model(model_dir: str | Path) -> ClassifierModel | None:
 # --------------------------------------------------------------------------
 
 
-def classify(
-    full: str, pages: list[str], cfg: Config, model: ClassifierModel | None = None
-) -> Classification:
+def classify(full: str, pages: list[str], cfg: Config, model: ClassifierModel | None = None) -> Classification:
     """Cascade: strong rule, then model, then weak rule, then unknown.
 
     Never forces a guess. Coverage at a fixed error rate is the metric.

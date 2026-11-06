@@ -27,9 +27,15 @@ def gcfg(cfg):
 
 
 def _f(name, value, start=0, validated=True):
-    return {"field": name, "value": value, "normalized_value": value,
-            "char_start": start, "char_end": start + len(value),
-            "confidence": 1.0, "validated": validated}
+    return {
+        "field": name,
+        "value": value,
+        "normalized_value": value,
+        "char_start": start,
+        "char_end": start + len(value),
+        "confidence": 1.0,
+        "validated": validated,
+    }
 
 
 def _rec(doc_id, label="invoice", fields=(), filename=None):
@@ -44,6 +50,7 @@ def _rec(doc_id, label="invoice", fields=(), filename=None):
 
 
 # ---------------------------------------------------------------- identity
+
 
 def test_gstin_reduces_to_the_pan_it_carries():
     assert org_key("27AAPFU0939F1ZV") == "AAPFU0939F"
@@ -92,18 +99,17 @@ def test_names_alone_never_create_an_org(gcfg):
 
 # ---------------------------------------------------------------- roles
 
+
 def test_role_goes_to_the_clearly_nearest_identity():
-    roles = {"issued_by": [_f("vendor_name", "Acme", 0)],
-             "billed_to": [_f("buyer_name", "Globex", 500)]}
+    roles = {"issued_by": [_f("vendor_name", "Acme", 0)], "billed_to": [_f("buyer_name", "Globex", 500)]}
     ids = [_f("gstin", "27AAPFU0939F1ZV", 20)]
     out = match_roles(roles, ids, limit=400, margin=60)
     assert "issued_by" in out
-    assert "billed_to" not in out   # out of range, and the id is taken
+    assert "billed_to" not in out  # out of range, and the id is taken
 
 
 def test_an_identity_cannot_hold_two_roles():
-    roles = {"issued_by": [_f("vendor_name", "Acme", 0)],
-             "billed_to": [_f("buyer_name", "Globex", 40)]}
+    roles = {"issued_by": [_f("vendor_name", "Acme", 0)], "billed_to": [_f("buyer_name", "Globex", 40)]}
     ids = [_f("gstin", "27AAPFU0939F1ZV", 20)]
     out = match_roles(roles, ids, limit=400, margin=0)
     assert len(out) == 1
@@ -111,8 +117,7 @@ def test_an_identity_cannot_hold_two_roles():
 
 def test_a_narrow_win_is_refused_rather_than_guessed():
     """Ship To can sit closer to the seller GSTIN than Vendor Name does."""
-    roles = {"issued_by": [_f("vendor_name", "Acme", 0)],
-             "billed_to": [_f("buyer_name", "Globex", 55)]}
+    roles = {"issued_by": [_f("vendor_name", "Acme", 0)], "billed_to": [_f("buyer_name", "Globex", 55)]}
     ids = [_f("gstin", "27AAPFU0939F1ZV", 30)]
     # distances 30 and 25, so neither wins by 60
     assert match_roles(roles, ids, limit=400, margin=60) == {}
@@ -128,11 +133,11 @@ def test_role_beyond_the_distance_limit_is_dropped():
 
 # ---------------------------------------------------------------- accounts
 
+
 def test_account_needs_a_verified_ifsc_to_become_an_entity(gcfg):
     """The same number at two banks is two accounts, so an unqualified
     number cannot safely be a node."""
-    with_ifsc = [_rec("a", fields=[_f("account_number", "502010123456789"),
-                                   _f("ifsc", "HDFC0001234")])]
+    with_ifsc = [_rec("a", fields=[_f("account_number", "502010123456789"), _f("ifsc", "HDFC0001234")])]
     without = [_rec("b", fields=[_f("account_number", "502010123456789")])]
     assert build_graph(with_ifsc, gcfg)[1]["accounts"] == 1
     assert build_graph(without, gcfg)[1]["accounts"] == 0
@@ -147,6 +152,7 @@ def test_same_number_at_different_banks_stays_two_accounts(gcfg):
 
 
 # ---------------------------------------------------------------- references
+
 
 def test_a_receipt_links_to_the_invoice_it_quotes(gcfg):
     records = [
@@ -175,6 +181,7 @@ def test_orphan_reference_is_reported(gcfg):
 
 
 # ---------------------------------------------------------------- duplicates
+
 
 def test_duplicates_are_found_within_a_class(gcfg):
     records = [
@@ -205,6 +212,7 @@ def test_different_totals_are_not_duplicates(gcfg):
 
 
 # ---------------------------------------------------------------- output
+
 
 def test_graph_is_deterministic(gcfg):
     records = [
@@ -252,13 +260,14 @@ def test_empty_input_produces_an_empty_graph(gcfg):
 
 # ---------------------------------------------------------------- end to end
 
+
 def test_graph_over_the_real_pipeline_output(cfg, corpus, tmp_path):
     """Build a run, then a graph over it, with no hand written records."""
     from baseline.pipeline import run_batch
 
     out = tmp_path / "results.jsonl"
     run_batch(corpus, out, workers=1)
-    records = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
+    records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     g, stats = build_graph(records, cfg.graph)
 
     assert stats["documents"] == len(records)
@@ -266,8 +275,7 @@ def test_graph_over_the_real_pipeline_output(cfg, corpus, tmp_path):
     orgs = {n.attrs["pan"] for n in g.nodes if n.kind == "organization"}
     assert "AAPFU0939F" in orgs
     # The receipts quote the invoice, so the chain must exist.
-    assert any(c["from_class"] == "receipt" and c["to_class"] == "invoice"
-               for c in find_chains(g))
+    assert any(c["from_class"] == "receipt" and c["to_class"] == "invoice" for c in find_chains(g))
     # Every organisation node came from a verified identifier.
     for n in g.nodes:
         if n.kind == "organization":

@@ -19,8 +19,9 @@ def _ground(cfg, field, value, pages, rule_cands=()):
 
 def _cand(full, value, start):
     assert full[start : start + len(value)] == value
-    return Candidate(value=value, start=start, end=start + len(value),
-                     confidence=0.9, method=MetadataMethod.ANCHOR, validated=False)
+    return Candidate(
+        value=value, start=start, end=start + len(value), confidence=0.9, method=MetadataMethod.ANCHOR, validated=False
+    )
 
 
 def test_exact_unique_match(cfg):
