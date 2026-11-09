@@ -99,3 +99,50 @@ def test_oldest_finished_job_is_evicted():
     store.set_done(old, RECORD)
     store.set_failed(new, "x")
     assert store.get(old) is None and store.get(new).state == "failed" and store.get(waiting).state == "queued"
+
+
+def _sqlite_store(tmp_path, **kwargs):
+    from api.jobs import SqliteJobStore
+
+    return SqliteJobStore(tmp_path / "docc.sqlite", **kwargs)
+
+
+def _real_record():
+    from test_db import _record
+
+    return _record("a" * 16)
+
+
+def test_sqlite_job_is_visible_from_a_second_store_on_the_same_file(tmp_path):
+    first = _sqlite_store(tmp_path)
+    job_id = first.create("trace-1", "x")
+    first.set_running(job_id)
+    first.set_done(job_id, _real_record())
+    second = _sqlite_store(tmp_path)
+    job = second.get(job_id)
+    assert job.state == "done" and job.result.doc_id == "a" * 16 and job.error is None
+    assert second.get("nope") is None
+    first.close()
+    second.close()
+
+
+def test_sqlite_job_left_running_is_failed_on_reopen(tmp_path):
+    from api.jobs import STALE_JOB_ERROR
+
+    first = _sqlite_store(tmp_path)
+    running, queued = first.create(), first.create()
+    first.set_running(running)
+    first.close()
+    second = _sqlite_store(tmp_path)
+    for job_id in (running, queued):
+        assert second.get(job_id).state == "failed" and second.get(job_id).error == STALE_JOB_ERROR
+    second.close()
+
+
+def test_sqlite_oldest_finished_job_is_evicted(tmp_path):
+    store = _sqlite_store(tmp_path, max_finished=1)
+    old, new, waiting = store.create(), store.create(), store.create()
+    store.set_failed(old, "x")
+    store.set_failed(new, "y")
+    assert store.get(old) is None and store.get(new).error == "y" and store.get(waiting).state == "queued"
+    store.close()

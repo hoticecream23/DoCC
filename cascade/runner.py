@@ -16,6 +16,8 @@ upserted into the same SQLite store the baseline run uses (`db.path`). A
 store failure is logged and never stops the run; `db-import` repairs it.
 """
 
+# Over 400 lines: the per-document cascade and the resumable batch share the commit order; one module keeps it visible.
+
 from __future__ import annotations
 
 import json
@@ -247,6 +249,7 @@ def process_document(
     ccfg: CascadeConfig,
     backend: Backend,
     models: baseline_pipeline.Models | None = None,
+    cabinet_id: str | None = None,
 ) -> Result:
     """Run the baseline, then the model, and merge them into one record.
 
@@ -258,6 +261,7 @@ def process_document(
         ccfg: The cascade config.
         backend: The model client.
         models: Baseline models; None runs rules only.
+        cabinet_id: Cabinet to stamp; None uses the config's cabinet_id.
 
     Returns:
         The record, word boxes and provenance.
@@ -266,7 +270,7 @@ def process_document(
         Exception: Only if the baseline cannot read the file at all.
     """
     p = Path(path)
-    base, sidecar = baseline_pipeline.process_document(p, cfg, models)
+    base, sidecar = baseline_pipeline.process_document(p, cfg, models, cabinet_id)
     timed = _Timer(bool(cfg.pipeline.get("runtime", {}).get("deterministic_timings", False)))
     prov = _new_provenance(base, timed.timings)
     try:
@@ -317,13 +321,14 @@ def _process_or_count(
     ccfg: CascadeConfig,
     backend: Backend,
     models: baseline_pipeline.Models | None,
+    cabinet_id: str,
 ) -> Result | None:
     """Process one document; None when it is skipped or fails, counted in stats."""
     try:
         if compute_doc_id(path) in skip:
             stats["skipped"] += 1
             return None
-        return process_document(path, cfg, ccfg, backend, models)
+        return process_document(path, cfg, ccfg, backend, models, cabinet_id)
     except Exception as exc:  # noqa: BLE001 - per-document loop: one bad document must not stop the batch
         log.error("document failed", extra={"path": str(path), **_error_extra(exc)}, exc_info=isinstance(exc, _BUGS))
         stats["failed"] += 1
@@ -362,6 +367,19 @@ def _output_paths(output: str | Path, bbox_dir: str | Path | None) -> tuple[Path
     return out_path, prov_path, Path(bbox_dir) if bbox_dir else out_path.with_name(out_path.name + ".bboxes")
 
 
+def model_root(cfg: Config, root: str | Path | None) -> Path:
+    """Directory the model paths and models/MANIFEST.sha256 are relative to.
+
+    Args:
+        cfg: The loaded config.
+        root: An explicit root; None for the parent of the config directory.
+
+    Returns:
+        The root, independent of the working directory when root is None.
+    """
+    return Path(root) if root is not None else cfg.config_dir.resolve().parent
+
+
 def run_batch(
     input_dir: str | Path,
     output: str | Path,
@@ -371,6 +389,8 @@ def run_batch(
     models: baseline_pipeline.Models | None = None,
     bbox_dir: str | Path | None = None,
     resume: bool = True,
+    root: str | Path | None = None,
+    cabinet_id: str | None = None,
 ) -> BatchStats:
     """Process a directory into JSONL plus a provenance sidecar. Resumable.
 
@@ -383,6 +403,8 @@ def run_batch(
         models: Baseline models; None runs rules only.
         bbox_dir: Word box sidecar directory; defaults to <output>.bboxes.
         resume: Skip documents already written, after repairing a crash.
+        root: Root for the model manifest; None for the parent of the config directory.
+        cabinet_id: Cabinet stamped on every record; None uses the config's.
 
     Returns:
         Counts of documents found, skipped, written, failed and fallen back.
@@ -397,13 +419,14 @@ def run_batch(
     excluded_counts = {reason: len(items) for reason, items in sorted(excluded.items())}
     stats = BatchStats(found=len(paths), skipped=0, written=0, failed=0, fallback=0, excluded=excluded_counts)
     mode = "a" if resume else "w"
+    cabinet = cabinet_id or cfg.cabinet_id
     with (
-        baseline_pipeline._open_store(cfg, out_path, bdir, cfg.cabinet_id, Path(".")) as store,
+        baseline_pipeline._open_store(cfg, out_path, bdir, cabinet, model_root(cfg, root)) as store,
         open(out_path, mode, encoding="utf-8", newline="\n") as results_fh,
         open(prov_path, mode, encoding="utf-8", newline="\n") as prov_fh,
     ):
         for p in paths:
-            outcome = _process_or_count(p, skip, stats, cfg, ccfg, backend, models)
+            outcome = _process_or_count(p, skip, stats, cfg, ccfg, backend, models, cabinet)
             if outcome is None:
                 continue
             _write_outcome(outcome, bdir, results_fh, prov_fh)

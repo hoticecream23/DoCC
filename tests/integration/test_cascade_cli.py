@@ -27,10 +27,13 @@ def test_run_against_a_local_server_writes_records_and_provenance(corpus, tmp_pa
                 "m",
                 "--base-url",
                 url,
+                "--cabinet",
+                "cli-cab",
             ]
         )
     assert rc == 0
     lines = out.read_text(encoding="utf-8").splitlines()
+    assert {json.loads(line)["cabinet_id"] for line in lines} == {"cli-cab"}
     provs = (tmp_path / "out.jsonl.provenance").read_text(encoding="utf-8").splitlines()
     assert lines and len(lines) == len(provs)
     assert reqs and all(r["body"]["model"] == "m" for r in reqs)

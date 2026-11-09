@@ -95,9 +95,14 @@ A thin FastAPI shell over the same functions. Install the extra and run it on lo
     python -m api --config config/pipeline.yaml --host 127.0.0.1 --port 8000 [--workers 1]
 
 - `GET /api/v1/health`: status, and whether a VLM model is configured for cascade.
-- `POST /api/v1/documents/process`: multipart `file`; runs the baseline and returns the record. 50 MB limit.
-- `POST /api/v1/documents/process_async`: same upload; queues a cascade job, answers 202 with a `job_id` (503 without a model).
-- `GET /api/v1/jobs/{job_id}`: `state` queued, running, done or failed, plus `result` or `error`. Jobs live in memory only.
+- `POST /api/v1/documents/process`: multipart `file` and optional `cabinet_id` (default: the config's); runs the baseline, stores the record and returns it. 50 MB limit.
+- `POST /api/v1/documents/process_async`: same upload; queues a cascade job, answers 202 with a `job_id` (503 without a model). The job stores the record and its provenance.
+- `GET /api/v1/jobs/{job_id}`: `state` queued, running, done or failed, plus `result` or `error`.
+- `GET /api/v1/documents?cabinet_id=&limit=&offset=`: stored documents ordered by doc_id, as `doc_id`, `cabinet_id`, `doc_type`, `confidence`, `filename`, `updated_at`. `limit` 1-500, default 50.
+- `GET /api/v1/documents/{doc_id}`: the stored record; 404 if absent.
+- `GET /api/v1/documents/{doc_id}/review_events`: the reviewer corrections recorded for it.
+
+The API uses the SQLite store at `db.path` (a relative path resolves in the working directory). Jobs live in its `jobs` table; a job a previous process left queued or running is marked failed at startup, since it cannot resume. With `db.path: null`, jobs live in memory only and the document read routes answer 503.
 
 ## What comes out
 

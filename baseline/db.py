@@ -8,7 +8,12 @@ The DDL is portable on purpose: TEXT, INTEGER and REAL columns only, JSON kept
 as TEXT, composite primary keys instead of autoincrement, and upserts written
 as `INSERT ... ON CONFLICT ... DO UPDATE`, which PostgreSQL also accepts. WAL
 mode and foreign keys are connection pragmas, not part of the schema.
+
+The `jobs` table holds API job state (api/jobs.py SqliteJobStore); it is not
+part of the JSONL mirror.
 """
+
+# Over 400 lines: every table's DDL and its read and write helpers stay together, so the schema has one owner.
 
 from __future__ import annotations
 
@@ -114,6 +119,18 @@ SCHEMA_DDL: tuple[str, ...] = (
         source TEXT NOT NULL,
         created_at TEXT NOT NULL
     )""",
+    """CREATE TABLE IF NOT EXISTS jobs (
+        job_id TEXT PRIMARY KEY,
+        cabinet_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        doc_id TEXT,
+        error TEXT,
+        trace_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        result_json TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS jobs_state ON jobs (state, updated_at)",
 )
 
 _UPSERT_DOCUMENT = """
@@ -167,18 +184,19 @@ def _file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def connect(path: str | Path) -> sqlite3.Connection:
+def connect(path: str | Path, threads: bool = False) -> sqlite3.Connection:
     """Open the store, turn on WAL and foreign keys, and create the schema if missing.
 
     Args:
         path: Database file; its parent directory is created.
+        threads: Allow use from other threads; the caller then serializes access with a lock.
 
     Returns:
         An open connection with rows as sqlite3.Row. The caller closes it.
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(p)
+    conn = sqlite3.connect(p, check_same_thread=not threads)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
@@ -402,6 +420,20 @@ def list_documents(
     params: list[Any] = [cabinet_id] if cabinet_id is not None else []
     sql = f"SELECT {_DOC_COLUMNS} FROM documents{where} ORDER BY doc_id LIMIT ? OFFSET ?"
     return [dict(r) for r in conn.execute(sql, [*params, limit, offset]).fetchall()]
+
+
+def get_document(conn: sqlite3.Connection, doc_id: str) -> DocumentRecord | None:
+    """One stored record, exactly as written.
+
+    Args:
+        conn: Open store.
+        doc_id: The document.
+
+    Returns:
+        The record, or None when the store does not hold it.
+    """
+    row = conn.execute("SELECT record_json FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
+    return None if row is None else DocumentRecord.model_validate_json(row["record_json"])
 
 
 def _event_id(event: ReviewEvent) -> str:

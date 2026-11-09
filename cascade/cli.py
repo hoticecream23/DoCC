@@ -1,7 +1,7 @@
 """Command line entry point.
 
   cascade run --input DIR --output results.jsonl [--model NAME] [--base-url URL]
-              [--no-resume] [--dry-run]
+              [--no-resume] [--dry-run] [--cabinet ID]
 
 Writes results.jsonl, results.jsonl.provenance and results.jsonl.bboxes/.
 Score with `baseline eval` and gate with `baseline compare`, as for any run.
@@ -20,7 +20,7 @@ from baseline.pipeline import Models
 from baseline.scan import scan_documents
 
 from .config import load_cascade_config
-from .runner import run_batch
+from .runner import model_root, run_batch
 from .vlm import VLMClient
 
 log = get_logger(__name__)
@@ -52,15 +52,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     settings = ccfg.vlm.model_copy(update=overrides)
     backend = VLMClient(settings)  # refuses a missing model or a non local host
     log.info("cascade server", extra={"base_url": settings.base_url, "model": settings.model})
+    root = model_root(cfg, args.root)
     stats = run_batch(
         args.input,
         args.output,
         cfg,
         ccfg,
         backend,
-        models=Models.load(cfg, Path(args.root)),
+        models=Models.load(cfg, root),
         bbox_dir=args.bbox_dir,
         resume=args.resume,
+        root=root,
+        cabinet_id=args.cabinet,
     )
     log.info("run complete", extra=stats)
     return 0
@@ -74,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     """
     p = argparse.ArgumentParser(prog="cascade", description="Cascade v2: VLM extraction with grounding")
     p.add_argument("--config", default=None, help="config directory, defaults to ./config")
-    p.add_argument("--root", default=".", help="root for relative model paths")
+    p.add_argument("--root", default=None, help="root for relative model paths; defaults to the config's parent")
     p.add_argument("--log-level", default="INFO")
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -88,6 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume", action=argparse.BooleanOptionalAction, default=True, help="skip documents already written"
     )
     r.add_argument("--dry-run", action="store_true", help="log what would be written and stop")
+    r.add_argument("--cabinet", default=None, help="cabinet_id for every record, overrides the config")
     r.set_defaults(func=cmd_run)
     return p
 

@@ -167,8 +167,8 @@ def test_the_fallback_also_drops_a_bad_offset(corpus, cfg, ccfg, monkeypatch):
 
     real = baseline_process
 
-    def shifted(path, cfg, models=None):
-        rec, side = real(path, cfg, models)
+    def shifted(path, cfg, models=None, cabinet_id=None):
+        rec, side = real(path, cfg, models, cabinet_id)
         first = rec.metadata[0]
         bad = first.model_copy(update={"char_start": first.char_start + 1, "char_end": first.char_end + 1})
         return rec.model_copy(update={"metadata": [bad, *rec.metadata[1:]]}), side
@@ -263,3 +263,23 @@ def test_a_broken_store_never_blocks_the_cascade_jsonl(corpus, cfg, ccfg, tmp_pa
     out = tmp_path / "cascade.jsonl"
     stats = run_batch(corpus, out, cfg, ccfg, FakeBackend(_invoice_or_nothing))
     assert stats["written"] == len(out.read_text(encoding="utf-8").splitlines()) > 0
+
+
+def test_the_model_manifest_resolves_from_the_config_root_not_the_working_directory(
+    corpus, cfg, ccfg, tmp_path, monkeypatch
+):
+    from contextlib import closing
+
+    from baseline import db
+    from baseline.classify import MANIFEST, read_manifest
+    from cascade.runner import run_batch
+
+    want = read_manifest(cfg.config_dir.parent / "models" / MANIFEST)
+    assert want  # the manifest is tracked, so CI has it too
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "out" / "cascade.jsonl"
+    run_batch(corpus, out, cfg, ccfg, FakeBackend(_invoice_or_nothing), cabinet_id="x")
+    with closing(db.connect(out.parent / "docc.sqlite")) as conn:
+        models = {r["name"]: r["sha256"] for r in conn.execute("SELECT name, sha256 FROM models")}
+        cabinets = {r["cabinet_id"] for r in db.list_documents(conn, limit=1000)}
+    assert models == want and cabinets == {"x"}

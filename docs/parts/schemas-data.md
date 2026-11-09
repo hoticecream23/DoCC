@@ -445,7 +445,7 @@ Known differences between definitions and files (facts only)
 
 - Definition: `baseline/db.py` (`SCHEMA_DDL`). Stdlib `sqlite3`, WAL mode, foreign keys on. Portable SQL only: TEXT, INTEGER and REAL columns, JSON kept as TEXT, composite keys instead of autoincrement, upserts as `INSERT ... ON CONFLICT ... DO UPDATE`. The DDL should port to PostgreSQL unchanged.
 - Location: `db.path` in `pipeline.yaml`, default `docc.sqlite`, resolved beside the results file. `null` turns the store off.
-- Rule: the JSONL is the log and the source of truth. The pipeline writes and flushes each results line first, then upserts the record (`run_batch` in `baseline/pipeline.py`). The cascade runner (`run_batch` in `cascade/runner.py`) does the same with the same `db.path`, and also upserts the record's provenance line; cascade records carry the baseline record's `cabinet_id`. A store error is logged and the batch goes on. `db-import` rebuilds or repairs the store from the JSONL at any time, and is idempotent: importing the same file twice gives the same row counts.
+- Rule: the JSONL is the log and the source of truth. The pipeline writes and flushes each results line first, then upserts the record (`run_batch` in `baseline/pipeline.py`). The cascade runner (`run_batch` in `cascade/runner.py`) does the same with the same `db.path`, and also upserts the record's provenance line; cascade records carry the baseline record's `cabinet_id` (`cascade run --cabinet` overrides the config). The cascade run reads `models/MANIFEST.sha256` under `--root`, by default the config directory's parent, not the working directory. A store error is logged and the batch goes on. `db-import` rebuilds or repairs the store from the JSONL at any time, and is idempotent: importing the same file twice gives the same row counts.
 
 | table | key | main columns |
 | --- | --- | --- |
@@ -457,13 +457,16 @@ Known differences between definitions and files (facts only)
 | review_events | event_id | doc_id, field, old_value, new_value, source, created_at. One row per reviewer change, written by `import-workbook` (see below) |
 | runs | run_id | started_at, config_hash (sha256 of every loaded YAML), schema_version, cabinet_id |
 | models | name | version (null: the manifest has none), sha256 from `models/MANIFEST.sha256`, recorded_at |
+| jobs | job_id | cabinet_id, state (queued, running, done, failed), doc_id (null until done), error (null unless failed), trace_id, created_at, updated_at, result_json (the record, null until done). API job state, not part of the JSONL mirror |
 
 - Child tables join to `documents` on doc_id; `documents.cabinet_id` scopes them. `doc_id` is already the content hash, so there is no separate hash column.
 - `upsert_document` replaces a document's `fields` and `tags` rows in one transaction. It does not touch `tables`, `provenance` or `review_events`.
 - Word boxes stay on disk in `<results>.bboxes/`; the store holds their path and sha256.
 - Export rebuilds the JSONL from `record_json`, ordered by doc_id.
+- Jobs: `api/jobs.py` `SqliteJobStore` writes the `jobs` table when the API has a `db.path` (resolved in the API's root, the working directory by default). At startup it marks every `queued` or `running` row `failed` with error "server restarted before the job finished": the runner is in process, so those jobs cannot resume. Only the newest `MAX_FINISHED_JOBS` (1000) done or failed rows are kept. `db-import` and `db-export` do not touch the table.
+- API writes: `/documents/process` and the cascade job upsert their record (and, for cascade, its provenance) with the same `upsert_document` and `upsert_provenance`, with no run_id and no bbox sidecar. A store error is logged and the record is still returned.
 - Review events: `import-workbook` records every change a reviewer made, after it writes the gold file, when a store exists at `--db` or at `db.path` beside the xlsx. A class `wrong`/`missing` gives field `class`; a field `wrong`/`missing` or human row gives the field name, old = the sheet's pipeline value (null for a human row), new = the normalised correction; a field `spurious` gives new = null; a tag gives field `tag:<name>` (`wrong`/`spurious`: new null; `missing` or human: old null). `source` is the resolved xlsx path plus `#<sheet>`. `event_id` is the sha256 of (doc_id, field, old, new, source), so importing the same sheet twice adds no rows. Events for a doc_id the store does not hold are skipped.
-- Public API: `connect`, `upsert_document`, `upsert_provenance`, `import_jsonl` (returns `ImportStats`), `export_jsonl`, `list_documents`, `start_run`, `record_models`, `record_review_events` (takes `ReviewEvent`s, returns rows written), `list_review_events`.
+- Public API: `connect`, `upsert_document`, `upsert_provenance`, `import_jsonl` (returns `ImportStats`), `export_jsonl`, `list_documents`, `start_run`, `record_models`, `record_review_events` (takes `ReviewEvent`s, returns rows written), `list_review_events`, `get_document` (one record or None). `connect(path, threads=True)` allows use across threads; the caller then holds a lock.
 
 Commands (both take `--dry-run`)
 
