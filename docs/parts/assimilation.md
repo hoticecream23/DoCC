@@ -120,3 +120,14 @@ OIDC, LayoutLMv3.
 Grounded spans, local-only inference, reproducible runs, macro F1 0.971
 with cascade on 20 documents (state the sample size). Nothing else from the
 spec's metrics.
+
+## Status 2026-11-09
+
+Done on `small-fixes` (a627ed7..c9623a6): Decision 1 steps 1-6 (SQLite
+store in baseline/db.py, cabinet_id, db-import/db-export, pipeline and
+cascade upserts, workbook corrections as review_events, API reads from
+the DB); Decision 2 seams 1-3 (FastAPI shell in api/ with process,
+process_async, jobs, documents routes; bounded uploads and queue;
+trace_id; VLM settings helpers in cascade/config.py). 656 tests, 87-89 %
+coverage. Not started: client re-baseline, per-client schemas, Arabic
+check, HITL UI, ERP lookup, PII masking.
