@@ -2,6 +2,12 @@
 
 Every stage is wrapped. A stage that blows up records an error in diagnostics
 and the record still gets written, partial. One bad PDF never kills a batch.
+
+Write order in run_batch: the results line is written and flushed first; only
+then is the same record upserted into the SQLite store (`db.path` in
+pipeline.yaml, see baseline/db.py). The JSONL is the log. A store failure is
+logged and the batch goes on, so it can never lose or block a results line;
+`baseline db-import` rebuilds the store from the JSONL afterwards.
 """
 
 # Over 400 lines: each stage wrapper sits beside the one flow it guards; splitting would hide the stage order.
@@ -9,13 +15,16 @@ from __future__ import annotations
 
 import gzip
 import json
+import sqlite3
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, TypedDict, TypeVar
 
 from . import classify as classify_mod
+from . import db
 from . import tagging as tagging_mod
 from .config import Config, load_config_cached
 from .errors import summarize_exception
@@ -174,13 +183,16 @@ def _tag_stage(
     return st.run("tag", lambda: tagging_mod.apply_tags(text.full, text.pages, cfg, meta, facts, models.tagger), empty)
 
 
-def process_document(path: str | Path, cfg: Config, models: Models | None = None) -> tuple[DocumentRecord, BBoxSidecar]:
+def process_document(
+    path: str | Path, cfg: Config, models: Models | None = None, cabinet_id: str | None = None
+) -> tuple[DocumentRecord, BBoxSidecar]:
     """The whole pipeline for one file.
 
     Args:
         path: Document to process.
         cfg: Loaded configuration.
         models: Trained models; None means rules only.
+        cabinet_id: Cabinet to stamp; None uses the config's cabinet_id.
 
     Returns:
         The record and its word-box sidecar.
@@ -212,6 +224,7 @@ def process_document(path: str | Path, cfg: Config, models: Models | None = None
         doc_id=doc_id,
         source_path=p.as_posix(),
         filename=p.name,
+        cabinet_id=cabinet_id or cfg.cabinet_id,
         text=text,
         classification=cls,
         metadata=meta,
@@ -314,12 +327,12 @@ def _init_worker(config_dir: str | None, root: str, log_level: str) -> None:
     _STATE["bbox_dir"] = None
 
 
-def _run_one(job: tuple[str, str]) -> str:
-    path, bbox_dir = job
+def _run_one(job: tuple[str, str, str]) -> str:
+    path, bbox_dir, cabinet_id = job
     cfg: Config = _STATE["cfg"]
     models: Models = _STATE["models"]
     try:
-        record, sidecar = process_document(path, cfg, models)
+        record, sidecar = process_document(path, cfg, models, cabinet_id)
         if bbox_dir:
             write_sidecar(sidecar, Path(bbox_dir))
         return dumps(record)
@@ -347,7 +360,7 @@ def _pending(paths: list[Path], out_path: Path, resume: bool) -> list[Path]:
     return todo
 
 
-def _results(jobs: list[tuple[str, str]], workers: int, init_args: tuple[str | None, str, str]) -> Iterable[str]:
+def _results(jobs: list[tuple[str, str, str]], workers: int, init_args: tuple[str | None, str, str]) -> Iterable[str]:
     """One JSON line per job, in input order; an empty string marks a failure."""
     if workers and workers > 1:
         import multiprocessing as mp
@@ -362,13 +375,67 @@ def _results(jobs: list[tuple[str, str]], workers: int, init_args: tuple[str | N
             yield _run_one(job)
 
 
-def _write_lines(fh: IO[str], lines: Iterable[str], stats: BatchStats) -> None:
+@dataclass
+class _Store:
+    """An open SQLite store and the run it records."""
+
+    conn: sqlite3.Connection
+    run_id: str
+    bbox_dir: Path
+
+    def mirror(self, line: str) -> None:
+        """Upsert one committed results line. A store failure is logged, never raised."""
+        record = DocumentRecord.model_validate_json(line)
+        try:
+            db.upsert_document(self.conn, record, self.run_id, self.bbox_dir / f"{record.doc_id}.json.gz")
+        except sqlite3.Error as exc:
+            log.error(
+                "db write failed, results line kept; run db-import to repair",
+                extra={"doc_id": record.doc_id, "error": summarize_exception(exc)},
+            )
+
+
+def _start_store(conn: sqlite3.Connection, cfg: Config, bbox_dir: Path, cabinet_id: str, root: Path) -> _Store:
+    """Record the run and the model manifest, and wrap the connection."""
+    run_id = db.start_run(conn, cfg.dump(), cabinet_id)
+    model_dir = root / str(cfg.classify_opts().get("model_dir", "models/classifier"))
+    db.record_models(conn, classify_mod.read_manifest(model_dir.parent / classify_mod.MANIFEST))
+    return _Store(conn, run_id, bbox_dir)
+
+
+@contextmanager
+def _open_store(cfg: Config, out_path: Path, bbox_dir: Path, cabinet_id: str, root: Path) -> Iterator[_Store | None]:
+    """The run's store, or None when db.path is null or the store cannot be opened."""
+    path = cfg.db_path(out_path)
+    if path is None:
+        yield None
+        return
+    try:
+        conn = db.connect(path)
+    except sqlite3.Error as exc:
+        log.error("db unavailable, writing JSONL only", extra={"db": str(path), "error": summarize_exception(exc)})
+        yield None
+        return
+    with closing(conn):
+        try:
+            store: _Store | None = _start_store(conn, cfg, bbox_dir, cabinet_id, root)
+        except sqlite3.Error as exc:
+            log.error("db unavailable, writing JSONL only", extra={"db": str(path), "error": summarize_exception(exc)})
+            store = None
+        yield store
+
+
+def _write_lines(fh: IO[str], lines: Iterable[str], stats: BatchStats, store: _Store | None = None) -> None:
     for line in lines:
-        if line:
-            fh.write(line + "\n")
-            stats["written"] += 1
-        else:
+        if not line:
             stats["failed"] += 1
+            continue
+        fh.write(line + "\n")
+        stats["written"] += 1
+        if store is not None:
+            # The line must be on disk before the store may hold it.
+            fh.flush()
+            store.mirror(line)
 
 
 def _start_stats(found: int, todo: int, excluded: dict[str, int], workers: int) -> BatchStats:
@@ -395,6 +462,7 @@ def run_batch(
     bbox_dir: str | Path | None = None,
     resume: bool = True,
     root: str | Path = ".",
+    cabinet_id: str | None = None,
 ) -> BatchStats:
     """Process a directory into JSONL. Resumable, parallel, order stable.
 
@@ -406,6 +474,7 @@ def run_batch(
         bbox_dir: Sidecar directory, defaults to `<output>.bboxes`.
         resume: Skip documents already in the output.
         root: Directory model paths are relative to.
+        cabinet_id: Cabinet stamped on every record; None uses the config's.
 
     Returns:
         Batch counts.
@@ -427,10 +496,12 @@ def run_batch(
     if not todo:
         return stats
 
-    jobs = [(str(p), str(bdir)) for p in todo]
+    cabinet = cabinet_id or cfg.cabinet_id
+    jobs = [(str(p), str(bdir), cabinet) for p in todo]
     mode = "a" if out_path.exists() and resume else "w"
-    with open(out_path, mode, encoding="utf-8", newline="\n") as fh:
-        _write_lines(fh, _results(jobs, workers, (config_dir, str(root), log_level)), stats)
+    with _open_store(cfg, out_path, bdir, cabinet, Path(root)) as store:
+        with open(out_path, mode, encoding="utf-8", newline="\n") as fh:
+            _write_lines(fh, _results(jobs, workers, (config_dir, str(root), log_level)), stats, store)
 
     log.info("batch done", extra=stats)
     return stats

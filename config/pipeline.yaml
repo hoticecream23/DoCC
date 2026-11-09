@@ -1,6 +1,15 @@
 # Engine and threshold settings. No domain vocabulary here.
 version: 1
 
+# Cabinet (tenant) stamped on every record. `baseline run --cabinet` overrides it.
+cabinet_id: default
+
+# SQLite store that mirrors the results JSONL. A relative path sits beside the
+# results file. null turns the store off. The JSONL stays the log; the store
+# can always be rebuilt with `baseline db-import`.
+db:
+  path: docc.sqlite
+
 extraction:
   # A page with fewer than this many chars of native text is treated as scanned.
   native_char_threshold: 100

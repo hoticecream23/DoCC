@@ -11,8 +11,8 @@ from baseline.schema import (
 )
 
 
-def test_schema_version_is_1_2_0():
-    assert SCHEMA_VERSION == "1.2.0"
+def test_schema_version_is_1_3_0():
+    assert SCHEMA_VERSION == "1.3.0"
 
 
 def test_vlm_methods_round_trip_through_json():

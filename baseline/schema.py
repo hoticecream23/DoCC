@@ -15,7 +15,10 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-SCHEMA_VERSION = "1.2.0"
+SCHEMA_VERSION = "1.3.0"
+
+# Cabinet a record belongs to when the run names none. Added in schema 1.3.0.
+DEFAULT_CABINET = "default"
 
 # The one and only page joiner. Every char offset in the record is measured
 # against pages joined by this. Changing it invalidates every stored offset.
@@ -172,6 +175,8 @@ class DocumentRecord(Strict):
     # Kept separate from source_path so a moved corpus stays comparable.
     filename: str
     schema_version: str = SCHEMA_VERSION
+    # Tenant or filing cabinet. Older lines without the key load as the default.
+    cabinet_id: str = DEFAULT_CABINET
     text: TextRecord
     classification: Classification
     metadata: list[MetadataField] = Field(default_factory=list)

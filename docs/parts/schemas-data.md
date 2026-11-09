@@ -7,7 +7,7 @@ those files are older than the code (noted per section).
 ## 1. DocumentRecord (one line of results.jsonl)
 
 - Definition: `baseline/schema.py:142` (`DocumentRecord`), parts at lines 70-140.
-- Version: `SCHEMA_VERSION = "1.2.0"` (`schema.py:17`). The field `schema_version` carries it.
+- Version: `SCHEMA_VERSION = "1.3.0"` (`schema.py:18`). The field `schema_version` carries it. 1.3.0 added `cabinet_id`.
 - Base class `Strict` (`schema.py:28`): `extra="forbid"`, `validate_assignment=True`.
 - Writer: `baseline/pipeline.py:101` `process_document`, serialised by `dumps` (`pipeline.py:185`), batch writer `run_batch`. Cascade writes the same shape (`cascade/runner.py`).
 - Readers: `baseline/evaluate` (as plain dicts), `baseline/graph.py`, `baseline/tables/records.py`, `baseline/workbook/exporter.py`, `scripts/cv_classifier.py`, the demo (`record.model_dump`).
@@ -23,6 +23,7 @@ DocumentRecord
 | source_path | str | path as scanned |
 | filename | str | kept apart from source_path |
 | schema_version | str | default `SCHEMA_VERSION` |
+| cabinet_id | str | default `"default"` (`DEFAULT_CABINET`); set from `cabinet_id` in `pipeline.yaml` or `run --cabinet`. Lines written before 1.3.0 have no key and load as `"default"` |
 | text | TextRecord | |
 | classification | Classification | |
 | metadata | list[MetadataField] | default empty |
@@ -439,3 +440,33 @@ Known differences between definitions and files (facts only)
 - Tags are dicts in a record (`Tag`) but plain strings in gold and training rows.
 - Tables in gold are lists of rows of strings; in the sidecar they are `Table` objects with `TableCell` items.
 - Line items `IS_HEADER` (`exporter.py`) is computed as "table has a header and row is 0"; `TableCell.is_header` is stored on the cell.
+
+## SQLite store (`docc.sqlite`)
+
+- Definition: `baseline/db.py` (`SCHEMA_DDL`). Stdlib `sqlite3`, WAL mode, foreign keys on. Portable SQL only: TEXT, INTEGER and REAL columns, JSON kept as TEXT, composite keys instead of autoincrement, upserts as `INSERT ... ON CONFLICT ... DO UPDATE`. The DDL should port to PostgreSQL unchanged.
+- Location: `db.path` in `pipeline.yaml`, default `docc.sqlite`, resolved beside the results file. `null` turns the store off.
+- Rule: the JSONL is the log and the source of truth. The pipeline writes and flushes each results line first, then upserts the record (`run_batch` in `baseline/pipeline.py`). A store error is logged and the batch goes on. `db-import` rebuilds or repairs the store from the JSONL at any time, and is idempotent: importing the same file twice gives the same row counts.
+
+| table | key | main columns |
+| --- | --- | --- |
+| documents | doc_id | cabinet_id, source_path, filename, doc_type (classification label), confidence, classify_method, schema_version, page_count, run_id, bbox_path, bbox_sha256, record_json (the full line), created_at, updated_at |
+| fields | (doc_id, ord) | one row per MetadataField: name, value, normalized_value, page, char_start, char_end, method, validated (0/1), normalizer_version, confidence, currency |
+| tags | (doc_id, ord) | tag, confidence, method |
+| tables | (doc_id, table_id) | page, n_rows, n_cols, method, confidence, table_json, sidecar_path (the tables JSONL) |
+| provenance | doc_id | model, finish_reason, fallback (0/1), abstention_reason (joined `errors` when fallback), prov_json (the whole cascade line, raw reply included) |
+| review_events | event_id | doc_id, field, old_value, new_value, source, created_at. Created empty; the workbook import will write it |
+| runs | run_id | started_at, config_hash (sha256 of every loaded YAML), schema_version, cabinet_id |
+| models | name | version (null: the manifest has none), sha256 from `models/MANIFEST.sha256`, recorded_at |
+
+- Child tables join to `documents` on doc_id; `documents.cabinet_id` scopes them. `doc_id` is already the content hash, so there is no separate hash column.
+- `upsert_document` replaces a document's `fields` and `tags` rows in one transaction. It does not touch `tables`, `provenance` or `review_events`.
+- Word boxes stay on disk in `<results>.bboxes/`; the store holds their path and sha256.
+- Export rebuilds the JSONL from `record_json`, ordered by doc_id.
+- Public API: `connect`, `upsert_document`, `import_jsonl` (returns `ImportStats`), `export_jsonl`, `list_documents`, `start_run`, `record_models`.
+
+Commands (both take `--dry-run`)
+
+```text
+python -m baseline db-import results.jsonl [--db PATH] [--tables tables.jsonl] [--provenance results.jsonl.provenance]
+python -m baseline db-export out.jsonl [--db PATH] [--cabinet ID]
+```

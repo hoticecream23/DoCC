@@ -14,8 +14,11 @@ from typing import Any
 import yaml
 
 from .io import atomic_open
+from .schema import DEFAULT_CABINET
 
 DEFAULT_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+# SQLite store file name, beside the results file, when db.path is not set.
+DEFAULT_DB_NAME = "docc.sqlite"
 
 
 def read_yaml(path: Path) -> Any:
@@ -137,6 +140,26 @@ class Config:
             The "metadata" section of pipeline.yaml.
         """
         return self._section("metadata")
+
+    @property
+    def cabinet_id(self) -> str:
+        """Cabinet stamped on every record a run writes; "default" when unset."""
+        return str(self.pipeline.get("cabinet_id") or DEFAULT_CABINET)
+
+    def db_path(self, results: str | Path) -> Path | None:
+        """Where the SQLite store sits for a results file, or None when disabled.
+
+        Args:
+            results: The results JSONL; a relative db.path resolves beside it.
+
+        Returns:
+            The database path; None when db.path is set to null.
+        """
+        opts = self._section("db")
+        raw = opts.get("path", DEFAULT_DB_NAME) if isinstance(opts, dict) else DEFAULT_DB_NAME
+        if raw is None:
+            return None
+        return Path(results).parent / str(raw)
 
     def table_opts(self) -> dict[str, Any]:
         """Table options.

@@ -2,7 +2,7 @@
 
 Over 400 lines: every CLI subparser and handler lives here so the whole command surface is in one place.
 
-baseline run             --input DIR --output results.jsonl [--workers N] [--no-resume]
+baseline run             --input DIR --output results.jsonl [--workers N] [--no-resume] [--cabinet ID]
 baseline train           --annotations FILE --output-model DIR
 baseline tune-thresholds --annotations FILE --predictions FILE
 baseline profile         --input DIR --output profile.md
@@ -13,12 +13,14 @@ baseline eval            --gold FILE --pred FILE [--output report.md]
 baseline compare         --gold FILE --a FILE --b FILE [--output cmp.md]
 baseline graph           --input results.jsonl --output graph.json
 baseline tables          --input results.jsonl --output tables.jsonl
+baseline db-import       results.jsonl [--db PATH] [--tables FILE] [--provenance FILE]
+baseline db-export       out.jsonl [--db PATH] [--cabinet ID]
 
 Every command that writes takes --dry-run: it logs the paths and document count, then stops.
 
 This module only parses arguments, calls the module that owns each command,
 and logs the outcome. Command logic lives in pipeline, training, labels,
-workbook, evaluate, graph, tables and profile.
+workbook, evaluate, graph, tables, profile and db.
 """
 
 from __future__ import annotations
@@ -27,9 +29,11 @@ import argparse
 import json
 import sys
 from collections.abc import Iterable
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from . import db
 from . import tagging as tagging_mod  # noqa: F401 - re-exported: tests patch cli.tagging_mod.load_model
 from .config import Config, load_config_cached
 from .evaluate import compare, evaluate, render_comparison, render_report
@@ -94,6 +98,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         bbox_dir=args.bbox_dir,
         resume=args.resume,
         root=args.root,
+        cabinet_id=args.cabinet,
     )
     log.info("run complete", extra=stats)
     return 0
@@ -299,6 +304,35 @@ def cmd_tables(args: argparse.Namespace) -> int:
     return 0
 
 
+def _db_path(args: argparse.Namespace, beside: str) -> Path | None:
+    """--db when given, else db.path from the config resolved beside the given file."""
+    return Path(args.db) if args.db else _cfg(args).db_path(beside)
+
+
+def cmd_db_import(args: argparse.Namespace) -> int:
+    """Load a results file, and optional sidecars, into the SQLite store."""
+    path = _db_path(args, args.input)
+    if path is None:
+        log.error("db.path is null in the config and no --db was given")
+        return 1
+    with closing(db.connect(path)) as conn:
+        stats = db.import_jsonl(conn, args.input, provenance_path=args.provenance, tables_path=args.tables)
+    log.info("db import complete", extra={"db": str(path), **stats})
+    return 0
+
+
+def cmd_db_export(args: argparse.Namespace) -> int:
+    """Write the SQLite store back out as results JSONL."""
+    path = _db_path(args, args.output)
+    if path is None or not path.exists():
+        log.error("no database to export", extra={"db": str(path)})
+        return 1
+    with closing(db.connect(path)) as conn:
+        n = db.export_jsonl(conn, args.output, cabinet_id=args.cabinet)
+    log.info("db export complete", extra={"db": str(path), "documents": n})
+    return 0
+
+
 def cmd_profile(args: argparse.Namespace) -> int:
     """Characterise a corpus, no models involved."""
     stats = run_profile(args.input, args.output, args.config)
@@ -320,6 +354,7 @@ def _add_run_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     r.add_argument(
         "--resume", action=argparse.BooleanOptionalAction, default=True, help="skip documents already written"
     )
+    r.add_argument("--cabinet", default=None, help="cabinet_id for every record, overrides the config")
     r.set_defaults(func=cmd_run)
 
 
@@ -417,6 +452,21 @@ def _add_results_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser
     tb.set_defaults(func=cmd_tables)
 
 
+def _add_db_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    di = sub.add_parser("db-import", help="load a results file into the SQLite store, idempotently")
+    di.add_argument("input", metavar="results.jsonl")
+    di.add_argument("--db", default=None, help="defaults to db.path beside the results file")
+    di.add_argument("--tables", default=None, help="tables JSONL to load as well")
+    di.add_argument("--provenance", default=None, help="cascade provenance JSONL to load as well")
+    di.set_defaults(func=cmd_db_import)
+
+    de = sub.add_parser("db-export", help="write the SQLite store back out as results JSONL")
+    de.add_argument("output", metavar="out.jsonl")
+    de.add_argument("--db", default=None, help="defaults to db.path beside the output file")
+    de.add_argument("--cabinet", default=None, help="only this cabinet")
+    de.set_defaults(func=cmd_db_export)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The `baseline` argument parser with every subcommand.
 
@@ -435,6 +485,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_workbook_parsers(sub)
     _add_eval_parsers(sub)
     _add_results_parsers(sub)
+    _add_db_parsers(sub)
     for name, command in sub.choices.items():
         if name != "tune-thresholds":  # has its own --dry-run that still fits and logs the thresholds
             command.add_argument("--dry-run", action="store_true", help="log what would be written and stop")
@@ -446,6 +497,8 @@ def _dry_run(args: argparse.Namespace) -> int:
     outputs = [getattr(args, k, None) for k in ("output", "output_model", "report", "json", "dot")]
     if args.command == "run":
         outputs.append(args.bbox_dir or f"{args.output}.bboxes")
+    if args.command == "db-import":
+        outputs.append(args.db or _cfg(args).db_path(args.input))
     source = Path(getattr(args, "input", None) or getattr(args, "annotations", None) or "")
     documents = None
     if source.is_dir():

@@ -87,7 +87,7 @@ def test_invoice_end_to_end(corpus, cfg, ccfg):
     assert ("tax_amount", "rule_only") in outcomes
     assert prov["fallback"] is False and prov["model"] == "fake"
     assert prov["class"]["source"] == "rule"
-    assert rec.schema_version == "1.2.0"
+    assert rec.schema_version == "1.3.0"
 
 
 def test_a_down_server_falls_back_to_the_baseline_answer(corpus, cfg, ccfg):

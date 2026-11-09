@@ -55,8 +55,15 @@ def _manifest_for(path: Path) -> tuple[Path, str]:
     return root / MANIFEST, path.relative_to(root).as_posix()
 
 
-def _read_manifest(mf: Path) -> dict[str, str]:
-    """Parse a sha256sum-format manifest into {relative name: digest}."""
+def read_manifest(mf: Path) -> dict[str, str]:
+    """Parse a sha256sum-format manifest.
+
+    Args:
+        mf: Manifest file; a missing file reads as empty.
+
+    Returns:
+        {relative name: digest}.
+    """
     if not mf.exists():
         return {}
     out = {}
@@ -75,7 +82,7 @@ def record_hash(path: str | Path) -> None:
     """
     path = Path(path)
     mf, name = _manifest_for(path)
-    entries = _read_manifest(mf)
+    entries = read_manifest(mf)
     entries[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     lines = "".join(f"{h}  {n}\n" for n, h in sorted(entries.items()))
     with atomic_open(mf, newline="\n") as fh:
@@ -98,7 +105,7 @@ def load_verified(path: str | Path) -> Any:
 
     path = Path(path)
     mf, name = _manifest_for(path)
-    want = _read_manifest(mf).get(name)
+    want = read_manifest(mf).get(name)
     if want is None:
         raise ModelIntegrityError(f"model file {path} has no entry in {mf}, refusing to load")
     got = hashlib.sha256(path.read_bytes()).hexdigest()
