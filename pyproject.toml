@@ -16,7 +16,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff", "black", "isort", "mypy", "pytest", "pytest-cov", "pytest-timeout", "pre-commit", "bandit"]
+dev = ["ruff", "black", "isort", "mypy", "pytest", "pytest-cov", "pytest-timeout", "pre-commit", "bandit", "httpx"]
+api = ["fastapi", "uvicorn", "python-multipart"]
 
 [project.scripts]
 baseline = "baseline.cli:main"
@@ -28,7 +29,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --cov=baseline --cov=cascade --cov=demo --cov-report=term-missing:skip-covered"
+addopts = "-q --cov=baseline --cov=cascade --cov=demo --cov=api --cov-report=term-missing:skip-covered"
 markers = ["integration: end-to-end runs over the corpus, a server or the VLM stub"]
 
 [tool.coverage.report]
@@ -69,7 +70,7 @@ python_version = "3.10"
 ignore_missing_imports = true
 disallow_untyped_defs = true
 warn_return_any = true
-files = ["baseline", "cascade", "demo", "scripts"]
+files = ["api", "baseline", "cascade", "demo", "scripts"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
@@ -78,4 +79,4 @@ disallow_untyped_defs = false
 [tool.setuptools.packages.find]
 # config/ sits beside baseline/ and holds yaml, not code. Without this,
 # setuptools refuses the flat layout and `pip install -e .` fails.
-include = ["baseline*", "cascade*"]
+include = ["baseline*", "cascade*", "api*"]

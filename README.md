@@ -87,6 +87,18 @@ normalizer, ungrounded, failed checksum, or dropped as rule only. It holds
 document values, so on client data it is client material, and `*.provenance`
 is gitignored.
 
+## API
+
+A thin FastAPI shell over the same functions. Install the extra and run it on loopback:
+
+    pip install -e ".[api]"
+    python -m api --config config/pipeline.yaml --host 127.0.0.1 --port 8000 [--workers 1]
+
+- `GET /api/v1/health`: status, and whether a VLM model is configured for cascade.
+- `POST /api/v1/documents/process`: multipart `file`; runs the baseline and returns the record. 50 MB limit.
+- `POST /api/v1/documents/process_async`: same upload; queues a cascade job, answers 202 with a `job_id` (503 without a model).
+- `GET /api/v1/jobs/{job_id}`: `state` queued, running, done or failed, plus `result` or `error`. Jobs live in memory only.
+
 ## What comes out
 
 One JSON object per document, one per line. Trimmed for readability:
