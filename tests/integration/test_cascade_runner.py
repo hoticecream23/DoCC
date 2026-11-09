@@ -232,3 +232,34 @@ def test_resume_repairs_a_crash_between_the_provenance_and_results_lines(corpus,
     ids = [json.loads(line)["doc_id"] for line in out.read_text(encoding="utf-8").splitlines()]
     prov_ids = [json.loads(line)["doc_id"] for line in prov.read_text(encoding="utf-8").splitlines()]
     assert sorted(ids) == sorted(prov_ids) and len(set(ids)) == len(ids) == first["written"]
+
+
+def test_batch_mirrors_records_with_their_cabinet_and_provenance_into_the_store(corpus, cfg, ccfg, tmp_path):
+    from contextlib import closing
+    from dataclasses import replace
+
+    from baseline import db
+    from cascade.runner import run_batch
+
+    cab_cfg = replace(cfg, pipeline={**cfg.pipeline, "cabinet_id": "c2"})
+    out = tmp_path / "cascade.jsonl"
+    stats = run_batch(corpus, out, cab_cfg, ccfg, FakeBackend(_invoice_or_nothing))
+    records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert {r["cabinet_id"] for r in records} == {"c2"}
+    with closing(db.connect(tmp_path / "docc.sqlite")) as conn:
+        rows = db.list_documents(conn, limit=1000)
+        prov = conn.execute("SELECT doc_id, fallback FROM provenance").fetchall()
+        run_cabinets = {r[0] for r in conn.execute("SELECT cabinet_id FROM runs")}
+    assert {r["doc_id"]: r["cabinet_id"] for r in rows} == {r["doc_id"]: "c2" for r in records}
+    assert {p["doc_id"] for p in prov} == {r["doc_id"] for r in records}
+    assert sum(p["fallback"] for p in prov) == stats["fallback"]
+    assert run_cabinets == {"c2"}
+
+
+def test_a_broken_store_never_blocks_the_cascade_jsonl(corpus, cfg, ccfg, tmp_path):
+    from cascade.runner import run_batch
+
+    (tmp_path / "docc.sqlite").mkdir()  # a directory where the store file should go
+    out = tmp_path / "cascade.jsonl"
+    stats = run_batch(corpus, out, cfg, ccfg, FakeBackend(_invoice_or_nothing))
+    assert stats["written"] == len(out.read_text(encoding="utf-8").splitlines()) > 0

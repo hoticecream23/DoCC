@@ -10,20 +10,27 @@ provenance line, then its results line; the results line is the commit
 marker. On resume a trailing partial line is cut from both files and any
 provenance line without a results line is dropped, so the pair never
 diverges. A run with resume off truncates both files up front.
+
+After its results line is flushed, each record and its provenance line are
+upserted into the same SQLite store the baseline run uses (`db.path`). A
+store failure is logged and never stops the run; `db-import` repairs it.
 """
 
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, TypedDict, TypeVar
 
+from baseline import db
 from baseline import pipeline as baseline_pipeline
 from baseline.classify import rule_scores
 from baseline.config import Config
+from baseline.errors import summarize_exception
 from baseline.io import atomic_open, cut_partial_tail
 from baseline.logging_setup import get_logger
 from baseline.scan import scan_documents
@@ -140,6 +147,7 @@ def _record(
 ) -> DocumentRecord:
     return DocumentRecord(
         doc_id=base.doc_id,
+        cabinet_id=base.cabinet_id,
         source_path=base.source_path,
         filename=base.filename,
         text=base.text,
@@ -331,6 +339,21 @@ def _write_outcome(outcome: Result, bbox_dir: Path, results_fh: IO[str], prov_fh
     results_fh.flush()
 
 
+def _mirror(store: baseline_pipeline._Store | None, outcome: Result) -> None:
+    """Upsert a committed record and its provenance. A store failure is logged, never raised."""
+    if store is None:
+        return
+    try:
+        bbox = store.bbox_dir / f"{outcome.record.doc_id}.json.gz"
+        db.upsert_document(store.conn, outcome.record, store.run_id, bbox)
+        db.upsert_provenance(store.conn, dict(outcome.provenance))
+    except sqlite3.Error as exc:
+        log.error(
+            "db write failed, results line kept; run db-import to repair",
+            extra={"doc_id": outcome.record.doc_id, "error": summarize_exception(exc)},
+        )
+
+
 def _output_paths(output: str | Path, bbox_dir: str | Path | None) -> tuple[Path, Path, Path]:
     """Results, provenance and word box paths; creates the results directory."""
     out_path = Path(output)
@@ -375,6 +398,7 @@ def run_batch(
     stats = BatchStats(found=len(paths), skipped=0, written=0, failed=0, fallback=0, excluded=excluded_counts)
     mode = "a" if resume else "w"
     with (
+        baseline_pipeline._open_store(cfg, out_path, bdir, cfg.cabinet_id, Path(".")) as store,
         open(out_path, mode, encoding="utf-8", newline="\n") as results_fh,
         open(prov_path, mode, encoding="utf-8", newline="\n") as prov_fh,
     ):
@@ -383,6 +407,7 @@ def run_batch(
             if outcome is None:
                 continue
             _write_outcome(outcome, bdir, results_fh, prov_fh)
+            _mirror(store, outcome)
             stats["written"] += 1
             stats["fallback"] += int(outcome.provenance["fallback"])
 

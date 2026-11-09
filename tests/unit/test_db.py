@@ -153,3 +153,29 @@ def test_start_run_and_record_models_write_rows(conn):
     db.record_models(conn, {"classifier/model.joblib": "ab" * 32})
     assert conn.execute("SELECT run_id FROM runs").fetchone()[0] == run_id
     assert _counts(conn)["models"] == 1
+
+
+def test_review_events_are_idempotent_and_skip_unknown_documents(conn):
+    db.upsert_document(conn, _record("aaaaaaaaaaaaaaaa"))
+    db.upsert_document(conn, _record("bbbbbbbbbbbbbbbb"))
+    events = [
+        db.ReviewEvent("aaaaaaaaaaaaaaaa", "invoice_number", "INV-1", "INV-2", "wb.xlsx#Metadata"),
+        db.ReviewEvent("bbbbbbbbbbbbbbbb", "class", "invoice", "receipt", "wb.xlsx#Documents"),
+        db.ReviewEvent("cccccccccccccccc", "class", "invoice", "receipt", "wb.xlsx#Documents"),
+    ]
+    assert db.record_review_events(conn, events) == 2
+    assert db.record_review_events(conn, events) == 0
+    got = db.list_review_events(conn, doc_id="aaaaaaaaaaaaaaaa")
+    assert [(e["field"], e["old_value"], e["new_value"]) for e in got] == [("invoice_number", "INV-1", "INV-2")]
+    assert len(db.list_review_events(conn)) == 2
+
+
+def test_a_cascade_store_failure_is_logged_not_raised(tmp_path, caplog):
+    from baseline.pipeline import _Store
+    from cascade.runner import Result, _mirror
+
+    closed = db.connect(tmp_path / "s.sqlite")
+    closed.close()
+    rec = _record("aaaaaaaaaaaaaaaa")
+    _mirror(_Store(closed, "run", tmp_path), Result(rec, None, {"doc_id": rec.doc_id}))
+    assert "db write failed" in caplog.text

@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Config
+from ..db import ReviewEvent
 from ..logging_setup import get_logger
 from ..metadata import NormCtx, normalize
 from ..schema import compute_doc_id
@@ -81,6 +82,14 @@ class WorkbookImport:
     spurious_rows: int = 0
     human_rows: int = 0
     counts: Counter[str] = field(default_factory=Counter)
+    # Every change a reviewer made, for the store's review_events table.
+    events: list[ReviewEvent] = field(default_factory=list)
+    # The workbook, resolved, so each event can say where it came from.
+    source: str = ""
+
+    def record(self, sheet: str, doc_id: str, name: str, old: str | None, new: str | None) -> None:
+        """Note one reviewer change made on `sheet`."""
+        self.events.append(ReviewEvent(doc_id, name, old or None, new or None, f"{self.source}#{sheet}"))
 
     @property
     def problems(self) -> list[str]:
@@ -200,7 +209,7 @@ def import_workbook(xlsx_path: str | Path, root: str | Path, cfg: Config) -> Wor
     Raises:
         NotADirectoryError: `root` is not a directory.
     """
-    res = WorkbookImport()
+    res = WorkbookImport(source=Path(xlsx_path).resolve().as_posix())
     root = Path(root)
     if not root.is_dir():
         raise NotADirectoryError(f"--root is not a directory: {root}")
@@ -279,6 +288,8 @@ def _import_documents(
             res.unresolved_doc_ids.append(doc_id)
 
         res.counts[f"class_{verdict}"] += 1
+        if verdict != "ok":
+            res.record("Documents", doc_id, "class", _get(row, doc_i, "DOC_CLASS").casefold(), label)
         gold[doc_id] = {"doc_id": doc_id, "label": label, "metadata": [], "tags": []}
         if path:
             gold[doc_id]["path"] = path
@@ -332,6 +343,8 @@ def _field_verdict(row: Row, meta_i: dict[str, int], where: str, res: WorkbookIm
     # not there. It contributes nothing to gold, which is the whole point.
     if verdict == "spurious":
         res.spurious_rows += 1
+        old = _get(row, meta_i, "NORMALIZED_VALUE") or _get(row, meta_i, "VALUE")
+        res.record("Metadata", _get(row, meta_i, "DOC_ID"), _get(row, meta_i, "FIELD").casefold(), old, None)
         return None
     if verdict not in ("ok", "wrong", "missing"):
         return None
@@ -372,8 +385,11 @@ def _import_metadata(
         entry: dict[str, Any] = {"field": name, "normalized_value": value}
         entry.update(offsets)
 
-        if _get(row, meta_i, "ROW_SOURCE").casefold() == "human":
-            res.human_rows += 1
+        human = _get(row, meta_i, "ROW_SOURCE").casefold() == "human"
+        res.human_rows += human
+        if human or verdict != "ok":
+            old = None if human else _get(row, meta_i, "NORMALIZED_VALUE") or _get(row, meta_i, "VALUE")
+            res.record("Metadata", doc_id, name, old, value)
         res.counts[f"field_{verdict}"] += 1
         gold[doc_id]["metadata"].append(entry)
 
@@ -401,14 +417,17 @@ def _import_tags(
         # thing: it does not belong on this document.
         if verdict in ("wrong", "spurious"):
             res.spurious_rows += 1
+            res.record("Tags", doc_id, f"tag:{name}", name, None)
             continue
         if verdict not in ("ok", "missing"):
             continue
         if name not in tags:
             res.unknown_tags.append(name)
             continue
-        if _get(row, tag_i, "ROW_SOURCE").casefold() == "human":
-            res.human_rows += 1
+        human = _get(row, tag_i, "ROW_SOURCE").casefold() == "human"
+        res.human_rows += human
+        if human or verdict != "ok":
+            res.record("Tags", doc_id, f"tag:{name}", None, name)
         res.counts[f"tag_{verdict}"] += 1
         if name not in gold[doc_id]["tags"]:
             gold[doc_id]["tags"].append(name)

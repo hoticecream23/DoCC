@@ -82,3 +82,44 @@ def test_null_db_path_disables_the_store(corpus, cfg, tmp_path):
     out = tmp_path / "out" / "results.jsonl"
     run_batch(corpus, out, config_dir=cfgdir)
     assert sorted(p.name for p in out.parent.iterdir()) == ["results.jsonl", "results.jsonl.bboxes"]
+
+
+def _review_sheet(path, fixes):
+    """A reviewed workbook: each document confirmed, one field per document corrected."""
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    tabs = {
+        "Documents": ["DOC_ID", "DOC_CLASS", "CLASS_VERDICT", "IS_GOLD"],
+        "Metadata": ["DOC_ID", "FIELD", "VALUE", "NORMALIZED_VALUE", "CORRECTED_VALUE", "VERDICT", "IS_GOLD"],
+        "Tags": ["DOC_ID", "TAG", "VERDICT", "IS_GOLD"],
+    }
+    for name, cols in tabs.items():
+        wb.create_sheet(name).append(cols)
+    for doc_id, label, field, value, new in fixes:
+        wb["Documents"].append([doc_id, label, "ok", "TRUE"])
+        wb["Metadata"].append([doc_id, field, value, value, new, "wrong", "TRUE"])
+    del wb["Sheet"]
+    wb.save(path)
+    return path
+
+
+def test_workbook_corrections_become_review_events_once(cabinet_run, corpus, tmp_path):
+    store = tmp_path / "store.sqlite"
+    assert main(["db-import", str(cabinet_run), "--db", str(store)]) == 0
+    with_ids = [r for r in _lines(cabinet_run) if any(m["field"] == "invoice_number" for m in r["metadata"])]
+    fixes = []
+    for i, r in enumerate(with_ids[:2]):
+        m = next(m for m in r["metadata"] if m["field"] == "invoice_number")
+        fixes.append((r["doc_id"], r["classification"]["label"], "invoice_number", m["normalized_value"], f"FIX-{i}"))
+    assert len(fixes) == 2
+    xlsx = _review_sheet(tmp_path / "review.xlsx", fixes)
+    argv = ["--config", str(ROOT / "config"), "import-workbook", "--xlsx", str(xlsx), "--root", str(corpus)]
+    argv += ["--output", str(tmp_path / "gold.jsonl"), "--report", str(tmp_path / "r.md"), "--db", str(store)]
+    assert main(argv) == 0
+    assert main(argv) == 0  # the same sheet again adds nothing
+    with closing(db.connect(store)) as conn:
+        events = db.list_review_events(conn)
+    got = sorted((e["doc_id"], e["field"], e["old_value"], e["new_value"]) for e in events)
+    assert got == sorted((d, f, old, new) for d, _, f, old, new in fixes)
+    assert {e["source"] for e in events} == {f"{xlsx.resolve().as_posix()}#Metadata"}

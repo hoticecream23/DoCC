@@ -752,3 +752,26 @@ def test_a_review_survives_a_full_re_export_and_import(tmp_path, one_doc, cfg):
     assert gold["tags"] == ["has_line_items"]
     values = {e["field"]: e["normalized_value"] for e in gold["metadata"]}
     assert values["total_amount"] == "4044.00", "the field correction did not survive"
+
+
+def test_every_reviewer_change_is_noted_as_a_review_event(tmp_path, corpus_root, cfg):
+    root, a, b = corpus_root
+    xlsx = _write(
+        tmp_path / "wb.xlsx",
+        docs=[[a, "a.txt", "invoice", None, "OK", "True"], [b, "b.txt", "receipt", "invoice", "wrong", "True"]],
+        meta=[
+            [a, "pipeline", "total_amount", "500", "500", 0, 10, 13, None, "OK", "True"],
+            [a, "pipeline", "tax_amount", "99", "99", 0, 20, 22, None, "spurious", "True"],
+        ],
+        tags=[[a, "signed", "pipeline", "wrong", "True"], [a, "multi_page", "human", "missing", "True"]],
+    )
+    res = import_workbook(xlsx, root, cfg)
+    got = sorted((e.doc_id, e.field, e.old_value, e.new_value, e.source.rsplit("#", 1)[1]) for e in res.events)
+    assert got == sorted(
+        [
+            (b, "class", "receipt", "invoice", "Documents"),
+            (a, "tax_amount", "99", None, "Metadata"),
+            (a, "tag:signed", "signed", None, "Tags"),
+            (a, "tag:multi_page", None, "multi_page", "Tags"),
+        ]
+    )

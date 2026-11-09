@@ -18,7 +18,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, NamedTuple, TypedDict
 
 from .io import atomic_open
 from .logging_setup import get_logger
@@ -134,6 +134,16 @@ _DOC_COLUMNS = (
     "doc_id, cabinet_id, source_path, filename, doc_type, confidence, classify_method, "
     "schema_version, page_count, run_id, bbox_path, bbox_sha256, created_at, updated_at"
 )
+
+
+class ReviewEvent(NamedTuple):
+    """One human correction: a field, class or tag that a review changed."""
+
+    doc_id: str
+    field: str
+    old_value: str | None
+    new_value: str | None
+    source: str
 
 
 class ImportStats(TypedDict):
@@ -281,7 +291,13 @@ def _upsert_tables(conn: sqlite3.Connection, rec: TableRecord, sidecar: Path) ->
     return len(rows)
 
 
-def _upsert_provenance(conn: sqlite3.Connection, prov: dict[str, Any]) -> None:
+def upsert_provenance(conn: sqlite3.Connection, prov: dict[str, Any]) -> None:
+    """Write one cascade provenance line; its document must already be stored.
+
+    Args:
+        conn: Open store.
+        prov: The provenance line, as written to the sidecar.
+    """
     fallback = bool(prov.get("fallback"))
     reason = "; ".join(prov.get("errors") or []) if fallback else None
     row = (prov["doc_id"], prov.get("model"), prov.get("finish_reason"), int(fallback), reason)
@@ -336,7 +352,7 @@ def import_jsonl(
             if not _has_document(conn, str(prov.get("doc_id"))):
                 stats["skipped"] += 1
                 continue
-            _upsert_provenance(conn, prov)
+            upsert_provenance(conn, prov)
             stats["provenance"] += 1
     log.info("db import done", extra={"results": str(results), **stats})
     return stats
@@ -386,3 +402,53 @@ def list_documents(
     params: list[Any] = [cabinet_id] if cabinet_id is not None else []
     sql = f"SELECT {_DOC_COLUMNS} FROM documents{where} ORDER BY doc_id LIMIT ? OFFSET ?"
     return [dict(r) for r in conn.execute(sql, [*params, limit, offset]).fetchall()]
+
+
+def _event_id(event: ReviewEvent) -> str:
+    """Stable id, so the same correction from the same source is stored once."""
+    key = json.dumps([event.doc_id, event.field, event.old_value, event.new_value, event.source])
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def record_review_events(conn: sqlite3.Connection, events: list[ReviewEvent]) -> int:
+    """Store review corrections. Idempotent on (doc_id, field, old, new, source).
+
+    Events for a doc_id the store does not hold are skipped: the foreign key
+    needs the document.
+
+    Args:
+        conn: Open store.
+        events: The corrections, in sheet order.
+
+    Returns:
+        Number of new rows written.
+    """
+    now = _now()
+    written = 0
+    with conn:
+        for e in events:
+            if not _has_document(conn, e.doc_id):
+                continue
+            cur = conn.execute(
+                "INSERT INTO review_events VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (event_id) DO NOTHING",
+                (_event_id(e), e.doc_id, e.field, e.old_value, e.new_value, e.source, now),
+            )
+            written += cur.rowcount
+    log.info("review events recorded", extra={"events": len(events), "written": written})
+    return written
+
+
+def list_review_events(conn: sqlite3.Connection, doc_id: str | None = None) -> list[dict[str, Any]]:
+    """Stored review events, ordered by doc_id, time and field.
+
+    Args:
+        conn: Open store.
+        doc_id: Only this document; None for every document.
+
+    Returns:
+        One dict per event, keyed by column name.
+    """
+    where = " WHERE doc_id = ?" if doc_id is not None else ""
+    params = [doc_id] if doc_id is not None else []
+    sql = f"SELECT * FROM review_events{where} ORDER BY doc_id, created_at, field, event_id"
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]

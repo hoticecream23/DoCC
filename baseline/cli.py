@@ -193,7 +193,18 @@ def cmd_import_workbook(args: argparse.Namespace) -> int:
         log.error("no gold rows produced, check the workbook has reviewed rows")
         return 1
     _write_gold(args.output, res.rows)
+    _record_review(args, res.events)
     return 0
+
+
+def _record_review(args: argparse.Namespace, events: list[db.ReviewEvent]) -> None:
+    """Store the workbook's corrections as review events when a store exists for it."""
+    path = _db_path(args, args.xlsx)
+    if path is None or not path.exists():
+        return
+    with closing(db.connect(path)) as conn:
+        written = db.record_review_events(conn, events)
+    log.info("review events stored", extra={"db": str(path), "events": len(events), "written": written})
 
 
 def _log_scores(res: dict[str, Any]) -> None:
@@ -413,6 +424,7 @@ def _add_workbook_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     )
     iw.add_argument("--output", required=True, help="gold JSONL to write")
     iw.add_argument("--report", help="write the import summary here instead of stdout")
+    iw.add_argument("--db", default=None, help="store to record corrections in; defaults to db.path beside the xlsx")
     iw.set_defaults(func=cmd_import_workbook)
 
 
