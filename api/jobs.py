@@ -280,7 +280,7 @@ class JobRunner:
         try:
             job_id = self.store.create(trace_id, cabinet_id)
             self._pool.submit(self._run, job_id, fn, trace_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 - free the queue slot on any submit failure, then re-raise
             self._slots.release()
             raise
         return job_id

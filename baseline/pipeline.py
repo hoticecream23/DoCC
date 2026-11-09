@@ -1,5 +1,7 @@
 """Orchestration. One document in, one record out.
 
+Over 400 lines: each stage wrapper sits beside the one flow it guards; splitting would hide the stage order.
+
 Every stage is wrapped. A stage that blows up records an error in diagnostics
 and the record still gets written, partial. One bad PDF never kills a batch.
 
@@ -10,7 +12,6 @@ logged and the batch goes on, so it can never lose or block a results line;
 `baseline db-import` rebuilds the store from the JSONL afterwards.
 """
 
-# Over 400 lines: each stage wrapper sits beside the one flow it guards; splitting would hide the stage order.
 from __future__ import annotations
 
 import gzip
@@ -454,6 +455,17 @@ def _start_stats(found: int, todo: int, excluded: dict[str, int], workers: int) 
     return stats
 
 
+def _scan_logged(input_dir: str | Path) -> tuple[list[Path], dict[str, int]]:
+    """Scan for documents and log what was excluded, with counts per reason."""
+    paths, excluded = scan_documents(input_dir)
+    excluded_counts = {reason: len(items) for reason, items in sorted(excluded.items())}
+    if excluded:
+        # Say what was left out and why. A total that quietly omits input does
+        # not mean what it appears to mean.
+        log.info("files excluded as not documents", extra=excluded_counts)
+    return paths, excluded_counts
+
+
 def run_batch(
     input_dir: str | Path,
     output: str | Path,
@@ -485,12 +497,7 @@ def run_batch(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     bdir = Path(bbox_dir) if bbox_dir else out_path.with_suffix(out_path.suffix + ".bboxes")
 
-    paths, excluded = scan_documents(input_dir)
-    excluded_counts = {reason: len(items) for reason, items in sorted(excluded.items())}
-    if excluded:
-        # Say what was left out and why. A total that quietly omits input does
-        # not mean what it appears to mean.
-        log.info("files excluded as not documents", extra=excluded_counts)
+    paths, excluded_counts = _scan_logged(input_dir)
     todo = _pending(paths, out_path, resume)
     stats = _start_stats(len(paths), len(todo), excluded_counts, workers)
     if not todo:

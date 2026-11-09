@@ -1,5 +1,7 @@
 """SQLite store that mirrors the results JSONL.
 
+Over 400 lines: one schema plus its import and export keep the DDL and the row mappers together.
+
 The JSONL file is the log and the source of truth for a run. This store is a
 queryable copy of it, for review and cabinet state. It can always be rebuilt
 from the JSONL with `import_jsonl`, and every import is idempotent.
@@ -12,8 +14,6 @@ mode and foreign keys are connection pragmas, not part of the schema.
 The `jobs` table holds API job state (api/jobs.py SqliteJobStore); it is not
 part of the JSONL mirror.
 """
-
-# Over 400 lines: every table's DDL and its read and write helpers stay together, so the schema has one owner.
 
 from __future__ import annotations
 

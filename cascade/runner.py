@@ -1,5 +1,7 @@
 """One document in, one record out, through the model and the grounding step.
 
+Over 400 lines: the batch, resume repair and per-document flow share one file format; splitting would scatter it.
+
 The baseline runs first and its record is the fallback. If the model cannot
 be reached, or its answer is not the shape asked for, the document gets the
 baseline's answer and an error saying so, never an empty record.
@@ -380,6 +382,32 @@ def model_root(cfg: Config, root: str | Path | None) -> Path:
     return Path(root) if root is not None else cfg.config_dir.resolve().parent
 
 
+def _start_batch(
+    input_dir: str | Path, out_path: Path, prov_path: Path, resume: bool
+) -> tuple[list[Path], set[str], BatchStats]:
+    """Scan the input, repair the outputs for resume, and start the counts."""
+    paths, excluded = scan_documents(input_dir)
+    skip = _prepare_resume(out_path, prov_path) if resume else set()
+    excluded_counts = {reason: len(items) for reason, items in sorted(excluded.items())}
+    stats = BatchStats(found=len(paths), skipped=0, written=0, failed=0, fallback=0, excluded=excluded_counts)
+    return paths, skip, stats
+
+
+def _commit(
+    outcome: Result,
+    bdir: Path,
+    results_fh: IO[str],
+    prov_fh: IO[str],
+    store: baseline_pipeline._Store | None,
+    stats: BatchStats,
+) -> None:
+    """Write one document's lines, mirror it into the store, and count it."""
+    _write_outcome(outcome, bdir, results_fh, prov_fh)
+    _mirror(store, outcome)
+    stats["written"] += 1
+    stats["fallback"] += int(outcome.provenance["fallback"])
+
+
 def run_batch(
     input_dir: str | Path,
     output: str | Path,
@@ -414,10 +442,7 @@ def run_batch(
     """
     check_descriptions(cfg)
     out_path, prov_path, bdir = _output_paths(output, bbox_dir)
-    paths, excluded = scan_documents(input_dir)
-    skip = _prepare_resume(out_path, prov_path) if resume else set()
-    excluded_counts = {reason: len(items) for reason, items in sorted(excluded.items())}
-    stats = BatchStats(found=len(paths), skipped=0, written=0, failed=0, fallback=0, excluded=excluded_counts)
+    paths, skip, stats = _start_batch(input_dir, out_path, prov_path, resume)
     mode = "a" if resume else "w"
     cabinet = cabinet_id or cfg.cabinet_id
     with (
@@ -427,12 +452,8 @@ def run_batch(
     ):
         for p in paths:
             outcome = _process_or_count(p, skip, stats, cfg, ccfg, backend, models, cabinet)
-            if outcome is None:
-                continue
-            _write_outcome(outcome, bdir, results_fh, prov_fh)
-            _mirror(store, outcome)
-            stats["written"] += 1
-            stats["fallback"] += int(outcome.provenance["fallback"])
+            if outcome is not None:
+                _commit(outcome, bdir, results_fh, prov_fh, store, stats)
 
     log.info("cascade batch done", extra=stats)
     return stats
