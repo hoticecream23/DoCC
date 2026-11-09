@@ -1,4 +1,4 @@
-"""Shared error hierarchy and the demo server's model check."""
+"""Shared error hierarchy and the cascade model check."""
 
 import pytest
 
@@ -6,10 +6,9 @@ from baseline import errors
 from baseline.classify import ModelIntegrityError
 from baseline.errors import ConfigError, DoccError, summarize_exception
 from baseline.metadata.fields import OffsetMismatch
-from cascade.config import load_cascade_config
+from cascade.config import load_cascade_config, require_model, vlm_settings
 from cascade.prompt import VLMOutputError
 from cascade.vlm import VLMBadRequest, VLMError
-from demo import server
 from demo.server import BadInput, Unavailable
 
 
@@ -57,7 +56,7 @@ def test_demo_has_no_default_model(monkeypatch):
     ccfg = load_cascade_config(None)
     if ccfg.vlm.model:
         pytest.skip("cascade.yaml sets a model")
-    settings = server.vlm_settings(ccfg)
+    settings = vlm_settings(ccfg)
     assert settings.model is None
     with pytest.raises(ConfigError, match="DOCC_VLM_MODEL"):
-        server.require_model(settings)
+        require_model(settings)

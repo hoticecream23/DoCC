@@ -7,6 +7,7 @@ cascade route answers 503, like the demo server.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import shutil
@@ -21,17 +22,17 @@ from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from api.jobs import DEFAULT_WORKERS, InMemoryJobStore, Job, JobRunner
+from api.jobs import DEFAULT_WORKERS, Busy, InMemoryJobStore, Job, JobRunner
 from baseline.config import Config, load_config
 from baseline.errors import BadInput, ConfigError, DoccError, Unavailable, summarize_exception
 from baseline.extract import SUPPORTED_EXT
 from baseline.pipeline import Models, process_document
 from baseline.schema import DocumentRecord
-from cascade.config import CascadeConfig, VLMSettings, load_cascade_config
+from cascade.config import CascadeConfig, VLMSettings, load_cascade_config, require_model, vlm_settings
 from cascade.runner import process_document as cascade_process
 from cascade.vlm import Backend, VLMClient
-from demo.server import require_model, vlm_settings
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +41,10 @@ MEGABYTE = 1024 * 1024
 MAX_UPLOAD_MB = 50
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * MEGABYTE
 CHUNK_BYTES = MEGABYTE
+# Room for multipart boundaries and part headers on top of the file itself.
+MULTIPART_OVERHEAD_BYTES = 64 * 1024
+RETRY_AFTER_S = 30
+HTTP_TOO_LARGE = 413
 TRACE_HEADER = "X-Request-ID"
 # A client id is echoed in a header and logged, so only a plain token is kept.
 TRACE_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
@@ -147,7 +152,11 @@ def _routes(api: ApiState) -> APIRouter:
             finally:
                 _discard(path)
 
-        return {"job_id": api.runner.submit(work, trace_id.get())}
+        try:
+            return {"job_id": api.runner.submit(work, trace_id.get())}
+        except Busy:
+            _discard(path)
+            raise
 
     @router.get("/jobs/{job_id}", response_model=Job)
     def job(job_id: str) -> Job:
@@ -169,7 +178,70 @@ async def _on_docc_error(request: Request, exc: Exception) -> JSONResponse:
         code, msg = status.HTTP_500_INTERNAL_SERVER_ERROR, "request failed; see server log"
     extra = {"trace_id": trace_id.get(), "path": request.url.path, "status": code, "error": summarize_exception(exc)}
     log.warning("request failed", extra=extra)
-    return JSONResponse({"error": msg}, status_code=code)
+    headers = {"Retry-After": str(RETRY_AFTER_S)} if isinstance(exc, Busy) else None
+    return JSONResponse({"error": msg}, status_code=code, headers=headers)
+
+
+class _TooLarge(Exception):  # noqa: N818 - internal signal, never leaves BodyLimit
+    """The request body passed the limit while it was read."""
+
+
+class BodyLimit:
+    """Answer 413 for a body over MAX_UPLOAD_BYTES plus multipart overhead.
+
+    A Content-Length over the limit is refused before any body is read. A
+    body without one (chunked) is counted as it streams and cut off at the limit.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Wrap an ASGI app.
+
+        Args:
+            app: The inner app.
+        """
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Run the inner app with a counting receive.
+
+        Args:
+            scope: The ASGI scope.
+            receive: The ASGI receive channel.
+            send: The ASGI send channel.
+        """
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        limit = MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD_BYTES
+        length = dict(scope["headers"]).get(b"content-length", b"")
+        if length.isdigit() and int(length) > limit:
+            await _too_large(scope, receive, send)
+            return
+        seen = 0
+        over = False
+
+        async def counted() -> Message:
+            nonlocal seen, over
+            message = await receive()
+            seen += len(message.get("body", b""))
+            if seen > limit:
+                over = True
+                raise _TooLarge
+            return message
+
+        async def guarded(message: Message) -> None:
+            if not over:  # a cut-off body may still yield a parse error; 413 replaces it
+                await send(message)
+
+        with contextlib.suppress(_TooLarge):
+            await self.app(scope, counted, guarded)
+        if over:
+            await _too_large(scope, receive, send)
+
+
+async def _too_large(scope: Scope, receive: Receive, send: Send) -> None:
+    msg = f"request larger than {MAX_UPLOAD_MB} MB"
+    await JSONResponse({"error": msg}, status_code=HTTP_TOO_LARGE)(scope, receive, send)
 
 
 async def _trace(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
@@ -219,4 +291,5 @@ def create_app(
     app.include_router(_routes(api))
     app.add_exception_handler(DoccError, _on_docc_error)
     app.middleware("http")(_trace)
+    app.add_middleware(BodyLimit)
     return app

@@ -9,18 +9,26 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
-from baseline.errors import summarize_exception
+from baseline.errors import Unavailable, summarize_exception
 from baseline.schema import DocumentRecord
 
 log = logging.getLogger(__name__)
 
 DEFAULT_WORKERS = 1  # one GPU: one cascade document at a time
+MAX_PENDING_JOBS = 8  # queued plus running; more answers 503
+MAX_FINISHED_JOBS = 1000  # finished jobs kept for polling; the oldest go first
+
+
+class Busy(Unavailable):
+    """The job queue is full. The API answers 503 with Retry-After."""
+
 
 JobState = Literal["queued", "running", "done", "failed"]
 
@@ -56,8 +64,10 @@ class JobStore(Protocol):
 class InMemoryJobStore:
     """A JobStore in a dict. Lost on restart."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_finished: int = MAX_FINISHED_JOBS) -> None:
         self._jobs: dict[str, Job] = {}
+        self._finished: deque[str] = deque()
+        self._max_finished = max_finished
         self._lock = threading.Lock()
 
     def create(self) -> str:
@@ -74,6 +84,10 @@ class InMemoryJobStore:
     def _update(self, job_id: str, **changes: object) -> None:
         with self._lock:
             self._jobs[job_id] = self._jobs[job_id].model_copy(update=changes)
+            if changes["state"] in ("done", "failed"):
+                self._finished.append(job_id)
+                while len(self._finished) > self._max_finished:
+                    del self._jobs[self._finished.popleft()]
 
     def set_running(self, job_id: str) -> None:
         """Mark a job as running.
@@ -117,8 +131,9 @@ class InMemoryJobStore:
 class JobRunner:
     """Runs jobs on a thread pool and records their state in a JobStore."""
 
-    def __init__(self, store: JobStore, workers: int = DEFAULT_WORKERS) -> None:
+    def __init__(self, store: JobStore, workers: int = DEFAULT_WORKERS, max_pending: int = MAX_PENDING_JOBS) -> None:
         self.store = store
+        self._slots = threading.BoundedSemaphore(max_pending)
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="docc-job")
 
     def submit(self, fn: Callable[[], DocumentRecord], trace_id: str = "") -> str:
@@ -130,12 +145,27 @@ class JobRunner:
 
         Returns:
             The job id.
+
+        Raises:
+            Busy: MAX_PENDING_JOBS jobs are already queued or running.
         """
-        job_id = self.store.create()
-        self._pool.submit(self._run, job_id, fn, trace_id)
+        if not self._slots.acquire(blocking=False):
+            raise Busy("job queue is full; retry later")
+        try:
+            job_id = self.store.create()
+            self._pool.submit(self._run, job_id, fn, trace_id)
+        except Exception:
+            self._slots.release()
+            raise
         return job_id
 
     def _run(self, job_id: str, fn: Callable[[], DocumentRecord], trace_id: str) -> None:
+        try:
+            self._execute(job_id, fn, trace_id)
+        finally:
+            self._slots.release()
+
+    def _execute(self, job_id: str, fn: Callable[[], DocumentRecord], trace_id: str) -> None:
         self.store.set_running(job_id)
         try:
             record = fn()

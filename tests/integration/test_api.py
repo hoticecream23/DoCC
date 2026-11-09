@@ -116,6 +116,32 @@ def test_process_async_runs_a_cascade_job(cfg, corpus, tmp_path, monkeypatch):
         assert r.status_code == 202
         job = _poll(c, r.json()["job_id"])
     assert job["state"] == "done" and job["error"] is None and job["result"]["filename"] == "invoice_native.pdf"
+    assert list((tmp_path / "uploads").iterdir()) == []
+
+
+def test_chunked_oversize_body_is_cut_off_with_413(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(api_app, "MAX_UPLOAD_BYTES", 10)
+    monkeypatch.setattr(api_app, "MULTIPART_OVERHEAD_BYTES", 0)
+    head = b'--b\r\nContent-Disposition: form-data; name="file"; filename="x.txt"\r\n\r\n'
+    body = iter([head, b"x" * 1000, b"\r\n--b--\r\n"])
+    r = client.post(
+        f"{V1}/documents/process", content=body, headers={"Content-Type": "multipart/form-data; boundary=b"}
+    )
+    assert r.status_code == 413 and "larger than" in r.json()["error"]
+    assert list((tmp_path / "uploads").iterdir()) == []
+
+
+def test_full_queue_is_503_with_retry_after_and_drops_the_upload(cfg, tmp_path, monkeypatch):
+    from api.jobs import Busy
+
+    def busy(*args):
+        raise Busy("job queue is full; retry later")
+
+    monkeypatch.setattr(api_app.JobRunner, "submit", busy)
+    with _client(cfg, tmp_path, monkeypatch, "http://127.0.0.1:9/v1", "test-model") as c:
+        r = _upload(c, "process_async", "x.txt", b"Invoice No: 123")
+    assert r.status_code == 503 and r.headers["Retry-After"] == str(api_app.RETRY_AFTER_S)
+    assert list((tmp_path / "uploads").iterdir()) == []
 
 
 def _poll(client, job_id, timeout=60.0):

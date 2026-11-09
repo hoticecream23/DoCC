@@ -27,7 +27,7 @@ from urllib.parse import parse_qs, urlparse
 from baseline.config import Config, load_config_cached
 from baseline.errors import BadInput, ConfigError, Unavailable
 from baseline.pipeline import Models, process_document
-from cascade.config import CascadeConfig, VLMSettings, load_cascade_config
+from cascade.config import CascadeConfig, VLMSettings, load_cascade_config, require_model, vlm_settings
 from cascade.runner import process_document as cascade_process
 from cascade.vlm import Backend, VLMClient, VLMError
 
@@ -58,41 +58,6 @@ class PageImage(TypedDict):
     png_base64: str
     width: int
     height: int
-
-
-def vlm_settings(ccfg: CascadeConfig) -> VLMSettings:
-    """Return the VLM settings: cascade.yaml, then env overrides.
-
-    The model may be unset here; require_model checks it when cascade runs.
-
-    Args:
-        ccfg: The cascade config.
-
-    Returns:
-        The settings with DOCC_VLM_BASE_URL and DOCC_VLM_MODEL applied.
-    """
-    over = {
-        k: v
-        for k, v in (("base_url", os.environ.get("DOCC_VLM_BASE_URL")), ("model", os.environ.get("DOCC_VLM_MODEL")))
-        if v
-    }
-    return ccfg.vlm.model_copy(update=over)
-
-
-def require_model(settings: VLMSettings) -> None:
-    """Refuse cascade mode without a model or endpoint. There is no default.
-
-    Args:
-        settings: The VLM settings.
-
-    Raises:
-        ConfigError: No model is set in cascade.yaml vlm.model or DOCC_VLM_MODEL,
-            or no endpoint is set.
-    """
-    if not settings.model:
-        raise ConfigError("demo needs a VLM model: set DOCC_VLM_MODEL or vlm.model in config/cascade.yaml")
-    if not settings.base_url:
-        raise ConfigError("demo needs a VLM endpoint: set DOCC_VLM_BASE_URL or vlm.base_url in config/cascade.yaml")
 
 
 def reachable(settings: VLMSettings) -> bool:

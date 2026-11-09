@@ -6,12 +6,14 @@ document, not halfway through a batch.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 from pydantic import Field, model_validator
 
 from baseline.config import DEFAULT_CONFIG_DIR, read_yaml
+from baseline.errors import ConfigError
 from baseline.schema import Confidence, Strict
 
 
@@ -82,3 +84,38 @@ def load_cascade_config(config_dir: str | Path | None = None) -> CascadeConfig:
     """
     d = Path(config_dir) if config_dir else DEFAULT_CONFIG_DIR
     return CascadeConfig.model_validate(read_yaml(d / "cascade.yaml"))
+
+
+def vlm_settings(ccfg: CascadeConfig) -> VLMSettings:
+    """Return the VLM settings: cascade.yaml, then env overrides.
+
+    The model may be unset here; require_model checks it when cascade runs.
+
+    Args:
+        ccfg: The cascade config.
+
+    Returns:
+        The settings with DOCC_VLM_BASE_URL and DOCC_VLM_MODEL applied.
+    """
+    over = {
+        k: v
+        for k, v in (("base_url", os.environ.get("DOCC_VLM_BASE_URL")), ("model", os.environ.get("DOCC_VLM_MODEL")))
+        if v
+    }
+    return ccfg.vlm.model_copy(update=over)
+
+
+def require_model(settings: VLMSettings) -> None:
+    """Refuse cascade mode without a model or endpoint. There is no default.
+
+    Args:
+        settings: The VLM settings.
+
+    Raises:
+        ConfigError: No model is set in cascade.yaml vlm.model or DOCC_VLM_MODEL,
+            or no endpoint is set.
+    """
+    if not settings.model:
+        raise ConfigError("cascade needs a VLM model: set DOCC_VLM_MODEL or vlm.model in config/cascade.yaml")
+    if not settings.base_url:
+        raise ConfigError("cascade needs a VLM endpoint: set DOCC_VLM_BASE_URL or vlm.base_url in config/cascade.yaml")

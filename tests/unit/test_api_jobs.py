@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from api.jobs import InMemoryJobStore, JobRunner  # noqa: E402
+from api.jobs import Busy, InMemoryJobStore, JobRunner  # noqa: E402
 from baseline.schema import DocumentRecord  # noqa: E402
 
 RECORD = DocumentRecord.model_construct(doc_id="0" * 16)
@@ -67,3 +67,35 @@ def test_failed_job_keeps_only_the_error_type():
     runner.shutdown()
     job = runner.store.get(job_id)
     assert job.state == "failed" and job.error == "processing failed: ValueError"
+
+
+def test_full_queue_raises_busy_and_frees_a_slot_when_a_job_ends():
+    gate = threading.Event()
+    runner = JobRunner(InMemoryJobStore(), max_pending=1)
+    first = runner.submit(lambda: gate.wait(5) and RECORD)
+    with pytest.raises(Busy):
+        runner.submit(lambda: RECORD)
+    gate.set()
+    _wait_for(runner.store, first, "done")
+    assert _submit_when_free(runner)
+    runner.shutdown()
+
+
+def _submit_when_free(runner, timeout=5.0):
+    import time
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            return runner.submit(lambda: RECORD)
+        except Busy:
+            time.sleep(0.01)
+    return None
+
+
+def test_oldest_finished_job_is_evicted():
+    store = InMemoryJobStore(max_finished=1)
+    old, new, waiting = store.create(), store.create(), store.create()
+    store.set_done(old, RECORD)
+    store.set_failed(new, "x")
+    assert store.get(old) is None and store.get(new).state == "failed" and store.get(waiting).state == "queued"
