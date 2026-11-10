@@ -41,7 +41,9 @@ M1b cabinet_id through the cascade runner; cascade upserts to the store;
   ruff/black/mypy clean, 0 functions > 50 lines, 0 large modules without
   a note, 0 broad excepts without reason.
 - in progress: none
-- blocked: none. Not pushed. Open from workers: baseline/config.py has
+- pushed 2026-11-10 at 90e2a4e; CI green on py3.10 and 3.12 (bandit B608
+  false positives in db.py list queries resolved with static SQL).
+- blocked: none. Open from workers: baseline/config.py has
   no dedicated api db key (API reuses db.path in root); no job TTL;
   review_events written only when a store already exists.
 - next (not started): real client re-baseline, per-client schemas,
