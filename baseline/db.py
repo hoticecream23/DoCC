@@ -416,10 +416,10 @@ def list_documents(
     Returns:
         One dict per document, keyed by column name.
     """
-    where = " WHERE cabinet_id = ?" if cabinet_id is not None else ""
-    params: list[Any] = [cabinet_id] if cabinet_id is not None else []
-    sql = f"SELECT {_DOC_COLUMNS} FROM documents{where} ORDER BY doc_id LIMIT ? OFFSET ?"
-    return [dict(r) for r in conn.execute(sql, [*params, limit, offset]).fetchall()]
+    # Columns are a module constant and every value is bound, so this is not injectable.
+    sql = "SELECT " + _DOC_COLUMNS + " FROM documents WHERE (? IS NULL OR cabinet_id = ?)"  # nosec B608
+    sql += " ORDER BY doc_id LIMIT ? OFFSET ?"
+    return [dict(r) for r in conn.execute(sql, [cabinet_id, cabinet_id, limit, offset]).fetchall()]
 
 
 def get_document(conn: sqlite3.Connection, doc_id: str) -> DocumentRecord | None:
@@ -480,7 +480,5 @@ def list_review_events(conn: sqlite3.Connection, doc_id: str | None = None) -> l
     Returns:
         One dict per event, keyed by column name.
     """
-    where = " WHERE doc_id = ?" if doc_id is not None else ""
-    params = [doc_id] if doc_id is not None else []
-    sql = f"SELECT * FROM review_events{where} ORDER BY doc_id, created_at, field, event_id"
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    sql = "SELECT * FROM review_events WHERE (? IS NULL OR doc_id = ?) ORDER BY doc_id, created_at, field, event_id"
+    return [dict(r) for r in conn.execute(sql, [doc_id, doc_id]).fetchall()]
