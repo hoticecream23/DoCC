@@ -48,3 +48,18 @@ M1b cabinet_id through the cascade runner; cascade upserts to the store;
   review_events written only when a store already exists.
 - next (not started): real client re-baseline, per-client schemas,
   Arabic OCR check, HITL UI on top of the new routes.
+
+## Client test preparation (2026-11-12)
+- done, local only, not pushed: e36c83f (scripts/inventory_share.py: files,
+  page counts, index-field schema), e894e46 (client packs: per-cabinet
+  taxonomy, field schema, labeled manifest, client-eval), 1c073c5 (pack
+  mode for baseline and cascade, keyword class prior, client field names,
+  vlm.input image|text, client-run command, page limit). Verified by the
+  orchestrator: 732 tests, coverage 90.2 %, all six checks clean.
+- scoring available without annotation: class from folder name, key field
+  from file name. No other field is scored.
+- waiting on the user: exact model tag and server address; headers.csv for
+  two workbooks the schema export could not parse; confirmation of one
+  cabinet's two types; commit and Python on the client machine.
+- next: push (needs the user's OK), git pull on the client machine, build
+  the pack there, client-run per cabinet, paste back the report.
