@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import IO, Any, TypedDict, TypeVar
 
 from . import classify as classify_mod
-from . import db
+from . import db, packmode
 from . import tagging as tagging_mod
 from .config import Config, load_config_cached
 from .errors import summarize_exception
@@ -161,6 +161,9 @@ def _classify_stage(st: _Stages, text: TextRecord, cfg: Config, models: Models) 
         all_scores={},
         method=ClassifyMethod.FALLBACK,
     )
+    if packmode.is_active(cfg):
+        # The trained model does not know the pack's classes: the keyword prior decides.
+        return st.run("classify", lambda: packmode.classify(text.full, text.pages, cfg), fallback)
     return st.run("classify", lambda: classify_mod.classify(text.full, text.pages, cfg, models.classifier), fallback)
 
 
@@ -320,9 +323,9 @@ class BatchStats(TypedDict):
 _STATE: dict[str, Any] = {}
 
 
-def _init_worker(config_dir: str | None, root: str, log_level: str) -> None:
+def _init_worker(config_dir: str | None, root: str, log_level: str, client_pack: tuple[str, str] | None = None) -> None:
     setup_logging(log_level)
-    cfg = load_config_cached(config_dir)
+    cfg = packmode.resolve(load_config_cached(config_dir), client_pack)
     _STATE["cfg"] = cfg
     _STATE["models"] = Models.load(cfg, Path(root))
     _STATE["bbox_dir"] = None
@@ -361,7 +364,10 @@ def _pending(paths: list[Path], out_path: Path, resume: bool) -> list[Path]:
     return todo
 
 
-def _results(jobs: list[tuple[str, str, str]], workers: int, init_args: tuple[str | None, str, str]) -> Iterable[str]:
+_InitArgs = tuple[str | None, str, str, tuple[str, str] | None]
+
+
+def _results(jobs: list[tuple[str, str, str]], workers: int, init_args: _InitArgs) -> Iterable[str]:
     """One JSON line per job, in input order; an empty string marks a failure."""
     if workers and workers > 1:
         import multiprocessing as mp
@@ -455,8 +461,10 @@ def _start_stats(found: int, todo: int, excluded: dict[str, int], workers: int) 
     return stats
 
 
-def _scan_logged(input_dir: str | Path) -> tuple[list[Path], dict[str, int]]:
-    """Scan for documents and log what was excluded, with counts per reason."""
+def _scan_logged(input_dir: str | Path, cfg: Config) -> tuple[list[Path], dict[str, int]]:
+    """Scan for documents and log what was excluded, with counts per reason. A pack run reads its manifest."""
+    if packmode.is_active(cfg):
+        return packmode.inputs(cfg, input_dir), {}
     paths, excluded = scan_documents(input_dir)
     excluded_counts = {reason: len(items) for reason, items in sorted(excluded.items())}
     if excluded:
@@ -475,6 +483,7 @@ def run_batch(
     resume: bool = True,
     root: str | Path = ".",
     cabinet_id: str | None = None,
+    client_pack: tuple[str, str] | None = None,
 ) -> BatchStats:
     """Process a directory into JSONL. Resumable, parallel, order stable.
 
@@ -486,29 +495,30 @@ def run_batch(
         bbox_dir: Sidecar directory, defaults to `<output>.bboxes`.
         resume: Skip documents already in the output.
         root: Directory model paths are relative to.
-        cabinet_id: Cabinet stamped on every record; None uses the config's.
+        cabinet_id: Cabinet stamped on every record; None uses the config's. Ignored in pack mode.
+        client_pack: (pack directory, cabinet) for a pack-mode run; None falls back to pipeline.yaml client_pack.
 
     Returns:
         Batch counts.
     """
-    cfg = load_config_cached(config_dir)
+    cfg = packmode.resolve(load_config_cached(config_dir), client_pack)
     log_level = str(cfg.pipeline.get("runtime", {}).get("log_level", "INFO"))
     out_path = Path(output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     bdir = Path(bbox_dir) if bbox_dir else out_path.with_suffix(out_path.suffix + ".bboxes")
 
-    paths, excluded_counts = _scan_logged(input_dir)
+    paths, excluded_counts = _scan_logged(input_dir, cfg)
     todo = _pending(paths, out_path, resume)
     stats = _start_stats(len(paths), len(todo), excluded_counts, workers)
     if not todo:
         return stats
 
-    cabinet = cabinet_id or cfg.cabinet_id
+    cabinet = cfg.cabinet_id if packmode.is_active(cfg) else cabinet_id or cfg.cabinet_id
     jobs = [(str(p), str(bdir), cabinet) for p in todo]
     mode = "a" if out_path.exists() and resume else "w"
     with _open_store(cfg, out_path, bdir, cabinet, Path(root)) as store:
         with open(out_path, mode, encoding="utf-8", newline="\n") as fh:
-            _write_lines(fh, _results(jobs, workers, (config_dir, str(root), log_level)), stats, store)
+            _write_lines(fh, _results(jobs, workers, (config_dir, str(root), log_level, client_pack)), stats, store)
 
     log.info("batch done", extra=stats)
     return stats

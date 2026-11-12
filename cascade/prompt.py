@@ -86,7 +86,8 @@ def _unknown(cfg: Config) -> str:
 
 
 def _field_names(cfg: Config) -> list[str]:
-    return [f["name"] for f in cfg.field_defs if f.get("name")]
+    # A pack can give two classes a field of the same name; the answer has one slot for it.
+    return list(dict.fromkeys(f["name"] for f in cfg.field_defs if f.get("name")))
 
 
 def check_descriptions(cfg: Config) -> None:

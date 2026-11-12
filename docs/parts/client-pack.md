@@ -92,6 +92,7 @@ The Pydantic models in `baseline/clientpack.py` define the format.
 baseline client-pack build inventory.csv schema.csv --out DIR [--all-types] [--share ROOT] [--dry-run]
 baseline client-pack materialize --pack DIR --cabinet NAME --share ROOT --work DIR [--dry-run]
 baseline client-eval --pack DIR --cabinet NAME --results FILE [--out report.md]
+baseline client-run --pack DIR --cabinet NAME --share ROOT --work DIR [--no-cascade] [--dry-run]
 ```
 
 - `build` writes or refreshes the pack. Re-running it gives the same files,
@@ -124,3 +125,76 @@ Results join to the manifest by file stem, which is the `doc_id`.
 No field other than the key is scored. The pack has no gold for any other
 field, and the report says so. Folder labels are the client's filing, not a
 review, so a misfiled sample is scored as a pipeline error.
+
+## Running a cabinet
+
+```
+baseline client-run --pack DIR --cabinet NAME --share ROOT --work DIR [--no-cascade] [--dry-run]
+```
+
+The command materializes the cabinet into `<work>/<slug>/`. It then runs the
+cascade in pack mode and writes `results.jsonl` and `client_eval.md` into the
+same folder. The cascade runs the baseline for every document, so there is
+one run. With `--no-cascade`, or when no model is set (`vlm.model` or
+`DOCC_VLM_MODEL`), the baseline runs alone and the log says so. A re-run
+resumes: delete `results.jsonl` to run again from the start.
+
+**Pack mode.** `--client-pack DIR --cabinet NAME` on `baseline run` and
+`cascade run`, or `client_pack: {dir, cabinet}` in pipeline.yaml, turns it on.
+`baseline/packmode.py` builds a config from the cabinet:
+
+- The labels are the cabinet's classes. `other` is the abstain label.
+  `cabinet_id` is the cabinet slug.
+- Inputs are the manifest's `<doc_id><ext>` copies only, so results join to
+  the manifest by file stem. Other files in the folder are not read.
+- **Class, baseline.** The trained classifier does not know the pack's
+  classes, so a keyword prior decides. A class name or alias found in the
+  header scores 0.8, on page 1 scores 0.7, and anywhere else scores 0.6. The
+  best class must lead the next by 0.1, else the label is `other`. The scores
+  of every class are in `classification.all_scores`.
+- **Class, cascade.** The model chooses from the closed list of classes plus
+  `other`. All prior scores are below `rule_short_circuit` (0.9), so a valid
+  model answer always overrides the prior. The provenance line records the
+  prior's evidence under `prior` (the matched class names and aliases, and
+  where they matched).
+- **Fields.** Only `origin: document` fields are extracted, key first. Fields
+  of origin erp, manual or fixed are never asked of the model. Each field is
+  stored under the client's field name and scoped to its class. A name in
+  `EXTRACTOR_BY_NAME` (for example "Invoice No", "Date", "Total Amount") reuses
+  that extractor, with the client's label added as an anchor. Any other date,
+  number or text field reuses the extractor for its dtype, anchored on the
+  client's own label only. A selection field has no rule extractor; only the
+  model can fill it.
+- **Grounding** is unchanged. A model value is kept only if it is found in the
+  page text. Dates and amounts are normalized by the existing normalizers. The
+  global `dayfirst` option applies; `date_format` is a hint in the prompt only.
+
+**Two cascade switches** in cascade.yaml:
+
+- `vlm.input: image | text` (default `image`). `text` sends the extracted page
+  text and no images, for a model that cannot read images. The text is cut
+  page by page to `render.max_text_chars` across `render.max_pages` pages.
+- The client already speaks `/v1/chat/completions`, which vLLM and Ollama
+  (its OpenAI-compatible endpoint) both serve. Set `vlm.base_url` to
+  `http://HOST:PORT/v1`. If the server wants a key, set `vlm.api_key_env` to the
+  name of an environment variable that holds it. Never put the key itself in
+  a config file.
+
+**Multi-page files.** A PDF or TIFF is one document, even when it holds
+several. Every TIFF frame is a page. `extraction.max_pages` (default 500) caps
+the pages read. At the cap, the record's `diagnostics.errors` holds a
+`page limit` line, so client-eval counts that document as failed.
+
+**What is scored:** the class and the key field only (see above). Other
+document fields are in the results but are not scored.
+
+### Checklist for the client machine
+
+1. Run `git pull`.
+2. Run `pip install -e ".[dev,api]"`.
+3. Set `extraction.ocr.binary` in `config/pipeline.yaml` to the tesseract path.
+4. Set `vlm.base_url` and `vlm.model` in `config/cascade.yaml`. Add the model
+   host to `vlm.allowed_hosts` if it is not loopback. Set `vlm.input: text` for
+   a text-only model.
+5. Keep the pack, the work directory and all outputs outside the repo. Never
+   commit them.

@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, TypedDict, TypeVar
 
-from baseline import db
+from baseline import db, packmode
 from baseline import pipeline as baseline_pipeline
 from baseline.classify import rule_scores
 from baseline.config import Config
@@ -88,6 +88,8 @@ class Provenance(_ProvenanceBase, total=False):
 
     # Set only when a context overflow forced a retry with fewer pages.
     reduced_pages: int
+    # Pack mode only: the class names and aliases the keyword prior found.
+    prior: dict[str, list[str]]
 
 
 class BatchStats(TypedDict):
@@ -201,7 +203,9 @@ def _ask_model(
 ) -> VLMReply:
     """Render the pages and ask the model, once more with half the pages on a 400."""
     r = ccfg.render
-    images = timed("render", lambda: render_pages(path, r.max_pages, r.dpi, r.max_long_edge))
+    images: list[bytes] = []
+    if ccfg.vlm.input == "image":  # a text-only model gets the page text alone
+        images = timed("render", lambda: render_pages(path, r.max_pages, r.dpi, r.max_long_edge))
     sent = base.text.pages[: r.max_pages]
     prov["pages_sent"], prov["images_sent"] = len(sent), len(images)
     if not images and not base.text.full.strip():
@@ -275,6 +279,8 @@ def process_document(
     base, sidecar = baseline_pipeline.process_document(p, cfg, models, cabinet_id)
     timed = _Timer(bool(cfg.pipeline.get("runtime", {}).get("deterministic_timings", False)))
     prov = _new_provenance(base, timed.timings)
+    if packmode.is_active(cfg):
+        prov["prior"] = packmode.evidence(base.text.full, base.text.pages, cfg)
     try:
         reply = _ask_model(p, base, cfg, ccfg, backend, prov, timed)
         prov["model"], prov["finish_reason"], prov["raw"] = reply.model, reply.finish_reason, reply.content
@@ -383,10 +389,10 @@ def model_root(cfg: Config, root: str | Path | None) -> Path:
 
 
 def _start_batch(
-    input_dir: str | Path, out_path: Path, prov_path: Path, resume: bool
+    input_dir: str | Path, out_path: Path, prov_path: Path, resume: bool, cfg: Config
 ) -> tuple[list[Path], set[str], BatchStats]:
-    """Scan the input, repair the outputs for resume, and start the counts."""
-    paths, excluded = scan_documents(input_dir)
+    """Scan the input (a pack run reads its manifest), repair the outputs for resume, and start the counts."""
+    paths, excluded = (packmode.inputs(cfg, input_dir), {}) if packmode.is_active(cfg) else scan_documents(input_dir)
     skip = _prepare_resume(out_path, prov_path) if resume else set()
     excluded_counts = {reason: len(items) for reason, items in sorted(excluded.items())}
     stats = BatchStats(found=len(paths), skipped=0, written=0, failed=0, fallback=0, excluded=excluded_counts)
@@ -432,7 +438,7 @@ def run_batch(
         bbox_dir: Word box sidecar directory; defaults to <output>.bboxes.
         resume: Skip documents already written, after repairing a crash.
         root: Root for the model manifest; None for the parent of the config directory.
-        cabinet_id: Cabinet stamped on every record; None uses the config's.
+        cabinet_id: Cabinet stamped on every record; None uses the config's. Ignored in pack mode.
 
     Returns:
         Counts of documents found, skipped, written, failed and fallen back.
@@ -442,9 +448,9 @@ def run_batch(
     """
     check_descriptions(cfg)
     out_path, prov_path, bdir = _output_paths(output, bbox_dir)
-    paths, skip, stats = _start_batch(input_dir, out_path, prov_path, resume)
+    paths, skip, stats = _start_batch(input_dir, out_path, prov_path, resume, cfg)
     mode = "a" if resume else "w"
-    cabinet = cabinet_id or cfg.cabinet_id
+    cabinet = cfg.cabinet_id if packmode.is_active(cfg) else cabinet_id or cfg.cabinet_id
     with (
         baseline_pipeline._open_store(cfg, out_path, bdir, cabinet, model_root(cfg, root)) as store,
         open(out_path, mode, encoding="utf-8", newline="\n") as results_fh,

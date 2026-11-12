@@ -3,6 +3,7 @@
 Over 400 lines: every CLI subparser and handler lives here so the whole command surface is in one place.
 
 baseline run             --input DIR --output results.jsonl [--workers N] [--no-resume] [--cabinet ID]
+                         [--client-pack DIR --cabinet NAME]
 baseline train           --annotations FILE --output-model DIR
 baseline tune-thresholds --annotations FILE --predictions FILE
 baseline profile         --input DIR --output profile.md
@@ -18,12 +19,13 @@ baseline db-export       out.jsonl [--db PATH] [--cabinet ID]
 baseline client-pack build       inventory.csv schema.csv --out DIR [--all-types]
 baseline client-pack materialize --pack DIR --cabinet NAME --share ROOT --work DIR
 baseline client-eval     --pack DIR --cabinet NAME --results FILE [--out report.md]
+baseline client-run      --pack DIR --cabinet NAME --share ROOT --work DIR [--no-cascade]
 
 Every command that writes takes --dry-run: it logs the paths and document count, then stops.
 
 This module only parses arguments, calls the module that owns each command,
 and logs the outcome. Command logic lives in pipeline, training, labels,
-workbook, evaluate, graph, tables, profile and db.
+workbook, evaluate, graph, tables, profile, db and clientrun.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from . import db
 from . import tagging as tagging_mod  # noqa: F401 - re-exported: tests patch cli.tagging_mod.load_model
 from .clientpack import PACK_FILE, load_pack, materialize
 from .clientpack_build import build_pack
+from .clientrun import client_run
 from .config import Config, load_config_cached
 from .evaluate import compare, evaluate, render_comparison, render_report
 from .evaluate.client_eval import render_client_report, score_cabinet
@@ -61,7 +64,7 @@ log = get_logger(__name__)
 EXIT_INTERRUPTED = 130  # shell convention: 128 + SIGINT
 EXIT_REGRESSION = 2  # compare --fail-on-regression found something worse
 # These log their own dry run: the generic one cannot tell what they would read or write.
-OWN_DRY_RUN = {"tune-thresholds", "client-pack"}
+OWN_DRY_RUN = {"tune-thresholds", "client-pack", "client-run"}
 
 
 def _cfg(args: argparse.Namespace) -> Config:
@@ -98,6 +101,7 @@ def _emit(path: str | None, text: str) -> None:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Process a directory into results JSONL."""
+    client_pack = (args.client_pack, args.cabinet) if args.client_pack else None
     stats = run_batch(
         input_dir=args.input,
         output=args.output,
@@ -106,7 +110,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         bbox_dir=args.bbox_dir,
         resume=args.resume,
         root=args.root,
-        cabinet_id=args.cabinet,
+        cabinet_id=None if client_pack else args.cabinet,
+        client_pack=client_pack,
     )
     log.info("run complete", extra=stats)
     return 0
@@ -388,6 +393,21 @@ def cmd_client_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_client_run(args: argparse.Namespace) -> int:
+    """Materialize, run and score one cabinet of a client pack."""
+    client_run(
+        args.pack,
+        args.cabinet,
+        args.share,
+        args.work,
+        config_dir=args.config,
+        root=args.root,
+        cascade=args.cascade,
+        dry_run=args.dry_run,
+    )
+    return 0
+
+
 # --------------------------------------------------------------------------
 # argument parsing: one _add_<command>_parser per subcommand
 # --------------------------------------------------------------------------
@@ -402,7 +422,8 @@ def _add_run_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     r.add_argument(
         "--resume", action=argparse.BooleanOptionalAction, default=True, help="skip documents already written"
     )
-    r.add_argument("--cabinet", default=None, help="cabinet_id for every record, overrides the config")
+    r.add_argument("--cabinet", default=None, help="cabinet_id for every record; with --client-pack, the pack cabinet")
+    r.add_argument("--client-pack", default=None, help="client pack directory: classify and extract by its cabinet")
     r.set_defaults(func=cmd_run)
 
 
@@ -541,6 +562,15 @@ def _add_client_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]
     ce.add_argument("--results", required=True)
     ce.add_argument("--out", dest="output", default=None, help="report file; stdout when omitted")
     ce.set_defaults(func=cmd_client_eval)
+
+    cr = sub.add_parser("client-run", help="materialize, run and score one cabinet of a client pack")
+    cr.add_argument("--pack", required=True)
+    cr.add_argument("--cabinet", required=True)
+    cr.add_argument("--share", required=True, help="share root the inventory was taken of")
+    cr.add_argument("--work", required=True, help="work directory, outside the share")
+    cr.add_argument("--cascade", action=argparse.BooleanOptionalAction, default=True, help="run the model stage")
+    cr.add_argument("--dry-run", action="store_true", help="log what would be written and stop")
+    cr.set_defaults(func=cmd_client_run)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -34,6 +34,9 @@ DOCX_EXT = {".docx"}
 TEXT_EXT = {".txt", ".md"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 SUPPORTED_EXT = PDF_EXT | DOCX_EXT | TEXT_EXT | IMAGE_EXT
+# Pages read from one PDF or multi-page TIFF; extraction.max_pages overrides.
+# Past it the file is still one record, and diagnostics say pages were left unread.
+DEFAULT_MAX_PAGES = 500
 
 
 @dataclass
@@ -373,16 +376,26 @@ def _add_ocr_page(res: ExtractionResult, pending: Future[OCRPage], native: str, 
         res.page_confidences.append(po.native_conf if native.strip() else 0.0)
 
 
+def _page_limit(cfg: Config, total: int, res: ExtractionResult) -> int:
+    """Pages to read of a file with `total`; past the limit the cut is recorded in errors, not raised."""
+    limit = int(cfg.extract_opts().get("max_pages", DEFAULT_MAX_PAGES))
+    if total > limit:
+        res.errors.append(f"page limit: read {limit} of {total} pages (extraction.max_pages)")
+        return limit
+    return total
+
+
 def _extract_pdf(path: Path, cfg: Config, res: ExtractionResult) -> None:
     import fitz
 
     po = _PdfOpts.from_config(cfg)
     with fitz.open(path) as doc, ThreadPoolExecutor(po.threads) as pool:
-        natives = [_sanitize(doc.load_page(p).get_text("text") or "") for p in range(doc.page_count)]
+        count = _page_limit(cfg, doc.page_count, res)
+        natives = [_sanitize(doc.load_page(p).get_text("text") or "") for p in range(count)]
         scanned = iter([p for p, t in enumerate(natives) if po.is_thin(t)])
         pending: dict[int, Future[OCRPage]] = {}
 
-        for pno in range(doc.page_count):
+        for pno in range(count):
             page = doc.load_page(pno)
             res.page_sizes.append((float(page.rect.width), float(page.rect.height)))
             if not po.is_thin(natives[pno]):
@@ -465,29 +478,38 @@ def _extract_text(path: Path, cfg: Config, res: ExtractionResult) -> None:
     res.page_sizes.append((0.0, 0.0))
 
 
-def _extract_image(path: Path, cfg: Config, res: ExtractionResult) -> None:
-    from PIL import Image
-
-    opts = cfg.extract_opts()
+def _ocr_frame(img: PILImage.Image, pno: int, opts: dict[str, Any], res: ExtractionResult) -> None:
+    """OCR one image or TIFF frame as page pno."""
     ocr_opts = dict(opts.get("ocr", {}))
-    with Image.open(path) as img:
-        res.page_sizes.append((float(img.width), float(img.height)))
-        try:
-            for_ocr, scale = _upscale_for_ocr(img, ocr_opts)
-            for_ocr, read_opts = _prepare_pink_paper(for_ocr, ocr_opts)
-            ocr = _ocr_image(for_ocr, read_opts)
-        except Exception as exc:  # noqa: BLE001 - PIL/tesseract raise varied types; record and return an empty page
-            res.errors.append("ocr failed: " + summarize_exception(exc))
-            res.pages.append("")
-            res.page_methods.append(ExtractionMethod.NONE)
-            res.page_confidences.append(0.0)
-            return
+    res.page_sizes.append((float(img.width), float(img.height)))
+    try:
+        for_ocr, scale = _upscale_for_ocr(img, ocr_opts)
+        for_ocr, read_opts = _prepare_pink_paper(for_ocr, ocr_opts)
+        ocr = _ocr_image(for_ocr, read_opts)
+    except Exception as exc:  # noqa: BLE001 - PIL/tesseract raise varied types; record and return an empty page
+        res.errors.append("ocr failed: " + summarize_exception(exc))
+        res.pages.append("")
+        res.page_methods.append(ExtractionMethod.NONE)
+        res.page_confidences.append(0.0)
+        return
     res.pages.append(_sanitize_fixed_width(ocr.text))
     res.page_methods.append(ExtractionMethod.OCR)
     res.page_confidences.append(ocr_confidence(ocr.words))
     if opts.get("capture_bboxes", True):
         # page_sizes holds the file's own pixels, so undo any OCR upscale.
-        res.words.extend(_ocr_words(ocr.words, 0, scale))
+        res.words.extend(_ocr_words(ocr.words, pno, scale))
+
+
+def _extract_image(path: Path, cfg: Config, res: ExtractionResult) -> None:
+    """OCR every frame of an image file up to the page limit; a multi-page TIFF stays one document."""
+    from PIL import Image, ImageSequence
+
+    with Image.open(path) as img:
+        count = _page_limit(cfg, int(getattr(img, "n_frames", 1)), res)
+        for pno, frame in enumerate(ImageSequence.Iterator(img)):
+            if pno >= count:
+                break
+            _ocr_frame(frame, pno, cfg.extract_opts(), res)
 
 
 _HANDLERS = [

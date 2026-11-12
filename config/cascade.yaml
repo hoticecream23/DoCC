@@ -24,6 +24,9 @@ vlm:
   # Extra request fields for the server. Thinking models spend the whole
   # max_tokens budget thinking and return no answer, so thinking is turned
   # off: reasoning_effort for Ollama, chat_template_kwargs for vLLM.
+  # image: send page images and page text. text: send the page text only, for
+  # a model that cannot read images. Grounding is the same either way.
+  input: image
   extra_body:
     reasoning_effort: none
     chat_template_kwargs:

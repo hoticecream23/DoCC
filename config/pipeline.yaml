@@ -10,6 +10,14 @@ cabinet_id: default
 db:
   path: docc.sqlite
 
+# Client pack mode (docs/parts/client-pack.md). With dir and cabinet set, the
+# run classifies and extracts by that cabinet's classes and fields instead of
+# classes.yaml and fields.yaml, and stamps the cabinet slug as cabinet_id.
+# `--client-pack DIR --cabinet NAME` on `baseline run` and `cascade run` overrides.
+client_pack:
+  dir: null
+  cabinet: null
+
 extraction:
   # A page with fewer than this many chars of native text is treated as scanned.
   native_char_threshold: 100
@@ -57,6 +65,9 @@ extraction:
     threshold: 0.02
     min_tokens: 40
   native_confidence: 0.98
+  # Pages read from one PDF or multi-page TIFF. Past it the file is still one
+  # record, and its diagnostics say how many pages were left unread.
+  max_pages: 500
   capture_bboxes: true
 
 classification:

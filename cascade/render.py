@@ -1,7 +1,7 @@
 """Page images for the model, one per page the extractor read.
 
-An image file gives frame 0 only, because that is the only frame the
-baseline extractor reads, and the model must see the page the text came from.
+An image file gives one image per frame, as the baseline extractor reads
+every frame of a multi-page TIFF, and the model must see the pages the text came from.
 """
 
 from __future__ import annotations
@@ -59,8 +59,9 @@ def render_pages(path: Path, max_pages: int, dpi: int, max_long_edge: int) -> li
     if ext in PDF_EXT:
         return _pdf(Path(path), max_pages, dpi, max_long_edge)
     if ext in IMAGE_EXT:
-        from PIL import Image
+        from PIL import Image, ImageSequence
 
         with Image.open(path) as img:
-            return [_png(img, max_long_edge)]
+            frames = ImageSequence.Iterator(img)
+            return [_png(frame, max_long_edge) for _, frame in zip(range(max_pages), frames, strict=False)]
     return []

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -35,6 +35,8 @@ class VLMSettings(Strict):
     # Server specific request fields, such as the switch that turns off a
     # model's thinking. Never overrides the fields VLMClient sets itself.
     extra_body: dict[str, Any] = Field(default_factory=dict)
+    # "text" sends the extracted page text and no page images, for a model that cannot read images.
+    input: Literal["image", "text"] = "image"
 
 
 class RenderSettings(Strict):
