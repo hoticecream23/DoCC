@@ -15,6 +15,9 @@ baseline graph           --input results.jsonl --output graph.json
 baseline tables          --input results.jsonl --output tables.jsonl
 baseline db-import       results.jsonl [--db PATH] [--tables FILE] [--provenance FILE]
 baseline db-export       out.jsonl [--db PATH] [--cabinet ID]
+baseline client-pack build       inventory.csv schema.csv --out DIR [--all-types]
+baseline client-pack materialize --pack DIR --cabinet NAME --share ROOT --work DIR
+baseline client-eval     --pack DIR --cabinet NAME --results FILE [--out report.md]
 
 Every command that writes takes --dry-run: it logs the paths and document count, then stops.
 
@@ -35,8 +38,11 @@ from typing import Any
 
 from . import db
 from . import tagging as tagging_mod  # noqa: F401 - re-exported: tests patch cli.tagging_mod.load_model
+from .clientpack import PACK_FILE, load_pack, materialize
+from .clientpack_build import build_pack
 from .config import Config, load_config_cached
 from .evaluate import compare, evaluate, render_comparison, render_report
+from .evaluate.client_eval import render_client_report, score_cabinet
 from .graph import build as build_graph
 from .io import atomic_open, atomic_write_text, report_dry_run
 from .labels import import_labels, render_summary
@@ -54,6 +60,8 @@ log = get_logger(__name__)
 
 EXIT_INTERRUPTED = 130  # shell convention: 128 + SIGINT
 EXIT_REGRESSION = 2  # compare --fail-on-regression found something worse
+# These log their own dry run: the generic one cannot tell what they would read or write.
+OWN_DRY_RUN = {"tune-thresholds", "client-pack"}
 
 
 def _cfg(args: argparse.Namespace) -> Config:
@@ -351,6 +359,35 @@ def cmd_profile(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_client_pack_build(args: argparse.Namespace) -> int:
+    """Build or refresh a client pack from a share inventory."""
+    if args.dry_run:
+        with open(args.inventory, encoding="utf-8-sig") as fh:
+            rows = max(sum(1 for _ in fh) - 1, 0)
+        return report_dry_run([Path(args.out) / PACK_FILE, Path(args.out)], rows)
+    summary = build_pack(args.inventory, args.schema, args.out, all_types=args.all_types, share_root=args.share or "")
+    log.info("pack written", extra={"out": summary.out_dir, "cabinets": len(summary.cabinets)})
+    return 0
+
+
+def cmd_client_pack_materialize(args: argparse.Namespace) -> int:
+    """Copy one cabinet's documents out of the share into a work directory."""
+    if args.dry_run:
+        pack = load_pack(args.pack, args.cabinet)
+        return report_dry_run([Path(args.work) / pack.cabinet.slug], len(pack.manifest))
+    paths = materialize(args.pack, args.cabinet, args.share, args.work)
+    log.info("documents ready", extra={"documents": len(paths)})
+    return 0
+
+
+def cmd_client_eval(args: argparse.Namespace) -> int:
+    """Score a run over one cabinet against its client pack."""
+    score = score_cabinet(args.pack, args.cabinet, args.results)
+    _emit(args.output, render_client_report(score, Path(args.results).name))
+    log.info("client scores", extra={"accuracy": round(score.accuracy, 4), "scored": score.scored})
+    return 0
+
+
 # --------------------------------------------------------------------------
 # argument parsing: one _add_<command>_parser per subcommand
 # --------------------------------------------------------------------------
@@ -479,6 +516,33 @@ def _add_db_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     de.set_defaults(func=cmd_db_export)
 
 
+def _add_client_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    cp = sub.add_parser("client-pack", help="build a client pack, or copy its documents out of the share")
+    actions = cp.add_subparsers(dest="action", required=True)
+    b = actions.add_parser("build", help="build or refresh a pack from inventory.csv and schema.csv")
+    b.add_argument("inventory")
+    b.add_argument("schema")
+    b.add_argument("--out", required=True, help="pack directory, outside the repo")
+    b.add_argument("--all-types", action="store_true", help="every schema type in taxonomy.yaml")
+    b.add_argument("--share", default=None, help="share root, recorded in pack.yaml")
+    b.set_defaults(func=cmd_client_pack_build)
+    m = actions.add_parser("materialize", help="copy one cabinet's documents into a work directory")
+    m.add_argument("--pack", required=True)
+    m.add_argument("--cabinet", required=True)
+    m.add_argument("--share", required=True, help="share root the inventory was taken of")
+    m.add_argument("--work", required=True, help="work directory, outside the share")
+    m.set_defaults(func=cmd_client_pack_materialize)
+    for action in (b, m):
+        action.add_argument("--dry-run", action="store_true", help="log what would be written and stop")
+
+    ce = sub.add_parser("client-eval", help="score a run over one cabinet against its client pack")
+    ce.add_argument("--pack", required=True)
+    ce.add_argument("--cabinet", required=True)
+    ce.add_argument("--results", required=True)
+    ce.add_argument("--out", dest="output", default=None, help="report file; stdout when omitted")
+    ce.set_defaults(func=cmd_client_eval)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The `baseline` argument parser with every subcommand.
 
@@ -498,8 +562,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_eval_parsers(sub)
     _add_results_parsers(sub)
     _add_db_parsers(sub)
+    _add_client_parsers(sub)
     for name, command in sub.choices.items():
-        if name != "tune-thresholds":  # has its own --dry-run that still fits and logs the thresholds
+        if name not in OWN_DRY_RUN:  # these add their own --dry-run
             command.add_argument("--dry-run", action="store_true", help="log what would be written and stop")
     return parser
 
@@ -533,7 +598,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     setup_logging(args.log_level)
     try:
-        if getattr(args, "dry_run", False) and args.command != "tune-thresholds":
+        if getattr(args, "dry_run", False) and args.command not in OWN_DRY_RUN:
             return _dry_run(args)
         args.cfg = load_config_cached(args.config)
         return int(args.func(args))

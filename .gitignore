@@ -74,3 +74,10 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
+
+# Client packs and the share inventory they are built from. Client material:
+# file names, folder names and schema. They stay on the client machine.
+client_pack*/
+inventory.csv
+schema.csv
+headers.csv
