@@ -35,6 +35,31 @@ _EMPTY_REST = re.compile(r"[ \t:\-.#=|]*$")
 _BLANK_LINES = re.compile(r"(?:[ \t\r]*\n)*")
 _LINES = re.compile(r"[^\n]+")
 _CELL_SPLIT = re.compile(r"[ \t]*\|[ \t]*|\t+|[ \t]{2,}")
+_GAP_SPLIT = re.compile(r"\t+|[ \t]{2,}")
+_PIPE = re.compile(r"\|")
+_TOKEN = re.compile(r"\S+")
+_HEADER_GAP = re.compile(r"[ \t:\-.#=|]*")
+# A word just before a label that makes it name another document or an earlier one
+# ("Old PV No", "Against Invoice No"): the label is refused. "Supplier's", "Tax", "Sales" stay.
+OTHER_DOCUMENT_QUALIFIERS = frozenset(
+    {
+        "old",
+        "previous",
+        "prev",
+        "original",
+        "orig",
+        "ref",
+        "reference",
+        "against",
+        "cancelled",
+        "canceled",
+        "reversed",
+        "related",
+        "parent",
+        "linked",
+    }
+)
+_QUALIFIER_BEFORE = re.compile(r"([^\W\d_]+)\.? ?$")
 _LABEL_JOIN = re.compile(r"\s*[&/]\s*|\s+and\s+", re.IGNORECASE)
 # Value splitters for a combined label, tried in order until the counts agree.
 _VALUE_SPLITS = (re.compile(r"\s+/\s+|\s{2,}|\s*,\s*"), re.compile(r"\s*/\s*"))
@@ -58,6 +83,7 @@ class _Ctx:
     value_rx: re.Pattern[str]
     window: int
     next_line: bool
+    header_rx: tuple[re.Pattern[str], ...]  # the class's known field labels, to split a single-spaced header
 
 
 def _canon(word: str, variants: dict[str, list[str]]) -> str:
@@ -122,18 +148,64 @@ def _cells(view: str, start: int, end: int, splitter: re.Pattern[str] = _CELL_SP
     return out
 
 
+def _pipe_cells(view: str, start: int, end: int) -> list[Span]:
+    """Trimmed cells between pipes; an empty cell and a trailing pipe still count as positions."""
+    out, pos = [], start
+    for stop in [*(m.start() for m in _PIPE.finditer(view, start, end)), end]:
+        text = view[pos:stop]
+        lead = pos + len(text) - len(text.lstrip())
+        out.append((lead, max(lead, pos + len(text.rstrip()))))
+        pos = stop + 1
+    return out
+
+
+def _row(view: str, start: int, end: int) -> list[Span] | None:
+    """Cells split on pipes, else on tabs or two or more spaces; None when the line has no such split."""
+    if _PIPE.search(view, start, end):
+        return _pipe_cells(view, start, end)
+    cells = _cells(view, start, end, _GAP_SPLIT)
+    return cells if len(cells) >= MIN_HEADER_CELLS else None
+
+
+def _label_cells(ctx: _Ctx, start: int, end: int) -> list[Span] | None:
+    """Header cells as known field labels left to right (longest first); None unless labels cover the line."""
+    out: list[Span] = []
+    pos = start
+    while True:
+        gap = _HEADER_GAP.match(ctx.view, pos, end)
+        pos = gap.end() if gap else pos
+        if pos >= end:
+            return out
+        ends = [m.end() for rx in ctx.header_rx if (m := rx.match(ctx.view, pos, end))]
+        if not ends:
+            return None
+        out.append((pos, max(ends)))
+        pos = max(ends)
+
+
 def _header_hit(ctx: _Ctx, label: re.Match[str], line_start: int) -> Span | None:
-    """The cell in the same column of the next row, when the label is a whole header cell."""
+    """The cell at the label's column in the next row, when the label is a whole header cell.
+
+    The header splits on pipes, tabs or wide gaps, the value row the same way. A
+    single-spaced header splits into known labels, and its value row into as many
+    space-separated tokens. The paired cell must fit the value pattern; no other cell is taken.
+    """
     line_end = _line_end(ctx.view, label.end())
-    cells = _cells(ctx.view, line_start, line_end)
+    start, end = _next_line(ctx.view, line_end)
+    cells = _row(ctx.view, line_start, line_end)
+    row = _row(ctx.view, start, end) or _cells(ctx.view, start, end, _GAP_SPLIT)
+    if cells is None:
+        cells = _label_cells(ctx, line_start, line_end) or []
+        row = [m.span() for m in _TOKEN.finditer(ctx.view, start, end)]
+        if len(row) != len(cells):
+            return None
     col = next(
         (i for i, (s, e) in enumerate(cells) if s == label.start() and not ctx.view[label.end() : e].strip(" .#")),
         None,
     )
-    if len(cells) < MIN_HEADER_CELLS or col is None:
+    if len(cells) < MIN_HEADER_CELLS or col is None or col >= len(row):
         return None
-    row = _cells(ctx.view, *_next_line(ctx.view, line_end))
-    return _value_span(ctx, *row[col]) if len(row) == len(cells) else None
+    return _value_span(ctx, *row[col])
 
 
 def _next_line_hit(ctx: _Ctx, line_end: int) -> Span | None:
@@ -142,12 +214,17 @@ def _next_line_hit(ctx: _Ctx, line_end: int) -> Span | None:
     return span if span and not ctx.view[start : span[0]].strip() else None
 
 
-def _line_hit(ctx: _Ctx, label: re.Match[str]) -> list[Span] | None:
-    """The value after a label on its line, or on the next line when the line is empty; None if incomplete."""
+def _line_hit(ctx: _Ctx, label: re.Match[str], line_start: int) -> list[Span] | None:
+    """The value after a label on its line; None if the label is incomplete.
+
+    The next line is read only when the label is alone on its line; a label that
+    shares its line reaches the next line by column pairing (_header_hit) only.
+    """
     line_end = _line_end(ctx.view, label.end())
     rest = ctx.view[label.end() : line_end]
     if _EMPTY_REST.match(rest):
-        span = _next_line_hit(ctx, line_end) if ctx.next_line else None
+        alone = _EMPTY_REST.match(ctx.view[line_start : label.start()])
+        span = _next_line_hit(ctx, line_end) if ctx.next_line and alone else None
         return [span] if span else []
     span = _value_span(ctx, label.end(), min(line_end, label.end() + ctx.window))
     direct = span is not None and span[0] - label.end() <= 1 and not _WORD_AFTER.match(rest)
@@ -195,9 +272,12 @@ def _label_hits(ctx: _Ctx, spec: dict[str, Any], rejected: Callable[[int, int], 
             if rejected(label.start(), label.end()):
                 continue
             line_start = ctx.view.rfind("\n", 0, label.start()) + 1
-            header = _header_hit(ctx, label, line_start)
-            spans = [header] if header else _line_hit(ctx, label)
             before = ctx.view[line_start : label.start()]
+            qualifier = _QUALIFIER_BEFORE.search(before)
+            if qualifier and qualifier.group(1).lower() in OTHER_DOCUMENT_QUALIFIERS:
+                continue
+            header = _header_hit(ctx, label, line_start)
+            spans = [header] if header else _line_hit(ctx, label, line_start)
             if _WORD_BEFORE.search(before):
                 phrase += [Hit(s, e, PHRASE_CONFIDENCE) for s, e in spans or []]
             else:
@@ -212,7 +292,9 @@ def complete_hits(
     """Values for a field under the complete-label rule, best first.
 
     Phrase-only matches ("Supplier Invoice No" for "Invoice No") count only
-    when no complete match exists, at PHRASE_CONFIDENCE.
+    when no complete match exists, at PHRASE_CONFIDENCE. A label right after a
+    word in OTHER_DOCUMENT_QUALIFIERS ("Old PV No") is refused. The spec's
+    ``header_labels`` (the class's known field labels) split a single-spaced header row.
 
     Args:
         full: Canonical document text.
@@ -224,7 +306,9 @@ def complete_hits(
     Returns:
         Unique hits, highest confidence then earliest first.
     """
-    ctx = _Ctx(DIRECTION_MARKS.sub(" ", full), value_rx, window, bool(spec.get("next_line", False)))
+    known = [{"text": t} for t in spec.get("header_labels") or []] or spec.get("labels") or []
+    header_rx = tuple(label_patterns({"labels": known, "word_variants": spec.get("word_variants")}))
+    ctx = _Ctx(DIRECTION_MARKS.sub(" ", full), value_rx, window, bool(spec.get("next_line", False)), header_rx)
     complete, phrase = _label_hits(ctx, spec, rejected)
     if spec.get("combined_labels", False):
         complete += [Hit(s, e, LINE_START_CONFIDENCE) for s, e in _combined_hits(ctx, spec)]

@@ -224,14 +224,34 @@ def _field_def(spec: FieldSpec, type_name: str, by_name: dict[str, dict[str, Any
     return {**head, **shape, "strategies": ["anchor"], "anchor": anchor}
 
 
+def class_field_defs(
+    specs: list[FieldSpec], type_name: str, by_name: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The fields.yaml entries of one class; each anchor knows every label of the class.
+
+    The shared ``header_labels`` let a single-spaced header row ("Invoice No. PV No.")
+    split into its fields (metadata/layouts.py).
+
+    Args:
+        specs: The class's client fields.
+        type_name: The class name.
+        by_name: Built-in field definitions by name, for borrowed value shapes.
+
+    Returns:
+        Document-origin field entries, key first, then file order.
+    """
+    docs = sorted((f for f in specs if f.origin == "document"), key=lambda f: ROLE_ORDER[f.role])
+    defs = [_field_def(spec, type_name, by_name) for spec in docs]
+    known = list(dict.fromkeys(lab["text"] for d in defs for lab in (d.get("anchor") or {}).get("labels", [])))
+    for d in defs:
+        if "anchor" in d:
+            d["anchor"]["header_labels"] = known
+    return defs
+
+
 def _field_defs(cfg: Config, pack: ClientPack) -> list[dict[str, Any]]:
     by_name = {f["name"]: f for f in cfg.field_defs if f.get("name")}
-    out = []
-    for cls in pack.classes:
-        specs = [f for f in pack.fields.get(cls.name, []) if f.origin == "document"]
-        for spec in sorted(specs, key=lambda f: ROLE_ORDER[f.role]):  # stable: key first, then file order
-            out.append(_field_def(spec, cls.name, by_name))
-    return out
+    return [d for cls in pack.classes for d in class_field_defs(pack.fields.get(cls.name, []), cls.name, by_name)]
 
 
 def pack_config(cfg: Config, pack_dir: str | Path, cabinet: str) -> Config:

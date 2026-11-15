@@ -33,6 +33,8 @@ ARABIC_NUMBER_SEPARATORS = str.maketrans({"\u066b": ".", "\u066c": ",", "\u060c"
 
 # (normalized value or None, extras such as the currency code).
 NormResult = tuple[str | None, dict[str, Any]]
+# An integral number: optional minus, plain digits or standard three-digit comma groups, optional ".0...".
+_INTEGRAL = re.compile(r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.0*)?")
 
 _MONTHS = {
     "jan": 1,
@@ -173,10 +175,14 @@ def _n_text_norm(value: str, ctx: NormCtx) -> NormResult:
 
 
 def _n_integer(value: str, ctx: NormCtx) -> NormResult:
-    """An integral number as an integer string ("12.00" to "12"); anything else as text."""
-    dec = _to_decimal(value.translate(ARABIC_NUMBER_SEPARATORS))
-    if dec is not None and dec == dec.to_integral_value():
-        return str(int(dec)), {}
+    """An integral number as an integer string ("12.00" to "12", "1,200" to "1200"); anything else as text.
+
+    A comma is a thousands separator only in groups of three ("12,345,678");
+    "12,50" and "1,5" stay text, as a decimal comma is not guessed.
+    """
+    text = _n_text_norm(value.translate(ARABIC_NUMBER_SEPARATORS), ctx)[0] or ""
+    if _INTEGRAL.fullmatch(text):
+        return str(int(Decimal(text.replace(",", "")))), {}
     return _n_text_norm(value, ctx)
 
 

@@ -84,15 +84,22 @@ mode matches as before.
 5. A multi-word label after another word ("Supplier Invoice No" for "Invoice
    No") is a phrase-only match. It is used only when no complete match exists.
    It scores 0.5, below the review workbook's 0.7 edge, so the field is
-   always HIGH review priority.
+   always HIGH review priority. "Tax Invoice No" for "Invoice No" and "Sales
+   Order No" for "Order No" are such matches.
+6. A label right after one of these words names another or an earlier
+   document, so it is refused: old, previous, prev, original, orig, ref,
+   reference, against, cancelled, canceled, reversed, related, parent, linked
+   (`OTHER_DOCUMENT_QUALIFIERS` in `metadata/layouts.py`). A dot after the word
+   counts ("Orig. PV No"). So "Old PV No" and "Against Invoice No" give nothing.
+   "Supplier's" and "Customer's" are not on the list.
 
 ### Value layouts
 
 | Layout | Example | Rule |
 |---|---|---|
 | Same line | `PV No: PV-14380` | The value pattern, searched on the rest of the label's line |
-| Next line | `PV No.` / `PV-14380` | Only when the rest of the label's line is empty. The value must start the next non-blank line. Identifiers, dates and numbers only, never free text |
-| Header row | `PV No \| Date \| Amount` / `PV-14380 \| 01-02-2026 \| 100.00` | Cells split on "\|", tabs or two or more spaces. The label is a whole cell with no ":". The value is the cell in the same column of the next non-blank row. Both rows must have the same cell count |
+| Next line | `PV No.` / `PV-14380` | Only when the label is alone on its line (nothing else but separators). The value must start the next non-blank line. Identifiers, dates and numbers only, never free text. A label that shares its line reaches the next line by the header row only |
+| Header row | `PV No \| Date \| Amount` / `PV-14380 \| 01-02-2026 \| 100.00` | A line with "\|" splits on "\|"; an empty cell and a trailing "\|" keep their positions. Else the line splits on tabs or two or more spaces. Else (single spaces, `Invoice No. PV No.` / `INV-1 PV-2`) it splits into the class's known field labels, left to right, and the next row into the same number of space-separated tokens; if either fails, nothing. The label is a whole cell with no ":". The value is the cell at the label's position in the next non-blank row, split the same way; that row must have a cell there. The cell must fit the value pattern, or the field gets nothing from this row (never another cell) |
 | Combined label | `Invoice No. & Date: INV-77 / 01-02-2026` | The label before the first ":" splits on "&", "/" or "and". The value splits on " / ", two or more spaces or ",", else on "/". Parts pair by position, only when the counts agree. A later part also matches with the first part's prefix, so "Date" here fills "Invoice Date" as well as "Date" |
 
 ### Digits and direction marks
@@ -118,8 +125,10 @@ separators. "00123456" stays "00123456" and "1,234" stays "1,234".
 A non-key `number` field is integer-like when its name holds year, month, qty,
 quantity, count or pages, or the phrase "no of" or "number of". This test comes
 before the identifier words, so "No of Pages" is integer-like. It uses the
-`integer` normaliser: "12" stays "12", "2026" stays "2026", and a non-integral
-value such as "2.5" is kept as text. Every other `number` field is an amount.
+`integer` normaliser: "12" stays "12", "2026.0" becomes "2026", "-3" stays
+"-3", and a non-integral value such as "2.5" or "12.50" is kept as trimmed
+text. A comma is a thousands separator only in groups of three ("1,200",
+"12,345,678"); "12,50" and "1,5" stay text, as a decimal comma is not guessed. Every other `number` field is an amount.
 
 Other fields take their value shape from their dtype:
 
