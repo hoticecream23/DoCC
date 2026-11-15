@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .errors import DoccError
 from .io import atomic_open
@@ -44,6 +44,7 @@ Role = Literal["key", "required", "optional"]
 Origin = Literal["document", "erp", "manual", "fixed"]
 LabelSource = Literal["folder", "filename", "none"]
 ExcludeReason = Literal["reference", "duplicate", "archive", "unsupported", "oversize"]
+DocRole = Literal["document", "attachment"]
 
 
 class ClientPackError(DoccError, ValueError):
@@ -70,6 +71,11 @@ class PackInfo(_Model):
     created_at: str
     share_root: str = ""
     cabinets: list[CabinetEntry] = Field(default_factory=list)
+    retired: dict[str, str] = Field(default_factory=dict)  # name -> slug of cabinets gone from the inventory
+
+    def slugs(self) -> dict[str, str]:
+        """Every slug this pack has given out: name -> slug, retired cabinets included."""
+        return {**self.retired, **{c.name: c.slug for c in self.cabinets}}
 
 
 class TaxonomyClass(_Model):
@@ -103,6 +109,13 @@ class ManifestRow(_Model):
     pages: int | None = None
     size_kb: int = Field(ge=0)
     member: str = ""  # index of a zip member in the archive, so members with the same name stay apart
+    role: DocRole = "document"  # an attachment sits beside the document its folder is named after
+    dup_group: str = ""  # same id on documents with the same name and size in different folders
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _blank_role(cls, v: Any) -> Any:
+        return v or "document"
 
     @field_validator("pages", mode="before")
     @classmethod
@@ -115,6 +128,7 @@ class ExcludedRow(_Model):
 
     rel_path: str
     reason: ExcludeReason
+    detail: str = ""  # for a duplicate: whether it is loose or a zip member, and the copy kept
 
 
 class ClientPack(_Model):
@@ -161,21 +175,25 @@ def slugify(name: str) -> str:
     return "_".join(p for p in slug.split("_") if p) or "cabinet"
 
 
-def assign_slugs(names: list[str]) -> dict[str, str]:
-    """A unique slug per cabinet name.
+def assign_slugs(names: list[str], recorded: dict[str, str] | None = None) -> dict[str, str]:
+    """A unique slug per cabinet name, keeping every slug an earlier build recorded.
 
-    Names are taken in sorted order. A slug already taken gets the first free
-    suffix "_2", "_3" and so on, so "Acme-Ltd" after "Acme Ltd" is "acme_ltd_2".
+    A name in ``recorded`` keeps its slug, and no new name takes a recorded
+    slug. New names are taken in sorted order; a slug already taken gets the
+    first free suffix "_2", "_3" and so on, so "Acme-Ltd" after "Acme Ltd" is
+    "acme_ltd_2".
 
     Args:
         names: Cabinet names.
+        recorded: Name -> slug from the pack.yaml of an earlier build.
 
     Returns:
         Name -> slug.
     """
-    taken: set[str] = set()
-    slugs = {}
-    for name in sorted(set(names)):
+    recorded = recorded or {}
+    slugs = {name: recorded[name] for name in names if name in recorded}
+    taken = set(recorded.values())
+    for name in sorted(set(names) - set(slugs)):
         base = slug = slugify(name)
         n = 1
         while slug in taken:
@@ -274,6 +292,27 @@ def read_rows(path: Path) -> list[dict[str, str]]:
             return list(csv.DictReader(fh))
     except OSError as e:
         raise ClientPackError(f"cannot read {path.name}: {type(e).__name__}") from e
+
+
+def read_pack_info(pack_dir: Path) -> PackInfo | None:
+    """pack.yaml of a pack, or None when the pack has none yet.
+
+    Args:
+        pack_dir: The pack directory.
+
+    Returns:
+        The parsed pack.yaml.
+
+    Raises:
+        ClientPackError: pack.yaml is not valid.
+    """
+    path = pack_dir / PACK_FILE
+    if not path.exists():
+        return None
+    try:
+        return PackInfo.model_validate(read_yaml(path) or {})
+    except ValidationError as e:
+        raise ClientPackError(f"{PACK_FILE} is not valid") from e
 
 
 def load_pack(pack_dir: str | Path, cabinet: str) -> ClientPack:

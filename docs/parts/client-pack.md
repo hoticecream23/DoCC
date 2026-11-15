@@ -19,22 +19,28 @@ names only (Acme, Borealis, Corvid, Delta).
 The Pydantic models in `baseline/clientpack.py` define the format.
 
 ```
-<pack>/pack.yaml                       version, created_at, share_root, cabinets: [slug, name, documents, types_with_samples]
+<pack>/pack.yaml                       version, created_at, share_root, cabinets: [slug, name, documents, types_with_samples],
+                                       retired: {name -> slug} of cabinets gone from the inventory
 <pack>/label_map.yaml                  per cabinet: {overrides: {label -> type}, auto: {label -> type}}
 <pack>/field_overrides.yaml            optional, hand-written: {cabinet: {type: {field: {origin, role}}}}
-<pack>/REPORT.md                       exclusions, ambiguous and unmapped labels, duplicates, oversize files,
-                                       odd field types, merged and renamed schema types, workbooks under no cabinet
+<pack>/REPORT.md                       exclusions, ambiguous and unmapped labels, dropped aliases, skipped wrappers,
+                                       duplicates dropped, possible duplicates, oversize files, odd field types,
+                                       field definitions that disagree, unknown field_overrides.yaml entries,
+                                       merged and renamed schema types, workbooks under no cabinet
 <pack>/<slug>/taxonomy.yaml            classes: [{name, aliases, has_samples}]
 <pack>/<slug>/fields.yaml              {type: [{name, dtype, date_format, role, origin}]}
-<pack>/<slug>/manifest.csv             doc_id, rel_path, in_zip, case_id, label, label_source, key_gold, pages, size_kb, member
-<pack>/<slug>/excluded.csv             rel_path, reason
+<pack>/<slug>/manifest.csv             doc_id, rel_path, in_zip, case_id, label, label_source, key_gold, pages, size_kb, member,
+                                       role, dup_group
+<pack>/<slug>/excluded.csv             rel_path, reason, detail
 ```
 
 - The slug is the cabinet name in lower case, with every other character as
-  `_`. When two names give the same slug ("Acme Insurance", "Acme-Insurance"),
-  the cabinets are taken in name order and the later one gets `_2`, `_3` and
-  so on. pack.yaml records each slug. Commands take the name or the slug; an
-  exact name wins.
+  `_`. A slug that pack.yaml already records (under `cabinets` or `retired`)
+  is kept for that name forever, and no other name takes it, so a pack or
+  work folder never changes owner. New names are taken in name order; when a
+  slug is taken ("Acme-Insurance" built first, "Acme Insurance" added later),
+  the new name gets `_2`, `_3` and so on. Commands take the name or the slug;
+  an exact name wins.
 - `doc_id` is the first 16 hex characters of SHA-256 over the cabinet name and
   the path. It does not change when the file bytes change. When one zip holds
   two entries with the same name, the later entry hashes `<path>#<member>`.
@@ -45,9 +51,17 @@ The Pydantic models in `baseline/clientpack.py` define the format.
   same-named entries apart. It is empty for a loose file.
 - `label` is the schema type name, or empty. `label_source` is `folder`,
   `filename` or `none`.
+- `role` is `document` or `attachment` (see Case bundles). `dup_group` is a
+  short id shared by kept documents with the same name and size in different
+  folders, or empty. A manifest written before these columns existed loads
+  with `document` and empty.
+- `detail` in excluded.csv, for a duplicate, says whether the dropped file is
+  loose or a zip member (and of which zip), and names the copy kept the same
+  way.
 - `taxonomy.yaml` lists the types that have samples plus an `other` class.
   `--all-types` lists every schema type of the cabinet. `aliases` are the
-  folder labels that map to the type.
+  folder labels that map to the type. An alias equal to another class's name
+  is dropped and listed in REPORT.md.
 - `fields.yaml` covers the types in `taxonomy.yaml`. `dtype` is
   `text|date|number|selection`; `role` is `key|required|optional`; `origin` is
   `document|erp|manual|fixed`.
@@ -67,18 +81,22 @@ The Pydantic models in `baseline/clientpack.py` define the format.
    gives Borealis its types. A workbook under no cabinet name is skipped and
    listed in REPORT.md. Type names that differ only in case, spacing or
    punctuation ("PAYMENT VOUCHER", "Payment Voucher ") are one type: the first
-   spelling is its name, and the fields are joined by normalised field name,
-   the first definition winning. REPORT.md lists each merge. A type named
+   spelling is its name, and the fields are joined by normalised field name.
+   When two definitions of a field disagree, the role is the stronger one
+   (key, then required, then optional), a filled data type beats a blank one,
+   and a date format beats none; otherwise the first wins. REPORT.md lists
+   each merge and each disagreement (type, field, both values). A type named
    "other" in any case is renamed `Other (client)`, because `other` is the
    reserved class; REPORT.md lists it.
 3. **Labels.** A nested folder with the cabinet's own name ("Acme/Acme/...")
    is skipped. Wrapper folders are skipped next. A wrapper holds subfolders
-   and no documents of its own, its name matches no schema type and no
-   override, and one of these holds: its name is a common wrapper name
-   (samples, sample, documents, docs, exporteddocuments); one of its child
-   folders matches a type; or, in a cabinet with no schema, it is the only
-   folder of a parent without documents and its child folders hold no
-   documents of their own. The first folder after that is the label, so
+   and no documents of its own, and its name matches no schema type and no
+   override. With a schema, it is a wrapper only when skipping it yields a
+   child folder that matches a type (directly, or through another wrapper),
+   whatever its name; so a "Samples" folder of case subfolders is a label.
+   With no schema, only the common wrapper names (samples, sample, documents,
+   docs, exporteddocuments) are skipped. REPORT.md lists every skipped
+   wrapper. The first folder after that is the label, so
    "Acme/Acme/Samples/Purchase Invoice/100/100.pdf" has the label "Purchase
    Invoice". A file with no folder uses its stem, without copy suffixes, as
    the label (`label_source: filename`). Each label resolves in this order: an
@@ -92,21 +110,27 @@ The Pydantic models in `baseline/clientpack.py` define the format.
    Invoice - Yellow"). 75% is above two of three words on purpose, so
    "Payment Voucher" does not become "Payment Voucher Transfer"; that label
    stays unmapped and REPORT.md names the candidate.
-4. **Case bundles.** Decided before duplicates are dropped. A label folder
-   with no documents of its own holds cases when more than half of its child
-   folders hold two or more documents, or when a document's stem (without
-   copy suffixes) differs from its child folder's name. So
-   "Invoice/11344 B/11344 B 1.pdf" is a case even beside a one-document case,
-   and "Purchase Invoice/100/100.pdf" in every child folder is not: it is one
-   document per number folder. `case_id` is the child folder name. The type
-   labels the case, not each file.
+4. **Case bundles.** Decided before duplicates are dropped, for each child
+   folder of a label folder that has no documents of its own. A child folder
+   is a single-document folder when it holds one document, or when exactly
+   one document's stem (without copy markers) equals the folder name: that
+   one is the document, with `key_gold`, and the others are attachments
+   (`role: attachment`, no `key_gold`, not scored). A child folder with two or
+   more documents and no stem equal to its name (or several) is a case;
+   `case_id` is the child folder name and the type labels the case, not each
+   file. One type folder may mix both: "Inv/3/3.pdf" plus "Inv/3/3-annex.pdf"
+   is one document and an attachment, and "Inv/C-1/a.pdf" plus
+   "Inv/C-1/b.pdf" beside it is a case.
 5. **Duplicates.** Within one cabinet, two documents are copies only when
    their path below the cabinet (after the nested folder with the cabinet's
    own name is skipped) and their size_kb are equal, or when one is a zip
    member and the other is the same member reached through a copy of that zip
    inside another zip ("Inv/new/old/x.pdf" in new.zip copies "Inv/old/x.pdf"
    in old.zip). So "Inv/c1/Invoice.pdf" and "Inv/c2/Invoice.pdf" are both
-   kept. Two entries of one zip with the same name are both kept. Across
+   kept; kept documents with the same name and size in different folders
+   share a `dup_group` and REPORT.md lists them under "Possible duplicates
+   (same name and size, different folder)". When inventory rows carry a
+   `sha256` column, that content hash decides the groups instead. Two entries of one zip with the same name are both kept. Across
    cabinets, a document whose first folder is another cabinet's name
    ("Acme/Borealis/...") is a copy when that cabinet holds the same path below
    its own name with the same size_kb. The copy kept is the one in the cabinet
@@ -120,10 +144,14 @@ The Pydantic models in `baseline/clientpack.py` define the format.
    listed in REPORT.md. An old flat file (label -> type) is read once: an
    entry that differs from what matching gives now becomes an override, and
    the rest are dropped.
-7. **key_gold.** Only for documents labelled by a folder, outside a case,
-   whose type has a key field: the file stem without copy suffixes (" - Copy",
-   " - Copy (2)", " copy", " (1)") and without a leading `<digits>_`, kept only
-   if it holds a digit. "6390_C111322.pdf" gives "C111322"; "Purchase Daily
+7. **key_gold.** Only for documents (not attachments) labelled by a folder,
+   outside a case, whose type has a key field: the file stem without a
+   leading "Copy of ", without a trailing copy marker, and without a leading
+   `<digits>_`, kept only if it holds a digit. A copy marker is " (n)" with n
+   of one or two digits after a space, or " - Copy" / " copy" with an
+   optional " (n)". Brackets with no space before them, or with more digits,
+   stay: "INV(2024)" and "Form 16 (2023)" are kept whole. "6390_C111322.pdf"
+   gives "C111322"; "Copy of PV-14380.pdf" gives "PV-14380"; "Purchase Daily
    Invoice.tif" gives nothing; a root file "Form 16.tif" labelled by its name
    gives nothing.
 8. **Fields.** `dtype` is date when the data type starts with the word
@@ -145,7 +173,9 @@ The Pydantic models in `baseline/clientpack.py` define the format.
    `{cabinet: {type: {field: {origin: ..., role: ...}}}}`. Type and field
    names match after normalising. Its values replace the rules' values in
    fields.yaml. Build reads it and never writes it. A value outside the
-   allowed set stops the build with an error.
+   allowed set stops the build with an error. A cabinet, type or field it
+   names that the build does not have is ignored, listed in REPORT.md, and
+   logged once as a warning.
 
 ## Commands
 
@@ -184,9 +214,10 @@ Results join to the manifest by file stem, which is the `doc_id`.
   matched the same way, so `pv_no` matches "PV No". Contained: `key_gold`
   appears inside any extracted value. This looser rate shows values the
   pipeline found but filed under another field.
-- **Case bundles.** Scored per case, both ways. Majority: the most common
-  non-empty prediction among the case's documents is the case type. Any-hit:
-  at least one document is.
+- **Case bundles.** Scored per case three ways: all files right, any file
+  right, and majority right (a tie is not right). docs/parts/client-eval.md
+  defines them.
+- **Attachments** are counted apart and not scored.
 - **Counts.** Missing (in the manifest, not in the results), failed (the
   record has diagnostics errors) and abstained.
 
@@ -204,8 +235,11 @@ The command materializes the cabinet into `<work>/<slug>/`. It then runs the
 cascade in pack mode and writes `results.jsonl` and `client_eval.md` into the
 same folder. The cascade runs the baseline for every document, so there is
 one run. With `--no-cascade`, or when no model is set (`vlm.model` or
-`DOCC_VLM_MODEL`), the baseline runs alone and the log says so. A re-run
-resumes: delete `results.jsonl` to run again from the start.
+`DOCC_VLM_MODEL`), the baseline runs alone and the log says so. A run without
+`--resume` first deletes `results.jsonl` and moves the old `client_eval.md`
+to `client_eval.md.previous`. The new report is written only after scoring
+succeeds. If a stage fails (materialize, run or score), `client_eval.md` is a
+short stub naming the stage and the time, and the error is raised.
 
 **Pack mode.** `--client-pack DIR --cabinet NAME` on `baseline run` and
 `cascade run`, or `client_pack: {dir, cabinet}` in pipeline.yaml, turns it on.

@@ -22,11 +22,19 @@ in the report, its denominator, and what counts as wrong.
 | Produced a result with errors | The line exists and its `diagnostics.errors` is not empty. | Scored as it is. A right class still counts as right. Listed by name. |
 | Abstained | The line exists with no class or the label `unknown`. | Wrong. |
 | Unlabelled | The manifest row has no gold label. | Not scored. Counted only. |
+| Attachment | The row has `role: attachment`: a file beside the document its folder is named after. | Not a document: in no denominator or outcome count. Counted under "Attachments". |
 | Duplicated | A stem is on more than one line. | The last line is used. The count of such stems is reported. |
 
 `client-run` starts from an empty results file, so stale lines from an earlier
-run are never scored. `--resume` keeps the earlier lines and processes only new
-documents.
+run are never scored, and moves the old report to `client_eval.md.previous`.
+`--resume` keeps the earlier lines and processes only new documents. The
+report is written only after scoring succeeds; a failed run leaves a stub that
+names the failed stage and the time.
+
+**Possible duplicates.** The overview gives the number of labelled documents
+whose `dup_group` is set: the same name and size as a file in another folder.
+They are scored as usual; the count shows how much the scores may lean on
+copies.
 
 ## Classification (single documents)
 
@@ -34,7 +42,8 @@ documents.
   the manifest. Documents in a case are scored as cases, not here.
 - **Right** means the predicted class equals the gold class, or one of the gold
   class's aliases from `taxonomy.yaml`. The compare ignores case and collapses
-  whitespace.
+  whitespace. A prediction that equals a class's own name always means that
+  class, even when another class lists the same text as an alias.
 - No result and abstained are wrong. The headline reads
   `Accuracy 2/4 (50.0%) — 2 documents produced no result`.
 - **Per-class table**: one row per class that is gold or predicted, plus
@@ -71,11 +80,15 @@ every test.
 
 - A case's gold is the majority label of its files. Cases whose files carry
   different labels are listed as "mixed".
-- **Majority**: the most common class prediction across the case's files
-  equals the case gold. No result and abstained are not votes. A case with no
-  vote (every file missing or abstained) is wrong.
-- **Any-hit**: at least one file is predicted as the case gold.
-- Denominator for both: every case with a label.
+- **All files right**: every file is predicted as the case gold. A file with
+  no result or an abstention makes the case wrong.
+- **Any file right**: at least one file is predicted as the case gold.
+- **Majority right**: one class is predicted more often than any other across
+  the case's files, and it is the case gold. No result and abstained are not
+  votes. A tie for the top is not right, so the answer never depends on the
+  manifest order. A case with no vote (every file missing or abstained) is
+  wrong.
+- Denominator for all three: every case with a label.
 
 ## Percentages
 
@@ -115,5 +128,6 @@ Cabinet "Northwind": 10 manifest documents. 1 unlabelled. 2 in one case.
 - Per-class rows: Invoice (gold 3, predicted 2), Receipt (gold 3, predicted 2),
   Memo (1, 1), `(abstained)` (0, 1), `(no result)` (0, 1). Both columns sum
   to 7.
-- The case: files predicted Claim, Claim, gold Claim. Majority 1/1, any-hit
-  1/1.
+- The case: files predicted Claim, Claim, gold Claim. All files right 1/1,
+  any file right 1/1, majority right 1/1. Had they been Claim and Invoice,
+  only any file right would hold: the vote is a tie.

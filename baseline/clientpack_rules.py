@@ -19,12 +19,13 @@ SAMPLE_EXT = frozenset({".pdf", ".tif", ".tiff"})
 IMAGE_EXT = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp"})
 INDEX_FIELD_MARK = "index field"  # "opex- Index fields.jpg" is a screenshot of the schema
 KEY_PREFIX = re.compile(r"^\d+_")  # "6390_C111322" -> "C111322"
-# Windows and macOS copy suffixes: "x - Copy", "x - Copy (2)", "x copy", "x copy 2", "x (1)".
-COPY_SUFFIX = re.compile(r"(\s*-\s*copy(\s*\(\d+\))?|\s+copy(\s+\d+)?|\s*\(\d+\))$", re.IGNORECASE)
+# Copy markers: "x - Copy", "x - Copy (2)", "x copy", "x copy (2)", "x (1)". A space must precede them and
+# the number has one or two digits, so "INV(2024)" and "Form 16 (2023)" keep their brackets.
+COPY_SUFFIX = re.compile(r"(?:\s+-\s+copy|\s+copy)(?:\s+\(\d{1,2}\))?$|\s+\(\d{1,2}\)$", re.IGNORECASE)
+COPY_PREFIX = re.compile(r"^copy of\s+", re.IGNORECASE)  # "Copy of PV-14380"
 # "(DD/MM/YYYY)", "(dd\MM\YYYY)" once backslashes are slashes, "(DD/MM/YYYY HH:MM)".
 DATE_FORMAT = re.compile(r"\(\s*([DMY][DMY/\-. ]*[DMY])(?:\s+(H[HMS:.]*))?\s*\)", re.IGNORECASE)
 DATE_WORD = re.compile(r"^\s*date\b", re.IGNORECASE)  # "Date(...)" is a date; "Updated" is not
-MIN_CASE_DOCS = 2  # a child folder with this many documents looks like a case bundle
 # A prefix or word-subset match must cover more than two of a type's three words,
 # so "Payment Voucher" does not become "Payment Voucher Transfer".
 MIN_LABEL_COVERAGE = 0.75
@@ -169,15 +170,15 @@ def match_label(label: str, types: Iterable[str]) -> LabelMatch:
 
 
 def clean_stem(name: str) -> str:
-    """A file stem without copy suffixes.
+    """A file stem without a leading "Copy of " and trailing copy markers.
 
     Args:
         name: File name, with or without extension.
 
     Returns:
-        "PV-1 - Copy (2).pdf" -> "PV-1"; "Scan (1).tif" -> "Scan".
+        "PV-1 - Copy (2).pdf" -> "PV-1"; "Scan (1).tif" -> "Scan"; "INV(2024).pdf" unchanged.
     """
-    stem = PurePosixPath(name).stem.strip()
+    stem = COPY_PREFIX.sub("", PurePosixPath(name).stem.strip())
     while (cut := COPY_SUFFIX.sub("", stem).strip()) and cut != stem:
         stem = cut
     return stem
@@ -307,10 +308,10 @@ def wrapper_folders(parts: Iterable[Folder], matches: Callable[[str], bool], has
     """Folders that only wrap the type folders, such as "Samples".
 
     A wrapper holds subfolders and no documents of its own, and its name
-    matches no schema type. It is a wrapper when its name is in WRAPPER_NAMES,
-    or one of its children matches a type. In a cabinet with no schema, it is
-    also a wrapper when it is the only folder of a parent without documents
-    and none of its children hold documents of their own.
+    matches no schema type. With a schema, it is a wrapper only when skipping
+    it yields a child that matches a type, directly or through another
+    wrapper; its name does not matter. With no schema, only a folder named in
+    WRAPPER_NAMES is a wrapper.
 
     Args:
         parts: For each document, its folder parts below the cabinet.
@@ -321,17 +322,18 @@ def wrapper_folders(parts: Iterable[Folder], matches: Callable[[str], bool], has
         The folders that are wrappers.
     """
     children, holds = folder_tree(parts)
+    seen: dict[Folder, bool] = {}
 
     def wrapper(prefix: Folder) -> bool:
-        name, kids = prefix[-1], children[prefix]
-        if prefix in holds or matches(name):
-            return False
-        if norm(name) in WRAPPER_NAMES:
-            return True
-        if has_schema:
-            return any(matches(k) for k in kids)
-        parent = prefix[:-1]
-        return children[parent] == {name} and parent not in holds and not any(prefix + (k,) in holds for k in kids)
+        if prefix not in seen:
+            name, kids = prefix[-1], children[prefix]
+            if prefix in holds or not kids or matches(name):
+                seen[prefix] = False
+            elif not has_schema:
+                seen[prefix] = norm(name) in WRAPPER_NAMES
+            else:
+                seen[prefix] = any(matches(k) or wrapper(prefix + (k,)) for k in kids)
+        return seen[prefix]
 
     return {prefix for prefix in list(children) if prefix and wrapper(prefix)}
 
@@ -352,23 +354,27 @@ def label_depth(parts: Folder, wrappers: set[Folder]) -> int:
     return depth
 
 
-def holds_cases(children: dict[str, list[str]]) -> bool:
-    """True when the child folders of a label folder are case bundles.
+def child_roles(child: str, stems: list[str]) -> list[str] | None:
+    """Role of each document below one child folder of a label folder, or None for a case.
 
-    They are cases when more than half of them hold MIN_CASE_DOCS or more
-    documents, or when a document's stem differs from its folder's name. So
-    "100/100.pdf" in every child is one document per number folder, not a case.
+    A folder with one document holds that document. A folder where exactly one
+    stem equals the folder name holds that document, and the others are its
+    attachments. Any other folder is a case bundle. So "100/100.pdf" plus
+    "100/100-annex.pdf" is one document with an attachment, not a case.
 
     Args:
-        children: Child folder name -> the clean stems of the documents below it.
+        child: The child folder name.
+        stems: The clean stems of the documents below it, in order.
 
     Returns:
-        True for case bundles.
+        "document" or "attachment" per stem; None when the folder is a case.
     """
-    multi = sum(len(stems) >= MIN_CASE_DOCS for stems in children.values())
-    if multi * 2 > len(children):
-        return True
-    return any(norm(stem) != norm(child) for child, stems in children.items() for stem in stems)
+    if len(stems) == 1:
+        return ["document"]
+    named = [norm(stem) == norm(child) for stem in stems]
+    if sum(named) != 1:
+        return None
+    return ["document" if n else "attachment" for n in named]
 
 
 def dedup_rank(foreign: bool, folder: str, in_zip: str, rel_path: str) -> tuple[bool, bool, int, str]:

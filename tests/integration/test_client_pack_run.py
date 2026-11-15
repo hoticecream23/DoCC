@@ -182,3 +182,27 @@ def test_cascade_cli_run_takes_a_client_pack(pack, pack_run, tmp_path):
         assert main(argv) == 0
     labels = {json.loads(line)["classification"]["label"] for line in out.read_text(encoding="utf-8").splitlines()}
     assert labels == {"Buying Order"}
+
+
+def _fail(*_args, **_kwargs):
+    raise RuntimeError("scoring broke")
+
+
+def test_a_failed_run_leaves_a_stub_naming_the_stage(pack, corpus, tmp_path, monkeypatch):
+    monkeypatch.delenv("DOCC_VLM_MODEL", raising=False)
+    monkeypatch.setattr("baseline.clientrun.score_cabinet", _fail)
+    with pytest.raises(RuntimeError):
+        client_run(pack, make_pack.CABINET, corpus, tmp_path / "work", config_dir=str(CONFIG))
+    report = (tmp_path / "work" / make_pack.SLUG / REPORT_FILE).read_text(encoding="utf-8")
+    assert "failed at stage `score`" in report
+
+
+def test_a_new_run_moves_the_old_report_aside(pack, corpus, tmp_path, monkeypatch):
+    monkeypatch.delenv("DOCC_VLM_MODEL", raising=False)
+    old = tmp_path / "work" / make_pack.SLUG / REPORT_FILE
+    old.parent.mkdir(parents=True)
+    old.write_text("old report", encoding="utf-8")
+    monkeypatch.setattr("baseline.clientrun.score_cabinet", _fail)
+    with pytest.raises(RuntimeError):
+        client_run(pack, make_pack.CABINET, corpus, tmp_path / "work", config_dir=str(CONFIG))
+    assert old.with_name(f"{REPORT_FILE}.previous").read_text(encoding="utf-8") == "old report"

@@ -1,24 +1,24 @@
 """Build a client pack from the inventory and schema CSVs of one client share.
 
-Over 400 lines on purpose: screening, layout, dedup, label_map and the report
-all act on the same in-progress ``_Cabinet``; splitting them would only move
-that state between modules. ``build_pack`` screens out references, archives
-and oversize files, finds each document's label folder and case, drops
-duplicate copies, maps labels to schema types and writes the files
-``clientpack`` describes. label_map.yaml overrides and field_overrides.yaml
-are read first, so hand edits survive a re-run.
+Over 400 lines on purpose: screening, layout, dedup and label_map all act on
+the same in-progress ``_Cabinet``; splitting them would only move that state
+between modules. Field specs live in ``clientpack_fields`` and REPORT.md in
+``clientpack_report``. ``build_pack`` screens out references, archives and
+oversize files, finds each document's label folder and case, drops duplicate
+copies, maps labels to schema types and writes the files ``clientpack``
+describes. label_map.yaml, field_overrides.yaml and the slugs in pack.yaml
+are read first, so hand edits and folder names survive a re-run.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
-
-from pydantic import ValidationError
 
 from .clientpack import (
     EXCLUDED_FILE,
@@ -40,28 +40,27 @@ from .clientpack import (
     TaxonomyClass,
     assign_slugs,
     make_doc_id,
+    read_pack_info,
     read_rows,
     read_yaml,
     write_rows,
     write_yaml,
 )
+from .clientpack_fields import FieldNotes, RawOverrides, field_specs, read_field_overrides, unknown_overrides
+from .clientpack_report import AUTO, OTHER_RENAMED, OVERRIDES, render_report
 from .clientpack_rules import (
     IMAGE_EXT,
     SAMPLE_EXT,
     Folder,
+    child_roles,
     clean_stem,
     dedup_rank,
-    field_origin,
     folder_tree,
-    holds_cases,
     is_reference_image,
     key_gold,
     label_depth,
     match_label,
     norm,
-    parse_dtype,
-    parse_role,
-    parse_source,
     wrapper_folders,
 )
 from .io import atomic_write_text
@@ -71,22 +70,22 @@ log = get_logger(__name__)
 
 DEFAULT_MAX_SIZE_MB = 50
 KB_PER_MB = 1024
-UNRECOGNISED_ROLE = "optional"
-OTHER_RENAMED = "Other (client)"  # a schema type called "other" would collide with the reserved class
-OVERRIDES, AUTO = "overrides", "auto"  # the two sections of label_map.yaml per cabinet
+HASH_COLUMN = "sha256"  # an inventory column with the file's content hash, when an inventory carries one
+DUP_GROUP_LEN = 8  # hex characters of a possible-duplicate group id
+MIN_DUP_PATHS = 2  # a possible-duplicate group spans at least two paths
 
 Row = dict[str, str]
 DedupKey = tuple[str, str, str]  # (cabinet, path below it, size_kb)
-FieldOverrides = dict[str, dict[str, dict[str, Any]]]  # norm(type) -> norm(field) -> FieldSpec values
 
 
 @dataclass(frozen=True)
 class _Place:
-    """Where a document sits: its label, where the label came from, and its case."""
+    """Where a document sits: its label, where the label came from, its case, and document or attachment."""
 
     label: str
     source: str
     case_id: str
+    role: str = "document"
 
 
 @dataclass
@@ -108,16 +107,21 @@ class _Cabinet:
     rows: list[Row]
     schema: _Schema
     overrides: dict[str, str]
-    field_overrides: FieldOverrides = field(default_factory=dict)
+    field_overrides: RawOverrides = field(default_factory=dict)
     docs: list[Row] = field(default_factory=list)
     place: dict[int, _Place] = field(default_factory=dict)
     excluded: list[ExcludedRow] = field(default_factory=list)
-    duplicates: list[tuple[str, str]] = field(default_factory=list)
+    duplicates: list[tuple[str, str]] = field(default_factory=list)  # (dropped, kept), each with loose or zip
+    dup_group: dict[int, str] = field(default_factory=dict)  # id(doc) -> possible-duplicate group id
+    dup_groups: list[tuple[str, list[str]]] = field(default_factory=list)
+    wrappers: list[str] = field(default_factory=list)
     mapping: dict[str, str] = field(default_factory=dict)
     unmapped: list[tuple[str, str]] = field(default_factory=list)
     ambiguous: dict[str, tuple[str, ...]] = field(default_factory=dict)
     foreign: list[tuple[str, str]] = field(default_factory=list)
-    bad_roles: list[tuple[str, str, str]] = field(default_factory=list)
+    dropped_aliases: list[tuple[str, str]] = field(default_factory=list)  # (alias, class it was mapped to)
+    field_notes: FieldNotes = field(default_factory=FieldNotes)
+    unknown_overrides: list[str] = field(default_factory=list)
 
     @property
     def types(self) -> dict[str, list[Row]]:
@@ -176,24 +180,31 @@ def _matcher(cab: _Cabinet) -> Callable[[str], bool]:
 
 
 def _layout(cab: _Cabinet) -> None:
-    """Label folder and case of every document, decided before dedup so copies do not change them."""
+    """Label folder, case and role of every document, decided before dedup so copies do not change them.
+
+    Each child folder of a label folder is judged on its own by ``child_roles``.
+    """
     parts = {id(d): _parts(d, cab.name) for d in cab.docs}
     wrappers = wrapper_folders(parts.values(), _matcher(cab), bool(cab.types))
     _, holds = folder_tree(parts.values())
     depth = {k: label_depth(p, wrappers) for k, p in parts.items()}
-    kids: dict[Folder, dict[str, list[str]]] = {}
+    cab.wrappers = sorted({"/".join(parts[k][:n]) for k, i in depth.items() for n in range(1, i + 1)})
+    children: dict[tuple[Folder, str], list[Row]] = defaultdict(list)
     for d in cab.docs:
         p, i = parts[id(d)], depth[id(d)]
-        if len(p) > i + 1:
-            kids.setdefault(p[: i + 1], {}).setdefault(p[i + 1], []).append(clean_stem(d["name"]))
-    cases = {f for f, children in kids.items() if f not in holds and holds_cases(children)}
+        if len(p) > i + 1 and p[: i + 1] not in holds:
+            children[(p[: i + 1], p[i + 1])].append(d)
+    in_child: dict[int, tuple[str, str]] = {}  # id(doc) -> (case_id, role)
+    for (_, child), docs in children.items():
+        roles = child_roles(child, [clean_stem(d["name"]) for d in docs])
+        for d, role in zip(docs, roles or ["document"] * len(docs), strict=True):
+            in_child[id(d)] = ("" if roles else child, role)
     for d in cab.docs:
         p, i = parts[id(d)], depth[id(d)]
         if not p:
             cab.place[id(d)] = _Place(clean_stem(d["name"]), "filename", "")
             continue
-        case_id = p[i + 1] if p[: i + 1] in cases and len(p) > i + 1 else ""
-        cab.place[id(d)] = _Place(p[i], "folder", case_id)
+        cab.place[id(d)] = _Place(p[i], "folder", *in_child.get(id(d), ("", "document")))
 
 
 def _zip_stem_at(row: Row, parts: Folder, archives: set[tuple[str, str]]) -> int:
@@ -270,14 +281,36 @@ def _dedup(cabinets: list[_Cabinet]) -> None:
         group.sort(
             key=lambda i: dedup_rank(keys[i][2], rows[i][1]["folder"], rows[i][1]["in_zip"], _rel_path(rows[i][1]))
         )
-        kept = _rel_path(rows[group[0]][1])
+        kept = _describe(rows[group[0]][1])
         for i in group[1:]:
             cab, row = rows[i]
-            cab.excluded.append(ExcludedRow(rel_path=_rel_path(row), reason="duplicate"))
-            cab.duplicates.append((_rel_path(row), kept))
+            detail = f"{_describe(row)}; kept {kept}"
+            cab.excluded.append(ExcludedRow(rel_path=_rel_path(row), reason="duplicate", detail=detail))
+            cab.duplicates.append((_describe(row), kept))
             dropped.add(id(row))
     for cab in cabinets:
         cab.docs = [r for r in cab.docs if id(r) not in dropped]
+
+
+def _describe(row: Row) -> str:
+    """A file's path, and whether it is loose or which zip it is a member of."""
+    where = f"zip member `{row['name']}` of `{row['in_zip']}`" if row["in_zip"] else "loose file"
+    return f"`{_rel_path(row)}` ({where})"
+
+
+def _possible_duplicates(cab: _Cabinet) -> None:
+    """Group kept documents with the same name and size in different folders; a content hash wins when present."""
+    by_key: dict[str, list[Row]] = defaultdict(list)
+    for d in cab.docs:
+        by_key[d.get(HASH_COLUMN) or f"{d['name']}\n{d['size_kb']}"].append(d)
+    for key, docs in sorted(by_key.items()):
+        paths = sorted({_rel_path(d) for d in docs})
+        if len(paths) < MIN_DUP_PATHS:
+            continue
+        group = hashlib.sha256(key.encode()).hexdigest()[:DUP_GROUP_LEN]
+        cab.dup_groups.append((group, paths))
+        for d in docs:
+            cab.dup_group[id(d)] = group
 
 
 def _map_labels(cab: _Cabinet) -> None:
@@ -295,26 +328,6 @@ def _map_labels(cab: _Cabinet) -> None:
             elif not target:
                 cab.unmapped.append((label, found.loose))
         cab.mapping[label] = target
-
-
-def _field_specs(cab: _Cabinet, type_name: str) -> list[FieldSpec]:
-    specs: dict[str, FieldSpec] = {}
-    overrides = cab.field_overrides.get(norm(type_name), {})
-    for row in cab.types.get(type_name, []):
-        name = row["index_field"]
-        role = parse_role(row["field_type"])
-        if role is None:
-            cab.bad_roles.append((type_name, name, row["field_type"]))
-        role = role or UNRECOGNISED_ROLE
-        dtype, date_format = parse_dtype(row["data_type"])
-        origin = field_origin(name, row["field_type"], parse_source(row["source"]), role)
-        values = {"name": name, "dtype": dtype, "date_format": date_format, "role": role, "origin": origin}
-        try:
-            spec = FieldSpec.model_validate({**values, **overrides.get(norm(name), {})})
-        except ValidationError as e:
-            raise ClientPackError(f"bad {FIELD_OVERRIDES_FILE} entry for {type_name} / {name}") from e
-        specs.setdefault(norm(name), spec)
-    return list(specs.values())
 
 
 def _doc_ids(cab: _Cabinet) -> dict[int, str]:
@@ -340,7 +353,7 @@ def _manifest(cab: _Cabinet, fields: dict[str, list[FieldSpec]]) -> list[Manifes
     for d in cab.docs:
         place = cab.place[id(d)]
         target = cab.mapping.get(place.label, "")
-        with_key = target in keyed and place.source == "folder" and not place.case_id
+        with_key = target in keyed and place.source == "folder" and not place.case_id and place.role == "document"
         row = ManifestRow(
             doc_id=ids[id(d)],
             rel_path=_rel_path(d),
@@ -352,6 +365,8 @@ def _manifest(cab: _Cabinet, fields: dict[str, list[FieldSpec]]) -> list[Manifes
             pages=int(d["pages"]) if d["pages"].isdigit() else None,
             size_kb=int(d["size_kb"] or 0),
             member=d.get("member") or "",
+            role=place.role,  # type: ignore[arg-type]
+            dup_group=cab.dup_group.get(id(d), ""),
         )
         rows.append(row)
     return sorted(rows, key=lambda r: (r.rel_path, r.doc_id))
@@ -361,8 +376,11 @@ def _taxonomy(cab: _Cabinet, manifest: list[ManifestRow], all_types: bool) -> li
     with_samples = {m.label for m in manifest if m.label}
     names = sorted((set(cab.types) | set(cab.mapping.values())) - {""}) if all_types else sorted(with_samples)
     classes = []
+    taken = {norm(n) for n in names} | {OTHER_CLASS}
     for name in names:
-        aliases = sorted(lb for lb, t in cab.mapping.items() if t == name and norm(lb) != norm(name))
+        labels = sorted(lb for lb, t in cab.mapping.items() if t == name and norm(lb) != norm(name))
+        cab.dropped_aliases += [(lb, name) for lb in labels if norm(lb) in taken]
+        aliases = [lb for lb in labels if norm(lb) not in taken]
         classes.append(TaxonomyClass(name=name, aliases=aliases, has_samples=name in with_samples))
     classes.append(TaxonomyClass(name=OTHER_CLASS, has_samples=any(not m.label for m in manifest)))
     return classes
@@ -370,7 +388,8 @@ def _taxonomy(cab: _Cabinet, manifest: list[ManifestRow], all_types: bool) -> li
 
 def _write_cabinet(out: Path, cab: _Cabinet, all_types: bool) -> CabinetEntry:
     names = sorted(set(cab.types) | set(cab.mapping.values()) - {""})
-    fields = {t: _field_specs(cab, t) for t in names}
+    fields = {t: field_specs(t, cab.types.get(t, []), cab.field_overrides, cab.field_notes) for t in names}
+    _possible_duplicates(cab)
     manifest = _manifest(cab, fields)
     classes = _taxonomy(cab, manifest, all_types)
     keep = {c.name for c in classes}
@@ -420,11 +439,15 @@ def _read_schema(schema: list[Row], names: list[str]) -> tuple[dict[str, _Schema
 
 
 def _cabinets(
-    inventory: list[Row], schema: list[Row], overrides: dict[str, dict[str, str]], fields: dict[str, FieldOverrides]
+    inventory: list[Row],
+    schema: list[Row],
+    overrides: dict[str, dict[str, str]],
+    fields: dict[str, RawOverrides],
+    recorded: dict[str, str],
 ) -> tuple[list[_Cabinet], list[str]]:
     names = sorted({r["cabinet"] for r in inventory if r["cabinet"]})
     schemas, skipped = _read_schema(schema, names)
-    slugs = assign_slugs(names)
+    slugs = assign_slugs(names, recorded)
     cabinets = [
         _Cabinet(
             name=name,
@@ -473,25 +496,6 @@ def _migrate(overrides: dict[str, dict[str, str]], legacy: dict[str, dict[str, s
         overrides[cab] = {**kept, **overrides.get(cab, {})}
 
 
-def _read_field_overrides(path: Path) -> dict[str, FieldOverrides]:
-    """field_overrides.yaml as {cabinet: {norm(type): {norm(field): values}}}.
-
-    Raises:
-        ClientPackError: The file is not nested mappings.
-    """
-    data = read_yaml(path) if path.exists() else None
-    try:
-        return {
-            str(cab): {
-                norm(str(t)): {norm(str(f)): dict(v or {}) for f, v in (fs or {}).items()}
-                for t, fs in (ts or {}).items()
-            }
-            for cab, ts in (data or {}).items()
-        }
-    except (AttributeError, TypeError, ValueError) as e:
-        raise ClientPackError(f"{FIELD_OVERRIDES_FILE} is not {{cabinet: {{type: {{field: {{...}}}}}}}}") from e
-
-
 def _label_map(cabinets: list[_Cabinet], overrides: dict[str, dict[str, str]]) -> dict[str, dict[str, dict[str, str]]]:
     """label_map.yaml: overrides as read (also for cabinets not built now), auto regenerated."""
     data = {cab: {OVERRIDES: entries, AUTO: {}} for cab, entries in overrides.items()}
@@ -501,50 +505,24 @@ def _label_map(cabinets: list[_Cabinet], overrides: dict[str, dict[str, str]]) -
     return dict(sorted(data.items()))
 
 
-def _report_sections(cab: _Cabinet) -> list[str]:
-    reasons = Counter(e.reason for e in cab.excluded)
-    lines = [f"## {cab.name} (`{cab.slug}`)", ""]
-    lines.append("Excluded: " + (", ".join(f"{r} {n}" for r, n in sorted(reasons.items())) or "none"))
-    lines.append(f"Full list in `{cab.slug}/{EXCLUDED_FILE}`.")
-    loose = "covers too few of its words; add an override to use it"
-    sections = [
-        (
-            "Ambiguous labels",
-            [f"- `{lb}`: candidates {', '.join(f'`{c}`' for c in cs)}" for lb, cs in cab.ambiguous.items()],
-        ),
-        (
-            "Unmapped labels",
-            [
-                f"- `{lb}`: candidate `{c}` {loose}" if c else f"- `{lb}`: no schema type matched"
-                for lb, c in cab.unmapped
-            ],
-        ),
-        ("Overrides outside the schema", [f"- `{lb}` -> `{t}`" for lb, t in cab.foreign]),
-        ("Schema types merged", [f"- `{other}` merged into `{kept}`" for kept, other in cab.schema.merged]),
-        ("Schema types renamed", [f"- `{raw}` renamed to `{OTHER_RENAMED}`" for raw in cab.schema.renamed]),
-        ("Duplicates dropped", [f"- `{d}` (kept `{k}`)" for d, k in cab.duplicates]),
-        ("Oversize files", [f"- `{e.rel_path}`" for e in cab.excluded if e.reason == "oversize"]),
-        ("Unrecognised field types (read as optional)", [f"- `{t}` / `{f}`: `{v}`" for t, f, v in cab.bad_roles]),
-    ]
-    for title, items in sections:
-        if items:
-            lines += ["", f"### {title}", "", *items]
-    return [*lines, ""]
-
-
-def _render_report(cabinets: list[_Cabinet], skipped: list[str]) -> str:
-    lines = [
-        "# Client pack report",
-        "",
-        f"Set labels under `{OVERRIDES}:` in `{LABEL_MAP_FILE}` and re-run; `{AUTO}:` is rewritten each build.",
-        f"Build time is in `{PACK_FILE}`.",
-        "",
-    ]
-    if skipped:
-        lines += ["## Workbooks under no cabinet (types not used)", "", *(f"- `{w}`" for w in skipped), ""]
+def _unknown_overrides(cabinets: list[_Cabinet], fields: dict[str, RawOverrides]) -> list[str]:
+    """Note each cabinet's unknown field_overrides.yaml types and fields; return the unknown cabinets."""
     for cab in cabinets:
-        lines += _report_sections(cab)
-    return "\n".join(lines)
+        cab.unknown_overrides = unknown_overrides(cab.field_overrides, cab.types)
+    names = {cab.name for cab in cabinets}
+    unknown = sorted(c for c in fields if c not in names)
+    count = len(unknown) + sum(len(cab.unknown_overrides) for cab in cabinets)
+    if count:
+        log.warning(f"unknown {FIELD_OVERRIDES_FILE} entries are ignored; see {REPORT_FILE}", extra={"count": count})
+    return unknown
+
+
+def _pack_info(entries: list[CabinetEntry], recorded: dict[str, str], share_root: str) -> dict[str, Any]:
+    """pack.yaml data; slugs of cabinets gone from the inventory stay reserved under ``retired``."""
+    created = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    current = {e.name for e in entries}
+    retired = {n: s for n, s in sorted(recorded.items()) if n not in current}
+    return PackInfo(created_at=created, share_root=share_root, cabinets=entries, retired=retired).model_dump()
 
 
 def build_pack(
@@ -574,8 +552,9 @@ def build_pack(
     schema = read_rows(Path(schema_csv))
     overrides, legacy = _read_label_map(out / LABEL_MAP_FILE)
     _migrate(overrides, legacy, schema)
-    fields = _read_field_overrides(out / FIELD_OVERRIDES_FILE)
-    cabinets, skipped = _cabinets(read_rows(Path(inventory_csv)), schema, overrides, fields)
+    fields = read_field_overrides(out / FIELD_OVERRIDES_FILE)
+    recorded = info.slugs() if (info := read_pack_info(out)) else {}
+    cabinets, skipped = _cabinets(read_rows(Path(inventory_csv)), schema, overrides, fields, recorded)
     for cab in cabinets:
         _screen(cab, int(max_size_mb * KB_PER_MB))
         _layout(cab)
@@ -583,11 +562,16 @@ def build_pack(
     for cab in cabinets:
         _map_labels(cab)
     entries = [_write_cabinet(out, cab, all_types) for cab in cabinets]
-    created = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    write_yaml(out / PACK_FILE, PackInfo(created_at=created, share_root=share_root, cabinets=entries).model_dump())
+    write_yaml(out / PACK_FILE, _pack_info(entries, recorded, share_root))
     write_yaml(out / LABEL_MAP_FILE, _label_map(cabinets, overrides))
-    atomic_write_text(out / REPORT_FILE, _render_report(cabinets, skipped))
-    summary = PackSummary(
+    atomic_write_text(out / REPORT_FILE, render_report(cabinets, skipped, _unknown_overrides(cabinets, fields)))
+    summary = _summary(out, entries, cabinets)
+    log.info("client pack built", extra=summary.model_dump(exclude={"cabinets"}))
+    return summary
+
+
+def _summary(out: Path, entries: list[CabinetEntry], cabinets: list[_Cabinet]) -> PackSummary:
+    return PackSummary(
         out_dir=str(out),
         cabinets=entries,
         documents=sum(e.documents for e in entries),
@@ -595,5 +579,3 @@ def build_pack(
         unmapped_labels=sum(len(c.unmapped) for c in cabinets),
         ambiguous_labels=sum(len(c.ambiguous) for c in cabinets),
     )
-    log.info("client pack built", extra=summary.model_dump(exclude={"cabinets"}))
-    return summary

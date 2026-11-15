@@ -58,6 +58,10 @@ def _overview(score: CabinetScore, header: list[str]) -> list[str]:
         f"Unlabelled (not scored): {score.unlabeled}. Duplicated results lines: {score.duplicates} "
         "(the last line of each is used).",
         "",
+        f"Attachments (files beside a document in its folder, not scored): {score.attachments}. "
+        f"Labelled documents in a possible-duplicate group (same name and size in another folder): "
+        f"{score.in_dup_group}.",
+        "",
         *HOW_TO_READ,
     ]
 
@@ -102,11 +106,14 @@ def _cases(score: CabinetScore) -> list[str]:
     return [
         "## Case bundles",
         "",
-        "The case's label is the majority label of its files. Majority: the most common class prediction "
-        "across its files is the case label. Any-hit: at least one file is. A case with no classed file is wrong.",
+        "The case's label is the majority label of its files. All files right: every file is predicted as "
+        "the case label; no result and abstained count as wrong. Any file right: at least one file is. "
+        "Majority right: one class is predicted more often than any other (no result and abstained are not "
+        "votes) and it is the case label; a tie is not right, and a case with no classed file is wrong.",
         "",
-        f"Cases: {score.cases}. Majority: {_pct(score.cases_majority, score.cases)}. "
-        f"Any-hit: {_pct(score.cases_any, score.cases)}. Cases with mixed labels: {mixed}.",
+        f"Cases: {score.cases}. All files right: {_pct(score.cases_all, score.cases)}. "
+        f"Any file right: {_pct(score.cases_any, score.cases)}. "
+        f"Majority right: {_pct(score.cases_majority, score.cases)}. Cases with mixed labels: {mixed}.",
         "",
     ]
 

@@ -51,7 +51,9 @@ class CabinetScore(BaseModel):
     """Everything client-eval reports for one cabinet."""
 
     cabinet: str
-    documents: int
+    documents: int  # manifest rows that are documents, not attachments
+    attachments: int = 0  # files beside a document in its folder: listed, never scored
+    in_dup_group: int = 0  # scored documents that share a name and size with a file in another folder
     missing: int = 0  # in the manifest, no result line
     failed: int = 0  # has a result line, and the record carries diagnostics errors
     abstained: int = 0  # has a result line with no class, or the unknown label
@@ -69,8 +71,9 @@ class CabinetScore(BaseModel):
     key_class_ok: int = 0  # key documents whose class was right
     key_exact_class_ok: int = 0  # ... and whose key was exact
     cases: int = 0
-    cases_majority: int = 0
-    cases_any: int = 0
+    cases_all: int = 0  # every file predicted as the case label
+    cases_majority: int = 0  # one most common prediction, and it is the case label; a tie is not right
+    cases_any: int = 0  # at least one file predicted as the case label
     mixed_cases: list[str] = Field(default_factory=list)
     no_result: list[str] = Field(default_factory=list)
     with_errors: list[str] = Field(default_factory=list)
@@ -90,11 +93,11 @@ def _label_key(label: str) -> str:
 
 
 def _class_names(pack: ClientPack) -> dict[str, str]:
-    """Normalised class name or alias -> class name."""
+    """Normalised class name or alias -> class name. A class's own name always wins over another's alias."""
+    pairs = [(c.name, c.name) for c in pack.classes] + [(a, c.name) for c in pack.classes for a in c.aliases]
     names: dict[str, str] = {}
-    for cls in pack.classes:
-        for name in (cls.name, *cls.aliases):
-            names.setdefault(_label_key(name), cls.name)
+    for label, cls in pairs:
+        names.setdefault(_label_key(label), cls)
     return names
 
 
@@ -202,16 +205,23 @@ def _per_class(pairs: list[tuple[str, str]]) -> dict[str, ClassScore]:
 
 
 def _score_cases(score: CabinetScore, cases: dict[str, list[tuple[str, str]]]) -> None:
-    """Case gold is the majority label of its files. Majority: the most common class prediction equals it."""
+    """Case gold is the majority label of its files; all, majority and any-hit scored against it.
+
+    Majority needs one most common class prediction (no result and abstained
+    are not votes) equal to the gold, so a tie is never right and the result
+    does not depend on manifest order.
+    """
     score.cases = len(cases)
     for case_id, pairs in cases.items():
         labels = Counter(g for g, _ in pairs)
         if len(labels) > 1:
             score.mixed_cases.append(case_id)
-        gold = labels.most_common(1)[0][0]
+        gold = max(labels, key=lambda g: (labels[g], g))
         votes = Counter(p for _, p in pairs if p not in (NO_RESULT, ABSTAINED))
-        score.cases_majority += bool(votes) and votes.most_common(1)[0][0] == gold
+        top = votes.most_common(2)
+        score.cases_majority += bool(top) and top[0][0] == gold and (len(top) == 1 or top[1][1] < top[0][1])
         score.cases_any += gold in votes
+        score.cases_all += all(p == gold for _, p in pairs)
 
 
 def _load_results(results_jsonl: str | Path) -> tuple[dict[str, dict[str, Any]], int]:
@@ -250,10 +260,14 @@ def score_cabinet(pack_dir: str | Path, cabinet: str, results_jsonl: str | Path)
     pack = load_pack(pack_dir, cabinet)
     records, duplicates = _load_results(results_jsonl)
     names = _class_names(pack)
-    score = CabinetScore(cabinet=pack.cabinet.name, documents=len(pack.manifest), duplicates=duplicates)
+    documents = [r for r in pack.manifest if r.role != "attachment"]
+    attachments = len(pack.manifest) - len(documents)
+    score = CabinetScore(
+        cabinet=pack.cabinet.name, documents=len(documents), attachments=attachments, duplicates=duplicates
+    )
     pairs: list[tuple[str, str]] = []
     cases: dict[str, list[tuple[str, str]]] = {}
-    for row in pack.manifest:
+    for row in documents:
         record = records.get(row.doc_id)
         predicted = _predicted(names, record)
         _count_outcome(score, row, record, predicted)
@@ -261,6 +275,7 @@ def score_cabinet(pack_dir: str | Path, cabinet: str, results_jsonl: str | Path)
             score.unlabeled += 1
             continue
         gold = _resolve(names, row.label)
+        score.in_dup_group += bool(row.dup_group)
         (cases.setdefault(row.case_id, []) if row.case_id else pairs).append((gold, predicted))
         if row.key_gold:
             _score_key(score, pack, row, record, predicted == gold)

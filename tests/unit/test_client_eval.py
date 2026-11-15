@@ -7,12 +7,13 @@ from pathlib import Path
 import pytest
 
 from baseline.cli import main
-from baseline.clientpack import load_pack
+from baseline.clientpack import CabinetEntry, ClientPack, TaxonomyClass, load_pack
 from baseline.clientpack_build import build_pack
 from baseline.evaluate.client_eval import (
     ABSTAINED,
     NO_RESULT,
     CabinetScore,
+    _class_names,
     _pct,
     _score_cases,
     canon_key,
@@ -365,3 +366,48 @@ def test_report_has_a_how_to_read_section(scored: tuple[Path, Path]):
 def test_cli_client_eval_fails_when_scoring_fails(scored: tuple[Path, Path], tmp_path: Path):
     argv = ["client-eval", "--pack", str(scored[0]), "--cabinet", "Acme", "--results", str(tmp_path / "none.jsonl")]
     assert main([*argv, "--out", str(tmp_path / "r.md")]) != 0
+
+
+# --- regressions from the second review ---------------------------------------
+
+
+@pytest.mark.parametrize("order", [["Inv", "Other"], ["Other", "Inv"]])
+def test_a_tied_case_vote_is_not_a_majority_in_either_order(order: list[str]):
+    score = CabinetScore(cabinet="Acme", documents=2)
+    _score_cases(score, {"C-1": [("Inv", p) for p in order]})
+    assert (score.cases_majority, score.cases_any, score.cases_all) == (0, 1, 0)
+
+
+def test_a_case_with_every_file_right_counts_as_all_right():
+    score = CabinetScore(cabinet="Acme", documents=2)
+    _score_cases(score, {"C-1": [("Inv", "Inv"), ("Inv", "Inv")], "C-2": [("Inv", "Inv"), ("Inv", NO_RESULT)]})
+    assert (score.cases_all, score.cases_majority) == (1, 2)
+
+
+def test_report_names_the_three_case_numbers(scored: tuple[Path, Path]):
+    text = render_client_report(score_cabinet(scored[0], "Acme", scored[1]))
+    assert all(s in text for s in ("All files right:", "Any file right:", "Majority right:", "a tie is not right"))
+
+
+def test_attachments_are_counted_apart_and_not_scored(tmp_path: Path):
+    pack = _small_pack(tmp_path, [("Payment Voucher/PV-1", "PV-1.pdf"), ("Payment Voucher/PV-1", "annex.pdf")])
+    score = score_cabinet(pack, "Acme", _write_results(pack, tmp_path / "r.jsonl", {}))
+    assert (score.documents, score.attachments, score.scored, score.missing) == (1, 1, 1, 1)
+
+
+def test_scored_documents_in_a_duplicate_group_are_counted(tmp_path: Path):
+    pack = _small_pack(tmp_path, [("Payment Voucher/Old", "x.pdf"), ("Payment Voucher/New", "x.pdf")])
+    assert score_cabinet(pack, "Acme", _write_results(pack, tmp_path / "r.jsonl", {})).in_dup_group == 2
+
+
+def test_an_exact_class_name_wins_over_another_class_alias():
+    pack = ClientPack(
+        cabinet=CabinetEntry(slug="acme", name="Acme", documents=0, types_with_samples=2),
+        classes=[
+            TaxonomyClass(name="Alpha", aliases=["Beta"], has_samples=True),
+            TaxonomyClass(name="Beta", has_samples=True),
+        ],
+        fields={},
+        manifest=[],
+    )
+    assert _class_names(pack)["beta"] == "Beta"

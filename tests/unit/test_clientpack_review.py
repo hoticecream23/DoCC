@@ -11,7 +11,7 @@ import yaml
 
 from baseline.clientpack import load_pack, materialize
 from baseline.clientpack_build import build_pack
-from baseline.clientpack_rules import field_origin, holds_cases, key_gold, match_label, parse_dtype
+from baseline.clientpack_rules import child_roles, field_origin, key_gold, match_label, parse_dtype
 
 HEADER = "cabinet,folder,name,ext,size_kb,pages,in_zip,kind\n"
 SCHEMA_HEADER = "workbook,sheet,document_type,index_field,data_type,field_type,source\n"
@@ -82,7 +82,7 @@ def test_case_folders_with_one_document_are_still_cases(tmp_path: Path):
 
 
 def test_one_file_named_like_its_number_folder_is_not_a_case():
-    assert not holds_cases({"100": ["100"], "101": ["101"]})
+    assert child_roles("100", ["100"]) == ["document"]
 
 
 def test_key_gold_needs_a_folder_label(tmp_path: Path):
