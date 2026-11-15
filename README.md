@@ -95,14 +95,16 @@ A thin FastAPI shell over the same functions. Install the extra and run it on lo
     python -m api --config config/pipeline.yaml --host 127.0.0.1 --port 8000 [--workers 1]
 
 - `GET /api/v1/health`: status, and whether a VLM model is configured for cascade.
-- `POST /api/v1/documents/process`: multipart `file` and optional `cabinet_id` (default: the config's); runs the baseline, stores the record and returns it. 50 MB limit.
+- `POST /api/v1/documents/process`: multipart `file` and optional `cabinet_id` (default: the config's); runs the baseline, stores the record and returns it. 50 MB limit. A `cabinet_id` must be a slug: 1-64 lower-case letters, digits, `_` or `-` (else 400). Cabinet ids are case-sensitive in the store, so use the slugs client packs make.
 - `POST /api/v1/documents/process_async`: same upload; queues a cascade job, answers 202 with a `job_id` (503 without a model). The job stores the record and its provenance.
 - `GET /api/v1/jobs/{job_id}`: `state` queued, running, done or failed, plus `result` or `error`.
 - `GET /api/v1/documents?cabinet_id=&limit=&offset=`: stored documents ordered by doc_id, as `doc_id`, `cabinet_id`, `doc_type`, `confidence`, `filename`, `updated_at`. `limit` 1-500, default 50.
-- `GET /api/v1/documents/{doc_id}`: the stored record; 404 if absent.
+- `GET /api/v1/documents/{doc_id}`: the stored record; 404 if absent; 422 when the stored record is unreadable.
 - `GET /api/v1/documents/{doc_id}/review_events`: the reviewer corrections recorded for it.
 
-The API uses the SQLite store at `db.path` (a relative path resolves in the working directory). Jobs live in its `jobs` table; at startup the API marks failed the jobs another API process left queued or running, since they cannot resume. Uploading a file already stored under another cabinet answers 409. The document detail, `fields` and `review_events` routes take an optional `cabinet_id` and answer 404 when it does not match. Responses carry the uploaded file name, never a server path.
+The API uses the SQLite store at `db.path` (a relative path resolves in the working directory). Jobs live in its `jobs` table; at startup the API marks failed the jobs another API process left queued or running, since they cannot resume. Uploading a file already stored under another cabinet answers 409. The document detail, `fields` and `review_events` routes take an optional `cabinet_id` and answer 404 when it does not match. Responses, stored records and the API's own log lines carry the uploaded file name, never a server path: extractor errors that name the temp file are rewritten to the client's name. The client's file name loses control and format characters (such as U+202E) and is NFC-normalised.
+
+Run one API process per store. A second API process on the same store fails at startup with a ConfigError while the first one's heartbeat is fresh (30 s). This includes uvicorn `--workers` above 1. `--workers` of `python -m api` sets the cascade job threads, not processes.
 
 Security limits: the API has no authentication and no tenant check. It binds to loopback (127.0.0.1) by default; keep it there. Any caller that can reach it can read every cabinet. Do not expose it on a network. With `db.path: null`, jobs live in memory only and the document read routes answer 503.
 

@@ -1,11 +1,18 @@
 """Background jobs for the cascade route.
 
+Over 400 lines: the job stores, the one-process-per-store claim and the runner share one state model.
+
 Job state lives in a JobStore: InMemoryJobStore (lost on restart) or
 SqliteJobStore (the `jobs` table of the SQLite store). The runner is in
 process, so a job cannot resume after a restart. Each job row carries the
 boot id of the process that made it; the API calls `SqliteJobStore.sweep_stale`
 once at startup, which fails only the queued or running jobs of another boot id.
 A finished job (done or failed) is never written again.
+
+One API process per store: at startup the API claims the store with
+`SqliteJobStore.claim` (a row of `api_instances` with its boot id and a
+heartbeat that a timer refreshes). A second process fails with ConfigError
+while the first one's heartbeat is younger than API_INSTANCE_TIMEOUT_S.
 
 A state write that raises sqlite3.Error is retried JOB_STATE_ATTEMPTS times
 (each attempt already waits out the busy timeout). If every attempt fails, the
@@ -14,9 +21,12 @@ runner marks the job failed in memory, logs it, and `JobRunner.get` reports it.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import sqlite3
 import threading
+import time
 import uuid
 from collections import deque
 from collections.abc import Callable
@@ -28,7 +38,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel
 
 from baseline import db
-from baseline.errors import Unavailable, summarize_exception
+from baseline.errors import ConfigError, Unavailable, summarize_exception
 from baseline.schema import DEFAULT_CABINET, DocumentRecord
 
 log = logging.getLogger(__name__)
@@ -41,6 +51,13 @@ JOB_STATE_ATTEMPTS = 3
 JOB_STATE_ERROR = "job state could not be saved"
 # Identifies this process's jobs, so a sweep leaves a live process's jobs alone.
 BOOT_ID = uuid.uuid4().hex
+# Another API process on the store counts as live while its heartbeat is younger than this.
+API_INSTANCE_TIMEOUT_S = 30.0
+HEARTBEAT_S = API_INSTANCE_TIMEOUT_S / 3
+SECOND_INSTANCE_ERROR = (
+    "another API process is serving this store; run one API process per store "
+    "(no uvicorn --workers above 1), or wait {timeout:.0f} s after it stopped"
+)
 
 
 class Busy(Unavailable):
@@ -175,8 +192,55 @@ class SqliteJobStore:
         self._max_finished = max_finished
         self._boot_id = boot_id
         self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._beater: threading.Thread | None = None
         with self._lock, self._conn:
             self._conn.execute(_EVICT, (max_finished,))
+
+    def claim(self, timeout_s: float = API_INSTANCE_TIMEOUT_S) -> None:
+        """Make this process the store's one API process and start its heartbeat timer.
+
+        A stale row (heartbeat older than timeout_s) is replaced.
+
+        Args:
+            timeout_s: Age after which another process's heartbeat no longer counts.
+
+        Raises:
+            ConfigError: Another process's heartbeat is younger than timeout_s.
+        """
+        now = time.time()
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                live = self._conn.execute(
+                    "SELECT 1 FROM api_instances WHERE boot_id <> ? AND heartbeat_at > ?",
+                    (self._boot_id, now - timeout_s),
+                ).fetchone()
+                if live is not None:
+                    raise ConfigError(SECOND_INSTANCE_ERROR.format(timeout=timeout_s))
+                self._conn.execute("DELETE FROM api_instances WHERE boot_id <> ?", (self._boot_id,))
+                self._conn.execute(
+                    "INSERT INTO api_instances (boot_id, started_at, heartbeat_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT (boot_id) DO UPDATE SET heartbeat_at = excluded.heartbeat_at",
+                    (self._boot_id, _now(), now),
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        self._beater = threading.Thread(target=self._heartbeat, name="docc-heartbeat", daemon=True)
+        self._beater.start()
+
+    def _heartbeat(self) -> None:
+        """Refresh this process's heartbeat every HEARTBEAT_S until close."""
+        while not self._stop.wait(HEARTBEAT_S):
+            try:
+                with self._lock, self._conn:
+                    self._conn.execute(
+                        "UPDATE api_instances SET heartbeat_at = ? WHERE boot_id = ?", (time.time(), self._boot_id)
+                    )
+            except sqlite3.Error as exc:
+                log.warning("api heartbeat not saved", extra={"error": summarize_exception(exc)})
 
     def sweep_stale(self) -> int:
         """Fail the queued or running jobs another boot left behind. The API runs it once, at startup.
@@ -276,7 +340,12 @@ class SqliteJobStore:
         return Job(job_id=job_id, state=row["state"], result=result, error=row["error"])
 
     def close(self) -> None:
-        """Close the connection."""
+        """Stop the heartbeat, give up a claim, and close the connection."""
+        self._stop.set()
+        if self._beater is not None:
+            self._beater.join()
+            with self._lock, contextlib.suppress(sqlite3.Error), self._conn:
+                self._conn.execute("DELETE FROM api_instances WHERE boot_id = ?", (self._boot_id,))
         with self._lock:
             self._conn.close()
 
@@ -315,7 +384,8 @@ class JobRunner:
             raise Busy("job queue is full; retry later")
         try:
             job_id = self.store.create(trace_id, cabinet_id)
-            self._pool.submit(self._run, job_id, fn, trace_id, cleanup)
+            # The job runs in the submitter's context, so the API's log scrubbing sees its upload.
+            self._pool.submit(contextvars.copy_context().run, self._run, job_id, fn, trace_id, cleanup)
         except Exception:  # noqa: BLE001 - free the queue slot on any submit failure, then re-raise
             self._slots.release()
             raise

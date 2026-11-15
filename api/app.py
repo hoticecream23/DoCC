@@ -9,7 +9,12 @@ cascade route answers 503, like the demo server.
 With `db.path` set (a relative path resolves in `root`), every record the API
 produces is upserted into the SQLite store, jobs live in its `jobs` table, and
 the document read routes serve from it. With `db.path: null` jobs stay in
-memory and the read routes answer 503.
+memory and the read routes answer 503. One API process per store: a second
+process on the same store fails at startup with ConfigError (api/jobs.py).
+
+Server upload paths never leave the API: they are replaced by the client's
+file name in diagnostics.errors, in cascade provenance errors and in the
+API's own log lines (the `uploads` context variable feeds that log filter).
 
 Security limits: no authentication and no tenant check. Bind to loopback (the
 default); any caller can read every cabinet. The optional `cabinet_id` query
@@ -20,13 +25,15 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import re
 import shutil
 import sqlite3
 import tempfile
 import threading
+import unicodedata
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -67,11 +74,14 @@ CHUNK_BYTES = MEGABYTE
 MULTIPART_OVERHEAD_BYTES = 64 * 1024
 RETRY_AFTER_S = 30
 HTTP_TOO_LARGE = 413
+HTTP_UNREADABLE = 422
 TRACE_HEADER = "X-Request-ID"
 # A client id is echoed in a header and logged, so only a plain token is kept.
 TRACE_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
-# A cabinet id is stored and filtered on, so it is held to the same plain token.
-CABINET_ID_RE = TRACE_ID_RE
+# A cabinet id is a slug, as client packs make them: lower-case letters, digits, '_' or '-'.
+# The store compares ids case-sensitively, so "Acme" would be a second cabinet; it is refused.
+CABINET_ID_RE = re.compile(r"[\w-]{1,64}")
+CABINET_ID_ERROR = "cabinet_id must be 1-64 lower-case letters, digits, '_' or '-'"
 DEFAULT_PAGE_LIMIT = 50
 ROUTING_PATTERN = "^(auto|review|failed)$"
 MAX_PAGE_LIMIT = 500
@@ -80,15 +90,77 @@ API_ACTOR = "api"
 MAX_FILENAME_CHARS = 255
 # A client file name is kept as metadata only; it may not hold control or path characters.
 SAFE_FILENAME_RE = re.compile(r'[^<>:"/\\|?*\x00-\x1f\x7f]+')
+# Unicode control, format and line/paragraph separators (U+202E, U+2028, "\x85"...) are removed from a name.
+STRIPPED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 # Every upload is written under this stem plus its extension, never under the client's name.
 UPLOAD_STEM = "upload"
+UPLOAD_PREFIX = "docc_api_"
 OTHER_CABINET_ERROR = "document already stored under another cabinet"
+UNREADABLE_RECORD_ERROR = "the stored record is unreadable"
+# Windows paths compare case-insensitively, so their scrubbing does too.
+_PATH_FLAGS = re.IGNORECASE if os.name == "nt" else 0
 
 trace_id: ContextVar[str] = ContextVar("trace_id", default="")
+# This request's uploads: saved file -> client file name. A dict set per request, filled by save().
+uploads: ContextVar[dict[Path, str] | None] = ContextVar("uploads", default=None)
 
 
 def _discard(path: Path) -> None:
     shutil.rmtree(path.parent, ignore_errors=True)
+
+
+def _path_forms(path: Path) -> set[str]:
+    """How a path can appear in a message: both slash styles and the repr() doubled backslashes."""
+    forms = set()
+    for p in {path, path.resolve()}:
+        s = str(p)
+        forms |= {s, p.as_posix(), s.replace("\\", "\\\\")}
+    return forms
+
+
+def scrub(text: str, names: Mapping[Path, str]) -> str:
+    """Replace each saved upload's file path, temp directory and temp directory name with the client's name.
+
+    Args:
+        text: A message, such as an extractor error.
+        names: Saved file -> client file name.
+
+    Returns:
+        The text with no server upload path left in it.
+    """
+    for path, name in names.items():
+        targets = _path_forms(path) | _path_forms(path.parent) | {path.parent.name}
+        # Longest first, so the file path goes before the directory it sits in.
+        pattern = "|".join(re.escape(t) for t in sorted(targets, key=len, reverse=True))
+        text = re.sub(pattern, lambda _, n=name: n, text, flags=_PATH_FLAGS)  # a function: no backslash escapes
+    return text
+
+
+class _ScrubUploads(logging.Filter):
+    """Removes the current request's upload paths from the API's own log lines."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        names = uploads.get()
+        if names:
+            for key, value in list(vars(record).items()):
+                if isinstance(value, str):
+                    setattr(record, key, scrub(value, names))
+            if isinstance(record.args, tuple):
+                record.args = tuple(scrub(a, names) if isinstance(a, str) else a for a in record.args)
+        return True
+
+
+for _logger in (log, logging.getLogger("api.jobs")):
+    _logger.addFilter(_ScrubUploads())
+
+
+def _clean_name(raw: str) -> str:
+    """The client's base name without control or format characters, NFC; "upload" plus the extension if empty."""
+    base = Path(raw.replace("\\", "/")).name
+    kept = "".join(c for c in base if unicodedata.category(c) not in STRIPPED_CATEGORIES)
+    name = unicodedata.normalize("NFC", kept).strip()
+    stem, dot, ext = name.rpartition(".")
+    return name if stem.strip() or not dot else UPLOAD_STEM + dot + ext
 
 
 def _copy_limited(upload: UploadFile, target: Path) -> None:
@@ -146,21 +218,23 @@ class ApiState:
             The cabinet id.
 
         Raises:
-            BadInput: The id is not a plain token.
+            BadInput: The id is not a slug (CABINET_ID_RE, no upper case).
         """
         if not value:
             return self.cfg.cabinet_id
-        if not CABINET_ID_RE.fullmatch(value):
-            raise BadInput("cabinet_id must be 1-64 letters, digits, '.', '_' or '-'")
+        if not CABINET_ID_RE.fullmatch(value) or value != value.lower():
+            raise BadInput(CABINET_ID_ERROR)
         return value
 
     def persist(self, record: DocumentRecord, provenance: Provenance | None = None, *, trace: str = "") -> None:
         """Upsert a record, and its cascade provenance, into the store if there is one.
 
         Each record gets its own run carrying the request trace id, and an
-        audit row. A store failure is logged, never raised: the caller still
-        gets the record. The one exception is a document stored under another
-        cabinet, which the API answers with 409.
+        audit row. The run, cabinet, document and provenance rows are one
+        transaction, so a refused document leaves none of them. A store
+        failure is logged, never raised: the caller still gets the record. The
+        one exception is a document stored under another cabinet, which the
+        API answers with 409.
 
         Args:
             record: The record the API produced.
@@ -175,10 +249,8 @@ class ApiState:
         tid = trace or trace_id.get() or None
         try:
             with self.db_lock:
-                run_id = db.start_run(self.conn, self.cfg.dump(), record.cabinet_id, trace_id=tid)
-                db.upsert_document(self.conn, record, run_id)
-                if provenance is not None:
-                    db.upsert_provenance(self.conn, dict(provenance))
+                prov = None if provenance is None else dict(provenance)
+                run_id = db.store_record(self.conn, record, self.cfg.dump(), trace_id=tid, provenance=prov)
                 detail = {"run_id": run_id, "trace_id": tid}
                 db_registry.record_audit(
                     self.conn,
@@ -215,8 +287,9 @@ class ApiState:
         """Write an upload to a new temp directory under a generated name.
 
         The client's name never reaches the file system: the file is
-        UPLOAD_STEM plus the validated extension. The client's base name is
-        returned only as metadata, for the record.
+        UPLOAD_STEM plus the validated extension. The client's base name,
+        cleaned by _clean_name, is returned only as metadata, for the record,
+        and is noted in `uploads` so the API's logs show it, not the server path.
 
         Args:
             upload: The uploaded file.
@@ -227,7 +300,7 @@ class ApiState:
         Raises:
             BadInput: Bad or over-long name, unsupported extension, empty, or over MAX_UPLOAD_BYTES.
         """
-        name = Path((upload.filename or "").replace("\\", "/")).name
+        name = _clean_name(upload.filename or "")
         if len(name) > MAX_FILENAME_CHARS:
             raise BadInput(f"file name longer than {MAX_FILENAME_CHARS} characters")
         if name.startswith(".") or not SAFE_FILENAME_RE.fullmatch(name):
@@ -235,7 +308,10 @@ class ApiState:
         suffix = Path(name).suffix.lower()
         if suffix not in SUPPORTED_EXT:
             raise BadInput(f"unsupported file type; use one of {sorted(SUPPORTED_EXT)}")
-        target = Path(tempfile.mkdtemp(prefix="docc_api_", dir=self.upload_dir)) / (UPLOAD_STEM + suffix)
+        target = Path(tempfile.mkdtemp(prefix=UPLOAD_PREFIX, dir=self.upload_dir)) / (UPLOAD_STEM + suffix)
+        names = uploads.get()
+        if names is not None:
+            names[target] = name
         try:
             _copy_limited(upload, target)
         except BaseException:
@@ -262,7 +338,7 @@ def _routes(api: ApiState) -> APIRouter:
             record, _ = process_document(path, api.cfg, api.models, cabinet)
         finally:
             _discard(path)
-        record = _named(record, name)
+        record = _cleaned(record, path, name)
         api.persist(record)
         return record
 
@@ -275,8 +351,10 @@ def _routes(api: ApiState) -> APIRouter:
 
         def work() -> DocumentRecord:
             result = cascade_process(path, api.cfg, api.ccfg, backend, api.models, cabinet)
-            record = _named(result.record, name)
+            record = _cleaned(result.record, path, name)
             result.provenance["filename"] = name
+            errors = result.provenance.get("errors") or []
+            result.provenance["errors"] = [scrub(e, {path: name}) for e in errors]
             api.persist(record, result.provenance, trace=tid)
             return record
 
@@ -318,7 +396,9 @@ def _read_routes(api: ApiState) -> APIRouter:
 
     @router.get("/documents/{doc_id}", response_model=DocumentRecord)
     def document(doc_id: str, cabinet_id: str | None = None) -> DocumentRecord:
-        found: DocumentRecord = _of_document(api, doc_id, cabinet_id, db.get_document)
+        found: DocumentRecord | None = _of_document(api, doc_id, cabinet_id, db.get_document)
+        if found is None:  # stored, but its record_json no longer parses
+            raise HTTPException(HTTP_UNREADABLE, UNREADABLE_RECORD_ERROR)
         return _named(found, found.filename)
 
     @router.get("/documents/{doc_id}/review_events")
@@ -356,6 +436,13 @@ def _cabinet_routes(api: ApiState) -> APIRouter:
 def _named(record: DocumentRecord, name: str) -> DocumentRecord:
     """The record as the API shows and stores it: the client's file name, never a server path."""
     return record.model_copy(update={"filename": name, "source_path": name})
+
+
+def _cleaned(record: DocumentRecord, path: Path, name: str) -> DocumentRecord:
+    """_named, with the upload's server paths in diagnostics.errors replaced by the client's name."""
+    errors = [scrub(e, {path: name}) for e in record.diagnostics.errors]
+    diagnostics = record.diagnostics.model_copy(update={"errors": errors})
+    return _named(record, name).model_copy(update={"diagnostics": diagnostics})
 
 
 def _of_document(
@@ -469,13 +556,31 @@ async def _trace(request: Request, call_next: Callable[[Request], Awaitable[Resp
     """Take X-Request-ID or make one, expose it in trace_id, and echo it back."""
     sent = request.headers.get(TRACE_HEADER, "")
     tid = sent if TRACE_ID_RE.fullmatch(sent) else uuid.uuid4().hex
-    token = trace_id.set(tid)
+    token, names = trace_id.set(tid), uploads.set({})
     try:
         response = await call_next(request)
     finally:
         trace_id.reset(token)
+        uploads.reset(names)
     response.headers[TRACE_HEADER] = tid
     return response
+
+
+def _open_store(db_file: Path | None) -> tuple[SqliteJobStore | None, sqlite3.Connection | None]:
+    """The job store, claimed for this process with another boot's unfinished jobs failed, and the document store.
+
+    On any failure the claim is given up, so a retry is not refused.
+    """
+    if db_file is None:
+        return None, None
+    jobs = SqliteJobStore(db_file)
+    try:
+        jobs.claim()
+        jobs.sweep_stale()  # only the API, once at startup: a pipeline run opening the store fails nothing
+        return jobs, db.connect(db_file, threads=True)
+    except BaseException:
+        jobs.close()
+        raise
 
 
 def create_app(
@@ -495,20 +600,20 @@ def create_app(
 
     Returns:
         The app. A missing VLM model is not an error here.
+
+    Raises:
+        ConfigError: Another API process is serving the same store (one API process per store).
     """
     cfg = load_config(config_dir)
     ccfg = load_cascade_config(config_dir)
     if upload_dir is not None:
         upload_dir.mkdir(parents=True, exist_ok=True)
     base = root or Path.cwd()
+    models = Models.load(cfg, base)  # before the store is claimed, so a failure here leaves no claim
     # db_path resolves a relative db.path beside a results file; here that file would sit in root.
-    db_file = cfg.db_path(base / DEFAULT_DB_NAME)
-    jobs = SqliteJobStore(db_file) if db_file else None
-    if jobs is not None:
-        jobs.sweep_stale()  # only the API, once at startup: a pipeline run opening the store fails nothing
-    conn = db.connect(db_file, threads=True) if db_file else None
+    jobs, conn = _open_store(cfg.db_path(base / DEFAULT_DB_NAME))
     runner = JobRunner(jobs or InMemoryJobStore(), workers)
-    api = ApiState(cfg, ccfg, Models.load(cfg, base), vlm_settings(ccfg), upload_dir, runner, conn)
+    api = ApiState(cfg, ccfg, models, vlm_settings(ccfg), upload_dir, runner, conn)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
