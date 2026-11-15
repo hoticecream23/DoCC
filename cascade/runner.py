@@ -45,13 +45,22 @@ from baseline.schema import (
     DocumentRecord,
     MetadataField,
     Tag,
-    compute_doc_id,
+    build_canonical_text,
 )
 from baseline.tagging import apply_tags
 
 from .config import CascadeConfig
 from .merge import ClassProvenance, Decision, FieldProvenance, decide
-from .prompt import VLMAnswer, build_messages, check_descriptions, parse_answer, response_schema
+from .prompt import (
+    TextPlan,
+    VLMAnswer,
+    build_messages,
+    check_descriptions,
+    parse_answer,
+    plan_text,
+    response_schema,
+    sent_text,
+)
 from .render import render_pages
 from .vlm import Backend, VLMBadRequest, VLMReply
 
@@ -88,6 +97,12 @@ class Provenance(_ProvenanceBase, total=False):
 
     # Set only when a context overflow forced a retry with fewer pages.
     reduced_pages: int
+    # Text mode: pages whose text was sent (1-based), whether any text was cut, and characters sent.
+    pages_included: list[int]
+    text_truncated: bool
+    text_chars_sent: int
+    # Text mode: set only when a context overflow forced a retry with this total text budget.
+    reduced_text_chars: int
     # Pack mode only: the class names and aliases the keyword prior found.
     prior: dict[str, list[str]]
 
@@ -192,6 +207,36 @@ def _new_provenance(base: DocumentRecord, timings: dict[str, float]) -> Provenan
     }
 
 
+def _record_plan(prov: Provenance, plan: TextPlan) -> None:
+    prov["pages_sent"], prov["images_sent"] = len(plan.included), 0
+    prov["pages_included"] = [i + 1 for i in plan.included]
+    prov["text_truncated"], prov["text_chars_sent"] = plan.truncated, plan.chars
+
+
+def _ask_text(
+    base: DocumentRecord, cfg: Config, ccfg: CascadeConfig, backend: Backend, prov: Provenance, timed: _Timer
+) -> tuple[VLMReply, TextPlan]:
+    """Ask a text-only model with the planned page text; once more with half the total on a 400."""
+    pages, v = base.text.pages, ccfg.vlm
+    if not base.text.full.strip():
+        raise ValueError("nothing to send: no page text")
+
+    def ask(plan: TextPlan) -> VLMReply:
+        _record_plan(prov, plan)
+        chunks = [pages[i][: plan.kept[i]] for i in plan.included]
+        messages = build_messages(cfg, chunks, [], plan.chars, [i + 1 for i in plan.included])
+        return timed("vlm", lambda: backend.complete(messages, response_schema(cfg)))
+
+    plan = plan_text(pages, v.text_page_chars, v.text_total_chars)
+    try:
+        return ask(plan), plan
+    except VLMBadRequest:
+        # A context-length failure: one retry with half the total text budget.
+        prov["reduced_text_chars"] = v.text_total_chars // 2
+        plan = plan_text(pages, v.text_page_chars, prov["reduced_text_chars"])
+        return ask(plan), plan
+
+
 def _ask_model(
     path: Path,
     base: DocumentRecord,
@@ -200,19 +245,23 @@ def _ask_model(
     backend: Backend,
     prov: Provenance,
     timed: _Timer,
-) -> VLMReply:
-    """Render the pages and ask the model, once more with half the pages on a 400."""
+) -> tuple[VLMReply, TextPlan | None]:
+    """Render the pages and ask the model, once more with half the pages on a 400.
+
+    Returns the reply, and in text mode the plan of the page text actually sent.
+    """
+    if ccfg.vlm.input == "text":  # a text-only model gets the page text alone
+        return _ask_text(base, cfg, ccfg, backend, prov, timed)
     r = ccfg.render
-    images: list[bytes] = []
-    if ccfg.vlm.input == "image":  # a text-only model gets the page text alone
-        images = timed("render", lambda: render_pages(path, r.max_pages, r.dpi, r.max_long_edge))
+    multi = bool(cfg.extract_opts().get("multi_frame_images", False))
+    images = timed("render", lambda: render_pages(path, r.max_pages, r.dpi, r.max_long_edge, multi))
     sent = base.text.pages[: r.max_pages]
     prov["pages_sent"], prov["images_sent"] = len(sent), len(images)
     if not images and not base.text.full.strip():
         raise ValueError("nothing to send: no page image and no text")
     messages = build_messages(cfg, sent, images, r.max_text_chars)
     try:
-        return timed("vlm", lambda: backend.complete(messages, response_schema(cfg)))
+        return timed("vlm", lambda: backend.complete(messages, response_schema(cfg))), None
     except VLMBadRequest:
         # ponytail: one retry with half the page budget for a context overflow;
         # a one page document is resent as is, downscale images if that keeps failing.
@@ -220,15 +269,31 @@ def _ask_model(
         sent, images = sent[:n], images[:n]
         prov["reduced_pages"], prov["pages_sent"], prov["images_sent"] = n, len(sent), len(images)
         retry = build_messages(cfg, sent, images, r.max_text_chars)
-        return timed("vlm", lambda: backend.complete(retry, response_schema(cfg)))
+        return timed("vlm", lambda: backend.complete(retry, response_schema(cfg))), None
 
 
 def _decide(
-    base: DocumentRecord, sidecar: BBoxSidecar, cfg: Config, ccfg: CascadeConfig, answer: VLMAnswer
+    base: DocumentRecord,
+    sidecar: BBoxSidecar,
+    cfg: Config,
+    ccfg: CascadeConfig,
+    answer: VLMAnswer,
+    plan: TextPlan | None = None,
 ) -> Decision:
+    """Merge the answer; with a text plan, model values ground only in the text that was sent."""
     full, pages = base.text.full, base.text.pages
-    rules = rule_scores(full, pages, cfg)
+    rules = packmode.prior_scores(full, pages, cfg) if packmode.is_active(cfg) else rule_scores(full, pages, cfg)
+    if plan is not None:
+        pages = sent_text(pages, plan)
+        full = build_canonical_text(pages)
     return decide(full, pages, cfg, ccfg.confidence, rules, answer, base.metadata, sidecar.words, sidecar.page_sizes)
+
+
+def _omitted_note(base: DocumentRecord, plan: TextPlan | None) -> list[str]:
+    """A diagnostics line when text mode left whole pages out."""
+    if plan is None or len(plan.included) == len(base.text.pages):
+        return []
+    return [f"cascade: text mode sent {len(plan.included)} of {len(base.text.pages)} pages (vlm.text_total_chars)"]
 
 
 def _fallback(
@@ -282,11 +347,12 @@ def process_document(
     if packmode.is_active(cfg):
         prov["prior"] = packmode.evidence(base.text.full, base.text.pages, cfg)
     try:
-        reply = _ask_model(p, base, cfg, ccfg, backend, prov, timed)
+        reply, plan = _ask_model(p, base, cfg, ccfg, backend, prov, timed)
         prov["model"], prov["finish_reason"], prov["raw"] = reply.model, reply.finish_reason, reply.content
         answer = parse_answer(reply.content, cfg)
-        decision = timed("decide", lambda: _decide(base, sidecar, cfg, ccfg, answer))
+        decision = timed("decide", lambda: _decide(base, sidecar, cfg, ccfg, answer, plan))
         meta, problems = _drop_bad_offsets(decision.metadata, base.text.full)
+        problems += _omitted_note(base, plan)
         facts = baseline_pipeline.tag_facts(base.text, base.diagnostics.page_count, base.diagnostics.is_scanned)
         tags = apply_tags(base.text.full, base.text.pages, cfg, meta, facts, models.tagger if models else None)
     except Exception as exc:  # noqa: BLE001 - any cascade failure falls back to the baseline; _fallback logs it
@@ -333,7 +399,7 @@ def _process_or_count(
 ) -> Result | None:
     """Process one document; None when it is skipped or fails, counted in stats."""
     try:
-        if compute_doc_id(path) in skip:
+        if packmode.resume_key(path, cfg) in skip:
             stats["skipped"] += 1
             return None
         return process_document(path, cfg, ccfg, backend, models, cabinet_id)
@@ -391,9 +457,16 @@ def model_root(cfg: Config, root: str | Path | None) -> Path:
 def _start_batch(
     input_dir: str | Path, out_path: Path, prov_path: Path, resume: bool, cfg: Config
 ) -> tuple[list[Path], set[str], BatchStats]:
-    """Scan the input (a pack run reads its manifest), repair the outputs for resume, and start the counts."""
+    """Scan the input (a pack run reads its manifest), repair the outputs for resume, and start the counts.
+
+    A pack run resumes by file stem, so byte-identical manifest documents each get a record,
+    and refuses an output file written for another cabinet.
+    """
     paths, excluded = (packmode.inputs(cfg, input_dir), {}) if packmode.is_active(cfg) else scan_documents(input_dir)
-    skip = _prepare_resume(out_path, prov_path) if resume else set()
+    skip: set[str] = set()
+    if resume:
+        skip = _prepare_resume(out_path, prov_path)
+        skip = packmode.done_keys(out_path, cfg) if packmode.is_active(cfg) else skip
     excluded_counts = {reason: len(items) for reason, items in sorted(excluded.items())}
     stats = BatchStats(found=len(paths), skipped=0, written=0, failed=0, fallback=0, excluded=excluded_counts)
     return paths, skip, stats

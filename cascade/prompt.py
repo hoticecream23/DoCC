@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import Any, NamedTuple, TypedDict
 
 from baseline.config import Config
 from baseline.errors import VLMOutputError  # noqa: F401 - re-exported
@@ -150,7 +151,68 @@ def _system_text(cfg: Config) -> str:
     return "\n".join(lines)
 
 
-def build_messages(cfg: Config, pages: list[str], images: list[bytes], max_text_chars: int) -> list[ChatMessage]:
+class TextPlan(NamedTuple):
+    """Which page text a text-mode request sends."""
+
+    kept: list[int]  # characters sent from the head of each page; 0 for a page left out
+    included: list[int]  # 0-based pages sent, in page order
+    truncated: bool  # some page was cut short or left out
+    chars: int  # characters of page text sent
+
+
+def _ends_first(n: int) -> list[int]:
+    """0, n-1, 1, n-2, ...: first and last pages before the middle."""
+    order = [i for pair in zip(range(n), reversed(range(n)), strict=True) for i in pair]
+    return list(dict.fromkeys(order))
+
+
+def plan_text(pages: list[str], page_chars: int, total_chars: int) -> TextPlan:
+    """Choose page text within a per-page cap and a total cap.
+
+    Every page gets its head up to page_chars while the total lasts. When it
+    runs out, the first and last pages are kept first (keys and totals live
+    there) and pages are dropped from the middle.
+
+    Args:
+        pages: Text per page.
+        page_chars: Characters sent at most from one page.
+        total_chars: Characters sent at most in all.
+
+    Returns:
+        The plan.
+    """
+    kept = [0] * len(pages)
+    included = []
+    budget = total_chars
+    for i in _ends_first(len(pages)):
+        head = min(len(pages[i]), page_chars)
+        if head and budget <= 0:
+            continue
+        kept[i] = min(head, budget)
+        budget -= kept[i]
+        included.append(i)
+    truncated = any(k < len(p) for k, p in zip(kept, pages, strict=True))
+    return TextPlan(kept, sorted(included), truncated, sum(kept))
+
+
+def sent_text(pages: list[str], plan: TextPlan) -> list[str]:
+    """Pages with every character the plan did not send blanked, offsets unchanged.
+
+    Grounding against this text accepts only values the model was shown.
+
+    Args:
+        pages: Text per page.
+        plan: What was sent.
+
+    Returns:
+        One string per page, the same length as the page; newlines are kept.
+    """
+    return [p[:k] + re.sub(r"[^\n]", " ", p[k:]) for p, k in zip(pages, plan.kept, strict=True)]
+
+
+def build_messages(
+    cfg: Config, pages: list[str], images: list[bytes], max_text_chars: int, numbers: list[int] | None = None
+) -> list[ChatMessage]:
     """Build the system and user messages for one document.
 
     Args:
@@ -158,6 +220,7 @@ def build_messages(cfg: Config, pages: list[str], images: list[bytes], max_text_
         pages: Page text, one string per page sent.
         images: PNG bytes, one per page sent.
         max_text_chars: Total page text budget across pages.
+        numbers: 1-based page number of each text page; None numbers them 1, 2, ...
 
     Returns:
         The system message, then one user message with text and images.
@@ -165,12 +228,13 @@ def build_messages(cfg: Config, pages: list[str], images: list[bytes], max_text_
     content: list[TextPart | ImagePart] = []
     budget = max_text_chars
     parts = []
-    for i, page in enumerate(pages):
+    labels = numbers or list(range(1, len(pages) + 1))
+    for number, page in zip(labels, pages, strict=True):
         if budget <= 0:
             break
         chunk = page[:budget]
         budget -= len(chunk)
-        parts.append(f"--- page {i + 1} ---\n{chunk}")
+        parts.append(f"--- page {number} ---\n{chunk}")
     if parts:
         content.append(
             {

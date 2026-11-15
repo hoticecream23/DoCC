@@ -16,6 +16,10 @@ from baseline.config import DEFAULT_CONFIG_DIR, read_yaml
 from baseline.errors import ConfigError
 from baseline.schema import Confidence, Strict
 
+# Text mode (vlm.input: text) page text budgets; vlm.text_page_chars and vlm.text_total_chars override.
+TEXT_PAGE_CHARS = 4000
+TEXT_TOTAL_CHARS = 24000
+
 
 class VLMSettings(Strict):
     """How to reach the model server and how far to trust it."""
@@ -37,6 +41,9 @@ class VLMSettings(Strict):
     extra_body: dict[str, Any] = Field(default_factory=dict)
     # "text" sends the extracted page text and no page images, for a model that cannot read images.
     input: Literal["image", "text"] = "image"
+    # Text mode only: characters sent at most from one page, and in all.
+    text_page_chars: int = Field(default=TEXT_PAGE_CHARS, gt=0)
+    text_total_chars: int = Field(default=TEXT_TOTAL_CHARS, gt=0)
 
 
 class RenderSettings(Strict):

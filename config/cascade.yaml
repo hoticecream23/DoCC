@@ -27,6 +27,12 @@ vlm:
   # image: send page images and page text. text: send the page text only, for
   # a model that cannot read images. Grounding is the same either way.
   input: image
+  # Text mode only. Every page sends its head up to text_page_chars while
+  # text_total_chars lasts; past that the first and last pages are kept and
+  # the middle is dropped. A model value is accepted only if it is found in the
+  # text actually sent. On a context-length error the total is halved once.
+  text_page_chars: 4000
+  text_total_chars: 24000
   extra_body:
     reasoning_effort: none
     chat_template_kwargs:
