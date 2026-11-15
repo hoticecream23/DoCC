@@ -56,6 +56,7 @@ from .clientpack_rules import (
     clean_stem,
     dedup_rank,
     folder_tree,
+    is_marked_copy,
     is_reference_image,
     key_gold,
     label_depth,
@@ -113,6 +114,7 @@ class _Cabinet:
     excluded: list[ExcludedRow] = field(default_factory=list)
     duplicates: list[tuple[str, str]] = field(default_factory=list)  # (dropped, kept), each with loose or zip
     dup_group: dict[int, str] = field(default_factory=dict)  # id(doc) -> possible-duplicate group id
+    copy_of: dict[int, Row] = field(default_factory=dict)  # id(marked copy, "3 (1).pdf") -> its document, "3.pdf"
     dup_groups: list[tuple[str, list[str]]] = field(default_factory=list)
     wrappers: list[str] = field(default_factory=list)
     mapping: dict[str, str] = field(default_factory=dict)
@@ -182,23 +184,30 @@ def _matcher(cab: _Cabinet) -> Callable[[str], bool]:
 def _layout(cab: _Cabinet) -> None:
     """Label folder, case and role of every document, decided before dedup so copies do not change them.
 
-    Each child folder of a label folder is judged on its own by ``child_roles``.
+    Each folder below a label folder is judged on its own by ``child_roles``,
+    from the documents it holds directly, so the deepest folder holding a
+    bundle is the case. Its case_id is its path below the cabinet, wrappers
+    skipped, so "Inv/A1" and "Rec/A1" are two cases.
     """
     parts = {id(d): _parts(d, cab.name) for d in cab.docs}
     wrappers = wrapper_folders(parts.values(), _matcher(cab), bool(cab.types))
     _, holds = folder_tree(parts.values())
     depth = {k: label_depth(p, wrappers) for k, p in parts.items()}
     cab.wrappers = sorted({"/".join(parts[k][:n]) for k, i in depth.items() for n in range(1, i + 1)})
-    children: dict[tuple[Folder, str], list[Row]] = defaultdict(list)
+    folders: dict[Folder, list[Row]] = defaultdict(list)
     for d in cab.docs:
         p, i = parts[id(d)], depth[id(d)]
         if len(p) > i + 1 and p[: i + 1] not in holds:
-            children[(p[: i + 1], p[i + 1])].append(d)
+            folders[p].append(d)
     in_child: dict[int, tuple[str, str]] = {}  # id(doc) -> (case_id, role)
-    for (_, child), docs in children.items():
-        roles = child_roles(child, [clean_stem(d["name"]) for d in docs])
+    for folder, docs in folders.items():
+        roles = child_roles(folder[-1], [d["name"] for d in docs])
+        case_id = "" if roles else "/".join(folder[depth[id(docs[0])] :])
         for d, role in zip(docs, roles or ["document"] * len(docs), strict=True):
-            in_child[id(d)] = ("" if roles else child, role)
+            in_child[id(d)] = (case_id, role)
+        if roles:
+            doc = docs[roles.index("document")]
+            cab.copy_of.update({id(d): doc for d in docs if is_marked_copy(folder[-1], d["name"])})
     for d in cab.docs:
         p, i = parts[id(d)], depth[id(d)]
         if not p:
@@ -299,10 +308,14 @@ def _describe(row: Row) -> str:
 
 
 def _possible_duplicates(cab: _Cabinet) -> None:
-    """Group kept documents with the same name and size in different folders; a content hash wins when present."""
+    """Group kept documents with the same name and size in different folders; a content hash wins when present.
+
+    A marked copy beside its document ("3/3 (1).pdf" beside "3/3.pdf") joins that document's group.
+    """
     by_key: dict[str, list[Row]] = defaultdict(list)
     for d in cab.docs:
-        by_key[d.get(HASH_COLUMN) or f"{d['name']}\n{d['size_kb']}"].append(d)
+        src = cab.copy_of.get(id(d), d)
+        by_key[src.get(HASH_COLUMN) or f"{src['name']}\n{src['size_kb']}"].append(d)
     for key, docs in sorted(by_key.items()):
         paths = sorted({_rel_path(d) for d in docs})
         if len(paths) < MIN_DUP_PATHS:

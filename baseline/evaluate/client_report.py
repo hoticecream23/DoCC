@@ -58,7 +58,7 @@ def _overview(score: CabinetScore, header: list[str]) -> list[str]:
         f"Unlabelled (not scored): {score.unlabeled}. Duplicated results lines: {score.duplicates} "
         "(the last line of each is used).",
         "",
-        f"Attachments (files beside a document in its folder, not scored): {score.attachments}. "
+        f"Attachments (files beside a document in its folder; not processed, not scored): {score.attachments}. "
         f"Labelled documents in a possible-duplicate group (same name and size in another folder): "
         f"{score.in_dup_group}.",
         "",

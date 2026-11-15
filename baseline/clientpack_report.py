@@ -60,7 +60,7 @@ def _file_sections(cab: _Cabinet) -> list[tuple[str, list[str]]]:
     return [
         ("Duplicates dropped", [f"- dropped {d} (kept {k})" for d, k in cab.duplicates]),
         (
-            "Possible duplicates (same name and size, different folder)",
+            "Possible duplicates (same name and size, different folder, or a marked copy)",
             [f"- group `{g}`: " + ", ".join(f"`{p}`" for p in paths) for g, paths in cab.dup_groups],
         ),
         ("Oversize files", [f"- `{e.rel_path}`" for e in cab.excluded if e.reason == "oversize"]),

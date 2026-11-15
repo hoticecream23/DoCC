@@ -52,7 +52,7 @@ class CabinetScore(BaseModel):
 
     cabinet: str
     documents: int  # manifest rows that are documents, not attachments
-    attachments: int = 0  # files beside a document in its folder: listed, never scored
+    attachments: int = 0  # files beside a document in its folder: not processed, never scored, never no result
     in_dup_group: int = 0  # scored documents that share a name and size with a file in another folder
     missing: int = 0  # in the manifest, no result line
     failed: int = 0  # has a result line, and the record carries diagnostics errors

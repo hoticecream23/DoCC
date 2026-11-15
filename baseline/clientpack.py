@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import re
 import shutil
 import zipfile
 import zlib
@@ -38,6 +39,10 @@ EXCLUDED_FILE = "excluded.csv"
 FIELD_OVERRIDES_FILE = "field_overrides.yaml"  # hand-written; build reads it and never writes it
 OTHER_CLASS = "other"
 DOC_ID_LEN = 16  # same length as a results doc_id
+MAX_SLUG_LEN = 64  # the API takes cabinet ids matching [\w-]{1,64}
+SLUG_JUNK = re.compile(r"[^a-z0-9]+")  # anything but lower-case ASCII letters and digits
+EMPTY_SLUG = "cabinet"  # the slug of a name with no ASCII letter or digit, before its hash
+EMPTY_SLUG_HASH_LEN = 8
 
 Dtype = Literal["text", "date", "number", "selection"]
 Role = Literal["key", "required", "optional"]
@@ -162,17 +167,26 @@ class PackSummary(_Model):
     ambiguous_labels: int
 
 
+def _cap(base: str, suffix: str = "") -> str:
+    """Join base and suffix in at most MAX_SLUG_LEN characters; the base is cut, never the suffix."""
+    return base[: MAX_SLUG_LEN - len(suffix)].rstrip("_") + suffix
+
+
 def slugify(name: str) -> str:
-    """Directory name for a cabinet.
+    """Directory name and API cabinet id for a cabinet.
 
     Args:
         name: Cabinet folder name.
 
     Returns:
-        Lower-case letters, digits and underscores; "cabinet" if nothing is left.
+        Lower-case ASCII letters, digits and underscores, at most MAX_SLUG_LEN
+        characters. A name with none of those gives "cabinet_" plus a short
+        hash of the name.
     """
-    slug = "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_")
-    return "_".join(p for p in slug.split("_") if p) or "cabinet"
+    slug = "_".join(SLUG_JUNK.sub(" ", name.lower()).split())
+    if not slug:
+        return f"{EMPTY_SLUG}_{hashlib.sha256(name.encode()).hexdigest()[:EMPTY_SLUG_HASH_LEN]}"
+    return _cap(slug)
 
 
 def assign_slugs(names: list[str], recorded: dict[str, str] | None = None) -> dict[str, str]:
@@ -181,7 +195,7 @@ def assign_slugs(names: list[str], recorded: dict[str, str] | None = None) -> di
     A name in ``recorded`` keeps its slug, and no new name takes a recorded
     slug. New names are taken in sorted order; a slug already taken gets the
     first free suffix "_2", "_3" and so on, so "Acme-Ltd" after "Acme Ltd" is
-    "acme_ltd_2".
+    "acme_ltd_2". The base is cut so a suffixed slug stays within MAX_SLUG_LEN.
 
     Args:
         names: Cabinet names.
@@ -198,7 +212,7 @@ def assign_slugs(names: list[str], recorded: dict[str, str] | None = None) -> di
         n = 1
         while slug in taken:
             n += 1
-            slug = f"{base}_{n}"
+            slug = _cap(base, f"_{n}")
         taken.add(slug)
         slugs[name] = slug
     return slugs
@@ -411,18 +425,27 @@ class MaterializeResult(list[Path]):
         return list(self)
 
 
-def materialize(pack_dir: str | Path, cabinet: str, share_root: str | Path, work_dir: str | Path) -> MaterializeResult:
+def materialize(
+    pack_dir: str | Path,
+    cabinet: str,
+    share_root: str | Path,
+    work_dir: str | Path,
+    *,
+    with_attachments: bool = False,
+) -> MaterializeResult:
     """Copy or extract each manifest document to work_dir/<slug>/<doc_id><ext>.
 
     Each copy is written atomically and a file already there is left alone,
     so a re-run only fetches what is missing. Nothing is written inside the
-    share. A missing or unreadable source is logged and skipped.
+    share. A missing or unreadable source is logged and skipped. Attachments
+    are never scored, so they are skipped unless asked for.
 
     Args:
         pack_dir: The pack directory.
         cabinet: Cabinet name or slug.
         share_root: The share the inventory was taken of.
         work_dir: Where plain copies go.
+        with_attachments: Also copy rows with role attachment.
 
     Returns:
         The ready paths in manifest order, with the doc_ids that failed in ``missing``.
@@ -437,7 +460,7 @@ def materialize(pack_dir: str | Path, cabinet: str, share_root: str | Path, work
         raise ClientPackError("the work directory must be outside the share")
     out.mkdir(parents=True, exist_ok=True)
     paths, missing = [], []
-    for row in pack.manifest:
+    for row in (r for r in pack.manifest if with_attachments or r.role != "attachment"):
         dest = out / f"{row.doc_id}{PurePosixPath(row.rel_path).suffix.lower()}"
         if not dest.exists():
             try:

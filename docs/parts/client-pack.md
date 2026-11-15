@@ -34,13 +34,18 @@ The Pydantic models in `baseline/clientpack.py` define the format.
 <pack>/<slug>/excluded.csv             rel_path, reason, detail
 ```
 
-- The slug is the cabinet name in lower case, with every other character as
-  `_`. A slug that pack.yaml already records (under `cabinets` or `retired`)
+- The slug is the cabinet name in lower case, with every run of characters
+  other than ASCII letters and digits as one `_`, cut to 64 characters (the
+  API's cabinet id limit). A name with no ASCII letter or digit gets
+  `cabinet_` plus 8 hex characters of its hash. A slug that pack.yaml already records (under `cabinets` or `retired`)
   is kept for that name forever, and no other name takes it, so a pack or
   work folder never changes owner. New names are taken in name order; when a
   slug is taken ("Acme-Insurance" built first, "Acme Insurance" added later),
-  the new name gets `_2`, `_3` and so on. Commands take the name or the slug;
-  an exact name wins.
+  the new name gets `_2`, `_3` and so on, the base cut so the whole slug
+  stays within 64 characters. A slug already recorded is never changed, even
+  when it is longer. Commands take the name or the slug; an exact name wins.
+  `retired` only grows, because a slug is never reused; delete an entry by
+  hand only when its old work folder is gone too.
 - `doc_id` is the first 16 hex characters of SHA-256 over the cabinet name and
   the path. It does not change when the file bytes change. When one zip holds
   two entries with the same name, the later entry hashes `<path>#<member>`.
@@ -53,7 +58,7 @@ The Pydantic models in `baseline/clientpack.py` define the format.
   `filename` or `none`.
 - `role` is `document` or `attachment` (see Case bundles). `dup_group` is a
   short id shared by kept documents with the same name and size in different
-  folders, or empty. A manifest written before these columns existed loads
+  folders, and by a marked copy and its document, or empty. A manifest written before these columns existed loads
   with `document` and empty.
 - `detail` in excluded.csv, for a duplicate, says whether the dropped file is
   loose or a zip member (and of which zip), and names the copy kept the same
@@ -110,17 +115,23 @@ The Pydantic models in `baseline/clientpack.py` define the format.
    Invoice - Yellow"). 75% is above two of three words on purpose, so
    "Payment Voucher" does not become "Payment Voucher Transfer"; that label
    stays unmapped and REPORT.md names the candidate.
-4. **Case bundles.** Decided before duplicates are dropped, for each child
-   folder of a label folder that has no documents of its own. A child folder
-   is a single-document folder when it holds one document, or when exactly
-   one document's stem (without copy markers) equals the folder name: that
-   one is the document, with `key_gold`, and the others are attachments
-   (`role: attachment`, no `key_gold`, not scored). A child folder with two or
-   more documents and no stem equal to its name (or several) is a case;
-   `case_id` is the child folder name and the type labels the case, not each
-   file. One type folder may mix both: "Inv/3/3.pdf" plus "Inv/3/3-annex.pdf"
-   is one document and an attachment, and "Inv/C-1/a.pdf" plus
-   "Inv/C-1/b.pdf" beside it is a case.
+4. **Case bundles.** Decided before duplicates are dropped, below a label
+   folder that has no documents of its own. Each folder below it is judged
+   from the documents it holds directly; folders in between ("Inv/2025/") only
+   group. A folder is a single-document folder when it holds one document, or
+   when exactly one document's stem (without copy markers) equals the folder
+   name: that one is the document, with `key_gold`, and the others are
+   attachments (`role: attachment`, no `key_gold`, not scored). When several
+   stems match only once copy markers are stripped, the one with no marker is
+   the document: in "Inv/3/" with "3.pdf" and "3 (1).pdf", "3.pdf" has key
+   "3" and "3 (1).pdf" is an attachment that shares its `dup_group` and is
+   listed under possible duplicates. A folder with two or more documents and
+   no such stem is a case. `case_id` is the folder's path below the cabinet
+   with forward slashes, the nested cabinet folder and wrappers skipped
+   ("Inv/2025/A1"), so "Inv/A1" and "Rec/A1" are two cases. The type labels
+   the case, not each file. One type folder may mix both: "Inv/3/3.pdf" plus
+   "Inv/3/3-annex.pdf" is one document and an attachment, and
+   "Inv/C-1/a.pdf" plus "Inv/C-1/b.pdf" beside it is a case.
 5. **Duplicates.** Within one cabinet, two documents are copies only when
    their path below the cabinet (after the nested folder with the cabinet's
    own name is skipped) and their size_kb are equal, or when one is a zip
@@ -129,7 +140,7 @@ The Pydantic models in `baseline/clientpack.py` define the format.
    in old.zip). So "Inv/c1/Invoice.pdf" and "Inv/c2/Invoice.pdf" are both
    kept; kept documents with the same name and size in different folders
    share a `dup_group` and REPORT.md lists them under "Possible duplicates
-   (same name and size, different folder)". When inventory rows carry a
+   (same name and size, different folder, or a marked copy)". When inventory rows carry a
    `sha256` column, that content hash decides the groups instead. Two entries of one zip with the same name are both kept. Across
    cabinets, a document whose first folder is another cabinet's name
    ("Acme/Borealis/...") is a copy when that cabinet holds the same path below
@@ -192,8 +203,11 @@ baseline client-run --pack DIR --cabinet NAME --share ROOT --work DIR [--no-casc
   `<work>/<slug>/<doc_id><ext>`. It skips files already there and refuses a
   work directory inside the share. Run the pipeline on that directory. A
   missing or unreadable source is logged and skipped, and the rest are still
-  copied. In code, `materialize` returns a `MaterializeResult`: the list of
-  ready paths, with `copied` and `missing` (the doc_ids that failed).
+  copied. Attachments are never scored, so they are skipped: no model calls
+  are spent on them. In code, `materialize(..., with_attachments=True)` copies
+  them too; the CLI and `client-run` have no flag.
+  `materialize` returns a `MaterializeResult`: the list of ready paths, with
+  `copied` and `missing` (the doc_ids that failed).
 - `scripts/inventory_share.py` does not follow symbolic links; it logs and
   skips them. A zip member it cannot read (corrupt data, an unsupported
   compression) and an image too large to open safely are still listed, with

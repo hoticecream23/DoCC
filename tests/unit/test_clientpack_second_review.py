@@ -58,7 +58,7 @@ def test_a_type_folder_may_mix_cases_and_single_documents(tmp_path: Path):
     rows += "Acme,Invoice/INV-7,INV-7.pdf,.pdf,3,1,,document\n"
     manifest = _manifest(_build(tmp_path, rows, INVOICE))
     assert (manifest["Acme/Invoice/C-1/a.pdf"]["case_id"], manifest["Acme/Invoice/INV-7/INV-7.pdf"]["key_gold"]) == (
-        "C-1",
+        "Invoice/C-1",
         "INV-7",
     )
 
@@ -114,7 +114,9 @@ def test_same_name_and_size_in_two_folders_share_a_dup_group(tmp_path: Path):
 
 
 def test_possible_duplicates_are_reported(tmp_path: Path):
-    assert "### Possible duplicates (same name and size, different folder)" in _report(_build(tmp_path, COPIES))
+    assert "### Possible duplicates (same name and size, different folder, or a marked copy)" in _report(
+        _build(tmp_path, COPIES)
+    )
 
 
 def test_a_content_hash_column_decides_the_group(tmp_path: Path):
@@ -167,7 +169,7 @@ def test_an_alias_equal_to_another_class_is_dropped_and_reported(tmp_path: Path)
 def test_a_samples_folder_with_cases_and_no_matching_type_is_the_label(tmp_path: Path):
     rows = "Acme,Samples/C-1,a.pdf,.pdf,1,1,,document\nAcme,Samples/C-1,b.pdf,.pdf,2,1,,document\n"
     row = _manifest(_build(tmp_path, rows, INVOICE))["Acme/Samples/C-1/a.pdf"]
-    assert (row["case_id"], row["label"]) == ("C-1", "")
+    assert (row["case_id"], row["label"]) == ("Samples/C-1", "")
 
 
 def test_without_a_schema_a_lone_folder_chain_is_not_skipped(tmp_path: Path):

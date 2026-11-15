@@ -1,9 +1,10 @@
 """Pure rules behind a client pack: label matching, dedup, references, cases, keys and fields.
 
 No file IO here. ``clientpack`` reads the inventory and schema CSVs, applies
-these rules and writes the pack. Rows are the plain dicts ``csv.DictReader``
-yields from the inventory and schema files that ``scripts/inventory_share.py``
-writes.
+these rules and writes the pack. Over 400 lines: each rule is small and pure,
+and splitting them would only spread one rule set over several modules. Rows
+are the plain dicts ``csv.DictReader`` yields from the inventory and schema
+files that ``scripts/inventory_share.py`` writes.
 """
 
 from __future__ import annotations
@@ -354,27 +355,46 @@ def label_depth(parts: Folder, wrappers: set[Folder]) -> int:
     return depth
 
 
-def child_roles(child: str, stems: list[str]) -> list[str] | None:
-    """Role of each document below one child folder of a label folder, or None for a case.
+def child_roles(child: str, names: list[str]) -> list[str] | None:
+    """Role of each document directly in one folder below a label folder, or None for a case.
 
     A folder with one document holds that document. A folder where exactly one
-    stem equals the folder name holds that document, and the others are its
-    attachments. Any other folder is a case bundle. So "100/100.pdf" plus
+    stem, without copy markers, equals the folder name holds that document, and
+    the others are its attachments. When several stems match only that way, the
+    one with no copy marker is the document: "3/3.pdf" beside "3/3 (1).pdf".
+    Any other folder is a case bundle. So "100/100.pdf" plus
     "100/100-annex.pdf" is one document with an attachment, not a case.
 
     Args:
-        child: The child folder name.
-        stems: The clean stems of the documents below it, in order.
+        child: The folder name.
+        names: The file names of the documents directly in it, in order.
 
     Returns:
-        "document" or "attachment" per stem; None when the folder is a case.
+        "document" or "attachment" per name; None when the folder is a case.
     """
-    if len(stems) == 1:
+    if len(names) == 1:
         return ["document"]
-    named = [norm(stem) == norm(child) for stem in stems]
+    target = norm(child)
+    named = [norm(clean_stem(n)) == target for n in names]
+    if sum(named) > 1:
+        named = [norm(PurePosixPath(n).stem) == target for n in names]
     if sum(named) != 1:
         return None
     return ["document" if n else "attachment" for n in named]
+
+
+def is_marked_copy(child: str, name: str) -> bool:
+    """True for a file whose stem equals its folder name only once copy markers are stripped.
+
+    Args:
+        child: The folder name.
+        name: The file name.
+
+    Returns:
+        True for "3 (1).pdf" in folder "3"; False for "3.pdf" or "annex.pdf".
+    """
+    target = norm(child)
+    return norm(clean_stem(name)) == target and norm(PurePosixPath(name).stem) != target
 
 
 def dedup_rank(foreign: bool, folder: str, in_zip: str, rel_path: str) -> tuple[bool, bool, int, str]:

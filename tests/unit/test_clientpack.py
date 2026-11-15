@@ -159,7 +159,7 @@ def test_archives_other_files_and_oversize_are_excluded(pack: Path):
 
 def test_case_bundles_get_a_case_id_and_no_key(pack: Path):
     row = _manifest(pack, "corvid")["Corvid/Claims/C-2/e.pdf"]
-    assert (row["case_id"], row["label"], row["key_gold"]) == ("C-2", "Claims", "")
+    assert (row["case_id"], row["label"], row["key_gold"]) == ("Claims/C-2", "Claims", "")
 
 
 def test_key_gold_strips_numeric_prefix():

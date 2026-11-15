@@ -78,7 +78,7 @@ def test_case_folders_with_one_document_are_still_cases(tmp_path: Path):
     rows += "Acme,Invoice/11344 MONIA,11344 MONIA 2.pdf,.pdf,6,1,,document\n"
     rows += "Acme,Invoice/55 X,55 X 1.pdf,.pdf,7,1,,document\n"
     row = _manifest(_build(tmp_path, rows, KEYED), "acme")["Acme/Invoice/11344 MONIA/11344 MONIA 1.pdf"]
-    assert (row["case_id"], row["key_gold"]) == ("11344 MONIA", "")
+    assert (row["case_id"], row["key_gold"]) == ("Invoice/11344 MONIA", "")
 
 
 def test_one_file_named_like_its_number_folder_is_not_a_case():

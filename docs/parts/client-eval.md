@@ -22,7 +22,7 @@ in the report, its denominator, and what counts as wrong.
 | Produced a result with errors | The line exists and its `diagnostics.errors` is not empty. | Scored as it is. A right class still counts as right. Listed by name. |
 | Abstained | The line exists with no class or the label `unknown`. | Wrong. |
 | Unlabelled | The manifest row has no gold label. | Not scored. Counted only. |
-| Attachment | The row has `role: attachment`: a file beside the document its folder is named after. | Not a document: in no denominator or outcome count. Counted under "Attachments". |
+| Attachment | The row has `role: attachment`: a file beside the document its folder is named after. | Not processed: `materialize` skips it by default, so it never counts as "no result". In no denominator or outcome count. Counted under "Attachments". |
 | Duplicated | A stem is on more than one line. | The last line is used. The count of such stems is reported. |
 
 `client-run` starts from an empty results file, so stale lines from an earlier
@@ -78,6 +78,9 @@ every test.
 
 ## Case bundles
 
+- Files are grouped by the full `case_id` (the case folder's path below the
+  cabinet, such as "Inv/2025/A1"), so same-named folders under two types or
+  two years are two cases.
 - A case's gold is the majority label of its files. Cases whose files carry
   different labels are listed as "mixed".
 - **All files right**: every file is predicted as the case gold. A file with
