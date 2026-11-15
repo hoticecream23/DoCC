@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import io
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -67,6 +69,41 @@ def test_main_writes_csv_and_dry_run_writes_nothing(share: Path, tmp_path: Path)
 def test_office_lock_files_are_skipped(share: Path):
     (share / "Acme" / "~$Acme- Claims document types.xlsx").write_bytes(b"x")
     assert not any(name.startswith("~$") for name in _by_name(share))
+
+
+@pytest.mark.parametrize("error", [zlib.error("bad"), NotImplementedError("method")])
+def test_unreadable_zip_member_is_listed_and_the_walk_goes_on(share: Path, monkeypatch, error: Exception):
+    def broken(*_: object) -> bytes:
+        raise error
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", broken)
+    rows = _by_name(share)
+    assert (rows["claim_001.pdf"].pages, rows["Purchase Daily Invoice.tif"].cabinet) == ("", "Borealis")
+
+
+def test_huge_image_gets_an_empty_page_count(tmp_path: Path, monkeypatch):
+    image = pytest.importorskip("PIL.Image")
+    buffer = io.BytesIO()
+    image.new("L", (64, 64)).save(buffer, format="PNG")
+    monkeypatch.setattr(image, "MAX_IMAGE_PIXELS", 100)
+    assert inv.count_pages(buffer.getvalue(), ".png") == ""
+
+
+def test_zip_member_names_are_made_safe(tmp_path: Path):
+    (tmp_path / "Acme").mkdir()
+    with zipfile.ZipFile(tmp_path / "Acme" / "a.zip", "w") as archive:
+        archive.writestr(zipfile.ZipInfo("/abs.pdf"), b"x")
+        archive.writestr(zipfile.ZipInfo("../../up.pdf"), b"x")
+    folders = {r.name: r.folder for r in inv.inventory(tmp_path) if r.in_zip}
+    assert folders == {"abs.pdf": "a", "up.pdf": "a"}
+
+
+def test_symbolic_links_are_skipped(share: Path):
+    try:
+        (share / "Borealis" / "link.tif").symlink_to(share / "Borealis" / "Purchase Daily Invoice.tif")
+    except OSError:
+        pytest.skip("this machine cannot create symbolic links")
+    assert "link.tif" not in _by_name(share)
 
 
 def test_schema_finds_header_below_a_title_and_fills_merged_types(tmp_path: Path):

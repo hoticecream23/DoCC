@@ -5,7 +5,7 @@ two CSVs ``scripts/inventory_share.py`` writes. The Pydantic models below are
 the format; docs/parts/client-pack.md describes it. Building lives in
 ``clientpack_build`` and the matching rules in ``clientpack_rules``. This
 module holds the models, reads a pack back, and copies its documents out of
-the share.
+the share. Over 400 lines: the format models and the copy-out code share them.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import csv
 import hashlib
 import shutil
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
@@ -34,6 +35,7 @@ TAXONOMY_FILE = "taxonomy.yaml"
 FIELDS_FILE = "fields.yaml"
 MANIFEST_FILE = "manifest.csv"
 EXCLUDED_FILE = "excluded.csv"
+FIELD_OVERRIDES_FILE = "field_overrides.yaml"  # hand-written; build reads it and never writes it
 OTHER_CLASS = "other"
 DOC_ID_LEN = 16  # same length as a results doc_id
 
@@ -100,6 +102,7 @@ class ManifestRow(_Model):
     key_gold: str = ""
     pages: int | None = None
     size_kb: int = Field(ge=0)
+    member: str = ""  # index of a zip member in the archive, so members with the same name stay apart
 
     @field_validator("pages", mode="before")
     @classmethod
@@ -156,6 +159,44 @@ def slugify(name: str) -> str:
     """
     slug = "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_")
     return "_".join(p for p in slug.split("_") if p) or "cabinet"
+
+
+def assign_slugs(names: list[str]) -> dict[str, str]:
+    """A unique slug per cabinet name.
+
+    Names are taken in sorted order. A slug already taken gets the first free
+    suffix "_2", "_3" and so on, so "Acme-Ltd" after "Acme Ltd" is "acme_ltd_2".
+
+    Args:
+        names: Cabinet names.
+
+    Returns:
+        Name -> slug.
+    """
+    taken: set[str] = set()
+    slugs = {}
+    for name in sorted(set(names)):
+        base = slug = slugify(name)
+        n = 1
+        while slug in taken:
+            n += 1
+            slug = f"{base}_{n}"
+        taken.add(slug)
+        slugs[name] = slug
+    return slugs
+
+
+def safe_member(name: str) -> str:
+    """A zip member name as a safe relative path.
+
+    Args:
+        name: The name stored in the zip.
+
+    Returns:
+        Backslashes as slashes, with empty, "." and ".." parts and drive letters dropped.
+    """
+    parts = [p for p in name.replace("\\", "/").split("/") if p not in ("", ".", "..")]
+    return "/".join(parts[1:] if parts and parts[0].endswith(":") else parts)
 
 
 def make_doc_id(cabinet: str, rel_path: str) -> str:
@@ -250,7 +291,8 @@ def load_pack(pack_dir: str | Path, cabinet: str) -> ClientPack:
     """
     root = Path(pack_dir)
     info = PackInfo.model_validate(read_yaml(root / PACK_FILE) or {})
-    entry = next((c for c in info.cabinets if cabinet in (c.name, c.slug)), None)
+    by_name = (c for c in info.cabinets if c.name == cabinet)
+    entry = next(by_name, None) or next((c for c in info.cabinets if c.slug == cabinet), None)
     if entry is None:
         raise ClientPackError(f"no cabinet {cabinet!r} in {root / PACK_FILE}")
     cab = root / entry.slug
@@ -280,24 +322,62 @@ def _zip_location(share: Path, row: ManifestRow) -> tuple[Path, str]:
     raise ClientPackError(f"zip {row.in_zip!r} not found for {row.doc_id}")
 
 
+def _member_info(archive: zipfile.ZipFile, row: ManifestRow, inner: str) -> zipfile.ZipInfo:
+    """The archive entry of a manifest row: by its recorded index, else by its safe name."""
+    infos = archive.infolist()
+    if row.member.isdigit() and int(row.member) < len(infos):
+        info = infos[int(row.member)]
+        if safe_member(info.filename) == inner:
+            return info
+    found = next((i for i in infos if safe_member(i.filename) == inner), None)
+    if found is None:
+        raise KeyError(inner)
+    return found
+
+
 def _copy_one(share: Path, row: ManifestRow, dest: Path) -> None:
     if not row.in_zip:
         with open(share / row.rel_path, "rb") as src, atomic_open(dest, "wb") as fh:
             shutil.copyfileobj(src, fh)
         return
-    archive_path, member = _zip_location(share, row)
+    archive_path, inner = _zip_location(share, row)
     try:
-        with zipfile.ZipFile(archive_path) as archive, atomic_open(dest, "wb") as fh:
-            fh.write(archive.read(member))
-    except (zipfile.BadZipFile, KeyError) as e:
+        with zipfile.ZipFile(archive_path) as archive:
+            data = archive.read(_member_info(archive, row, inner))
+    except (zipfile.BadZipFile, KeyError, zlib.error, NotImplementedError, RuntimeError, EOFError) as e:
         raise ClientPackError(f"cannot extract {row.doc_id} from {row.in_zip}: {type(e).__name__}") from e
+    with atomic_open(dest, "wb") as fh:
+        fh.write(data)
 
 
-def materialize(pack_dir: str | Path, cabinet: str, share_root: str | Path, work_dir: str | Path) -> list[Path]:
+class MaterializeResult(list[Path]):
+    """The documents materialize made ready, and the doc_ids it could not copy.
+
+    It is the list of ready paths, so callers that expect a list keep working.
+    """
+
+    def __init__(self, copied: list[Path], missing: list[str]) -> None:
+        """Hold the result.
+
+        Args:
+            copied: Paths of the documents now in the work directory, in manifest order.
+            missing: doc_ids whose source was missing or unreadable.
+        """
+        super().__init__(copied)
+        self.missing = missing
+
+    @property
+    def copied(self) -> list[Path]:
+        """Paths of the documents now in the work directory."""
+        return list(self)
+
+
+def materialize(pack_dir: str | Path, cabinet: str, share_root: str | Path, work_dir: str | Path) -> MaterializeResult:
     """Copy or extract each manifest document to work_dir/<slug>/<doc_id><ext>.
 
     Each copy is written atomically and a file already there is left alone,
-    so a re-run only fetches what is missing. Nothing is written inside the share.
+    so a re-run only fetches what is missing. Nothing is written inside the
+    share. A missing or unreadable source is logged and skipped.
 
     Args:
         pack_dir: The pack directory.
@@ -306,10 +386,10 @@ def materialize(pack_dir: str | Path, cabinet: str, share_root: str | Path, work
         work_dir: Where plain copies go.
 
     Returns:
-        The path of every document, in manifest order.
+        The ready paths in manifest order, with the doc_ids that failed in ``missing``.
 
     Raises:
-        ClientPackError: work_dir is inside the share, or a source is missing.
+        ClientPackError: work_dir is inside the share.
     """
     pack = load_pack(pack_dir, cabinet)
     share = Path(share_root).resolve()
@@ -317,14 +397,17 @@ def materialize(pack_dir: str | Path, cabinet: str, share_root: str | Path, work
     if out == share or share in out.parents:
         raise ClientPackError("the work directory must be outside the share")
     out.mkdir(parents=True, exist_ok=True)
-    paths = []
+    paths, missing = [], []
     for row in pack.manifest:
         dest = out / f"{row.doc_id}{PurePosixPath(row.rel_path).suffix.lower()}"
         if not dest.exists():
             try:
                 _copy_one(share, row, dest)
-            except OSError as e:
-                raise ClientPackError(f"cannot copy {row.doc_id}: {type(e).__name__}") from e
+            except (OSError, ClientPackError) as e:
+                log.warning("cannot copy", extra={"doc_id": row.doc_id, "error": type(e).__name__})
+                missing.append(row.doc_id)
+                continue
         paths.append(dest)
-    log.info("materialized", extra={"cabinet": pack.cabinet.name, "documents": len(paths), "work": str(out)})
-    return paths
+    extra = {"cabinet": pack.cabinet.name, "documents": len(paths), "missing": len(missing), "work": str(out)}
+    log.info("materialized", extra=extra)
+    return MaterializeResult(paths, missing)

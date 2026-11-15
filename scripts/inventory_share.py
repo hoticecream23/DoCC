@@ -20,7 +20,10 @@ import csv
 import functools
 import io
 import logging
+import stat
+import warnings
 import zipfile
+import zlib
 from collections.abc import Iterator, Sequence
 from dataclasses import astuple, dataclass, fields
 from pathlib import Path, PurePosixPath
@@ -61,6 +64,7 @@ class Row:
     pages: str
     in_zip: str
     kind: str
+    member: str = ""  # index of a zip member in the archive; two entries can share a name
 
 
 def classify(name: str, ext: str) -> str:
@@ -99,32 +103,70 @@ def count_pages(data: bytes, ext: str) -> str:
             with fitz.open(stream=data, filetype="pdf") as doc:
                 return str(doc.page_count)
         if ext in DOCUMENT_EXT:
-            from PIL import Image
-
-            with Image.open(io.BytesIO(data)) as img:
-                return str(getattr(img, "n_frames", 1))
+            return _image_pages(data)
     except (ImportError, OSError, RuntimeError, ValueError) as exc:  # missing lib or unreadable file
         log.debug("no page count: %s", type(exc).__name__)
     return ""
 
 
-def _row(cabinet: str, rel: PurePosixPath, size: int, data: bytes | None, in_zip: str) -> Row:
+def _image_pages(data: bytes) -> str:
+    """Frame count of an image; "" for an image too large to open safely."""
+    from PIL import Image
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        try:
+            with Image.open(io.BytesIO(data)) as img:
+                return str(getattr(img, "n_frames", 1))
+        except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+            log.warning("no page count: %s", type(exc).__name__)
+            return ""
+
+
+def safe_member(name: str) -> str:
+    """A zip member name as a safe relative path.
+
+    Same rule as ``baseline.clientpack.safe_member``; this script stays standalone.
+
+    Args:
+        name: The name stored in the zip.
+
+    Returns:
+        Backslashes as slashes, with empty, "." and ".." parts and drive letters dropped.
+    """
+    parts = [p for p in name.replace("\\", "/").split("/") if p not in ("", ".", "..")]
+    return "/".join(parts[1:] if parts and parts[0].endswith(":") else parts)
+
+
+def _row(cabinet: str, rel: PurePosixPath, size: int, data: bytes | None, in_zip: str, member: str = "") -> Row:
     ext = rel.suffix.lower()
     kind = classify(rel.name, ext)
     pages = count_pages(data, ext) if data is not None and kind == "document" else ""
     folder = "" if str(rel.parent) == "." else str(rel.parent)
-    return Row(cabinet, folder, rel.name, ext, -(-size // BYTES_PER_KB), pages, in_zip, kind)
+    return Row(cabinet, folder, rel.name, ext, -(-size // BYTES_PER_KB), pages, in_zip, kind, member)
+
+
+def _member_bytes(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes | None:
+    """A small member's bytes for the page count; None when too big or unreadable."""
+    if info.file_size > MAX_PAGE_PROBE_BYTES:
+        return None
+    try:
+        return archive.read(info)
+    except (zlib.error, NotImplementedError, zipfile.BadZipFile, RuntimeError, EOFError) as exc:  # corrupt member
+        log.warning("cannot read a member of %s: %s", archive.filename, type(exc).__name__)
+        return None
 
 
 def _zip_rows(cabinet: str, rel: PurePosixPath, path: Path) -> Iterator[Row]:
     try:
         with zipfile.ZipFile(path) as archive:
-            for info in archive.infolist():
-                if info.is_dir():
+            for index, info in enumerate(archive.infolist()):
+                inner = safe_member(info.filename)
+                if info.is_dir() or not inner:
                     continue
-                member = rel.with_suffix("") / PurePosixPath(info.filename)
-                small = info.file_size <= MAX_PAGE_PROBE_BYTES
-                yield _row(cabinet, member, info.file_size, archive.read(info) if small else None, rel.name)
+                member = rel.with_suffix("") / PurePosixPath(inner)
+                data = _member_bytes(archive, info)
+                yield _row(cabinet, member, info.file_size, data, rel.name, str(index))
     except (zipfile.BadZipFile, OSError, RuntimeError) as exc:  # corrupt or password-protected
         log.warning("cannot read archive %s: %s", rel, type(exc).__name__)
 
@@ -136,12 +178,18 @@ def inventory(root: Path) -> Iterator[Row]:
         root: Share root; its first-level folders are the cabinets.
 
     Yields:
-        Rows in path order.
+        Rows in path order. Symbolic links are skipped, not followed.
     """
-    for path in sorted(p for p in root.rglob("*") if p.is_file() and not p.name.startswith(LOCK_PREFIX)):
+    for path in sorted(p for p in root.rglob("*") if not p.name.startswith(LOCK_PREFIX)):
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            log.warning("skipped a symbolic link: %s", path.name)
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
         parts = path.relative_to(root).parts
         cabinet, rel = (parts[0], PurePosixPath(*parts[1:])) if len(parts) > 1 else ("", PurePosixPath(parts[0]))
-        size = path.stat().st_size
+        size = info.st_size
         data = path.read_bytes() if size <= MAX_PAGE_PROBE_BYTES and rel.suffix.lower() in DOCUMENT_EXT else None
         yield _row(cabinet, rel, size, data, "")
         if rel.suffix.lower() in ARCHIVE_EXT:

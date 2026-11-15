@@ -9,8 +9,8 @@ writes.
 from __future__ import annotations
 
 import re
-from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections import defaultdict
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -19,12 +19,21 @@ SAMPLE_EXT = frozenset({".pdf", ".tif", ".tiff"})
 IMAGE_EXT = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp"})
 INDEX_FIELD_MARK = "index field"  # "opex- Index fields.jpg" is a screenshot of the schema
 KEY_PREFIX = re.compile(r"^\d+_")  # "6390_C111322" -> "C111322"
-DATE_FORMAT = re.compile(r"\(\s*([DMY][DMY/\-. ]*[DMY])\s*\)", re.IGNORECASE)
-MIN_CASE_DOCS = 2  # a case folder bundles at least this many supporting documents
+# Windows and macOS copy suffixes: "x - Copy", "x - Copy (2)", "x copy", "x copy 2", "x (1)".
+COPY_SUFFIX = re.compile(r"(\s*-\s*copy(\s*\(\d+\))?|\s+copy(\s+\d+)?|\s*\(\d+\))$", re.IGNORECASE)
+# "(DD/MM/YYYY)", "(dd\MM\YYYY)" once backslashes are slashes, "(DD/MM/YYYY HH:MM)".
+DATE_FORMAT = re.compile(r"\(\s*([DMY][DMY/\-. ]*[DMY])(?:\s+(H[HMS:.]*))?\s*\)", re.IGNORECASE)
+DATE_WORD = re.compile(r"^\s*date\b", re.IGNORECASE)  # "Date(...)" is a date; "Updated" is not
+MIN_CASE_DOCS = 2  # a child folder with this many documents looks like a case bundle
+# A prefix or word-subset match must cover more than two of a type's three words,
+# so "Payment Voucher" does not become "Payment Voucher Transfer".
+MIN_LABEL_COVERAGE = 0.75
+TYPE_QUALIFIER = re.compile(r"\([^)]*\)|\s[-–—]+.*$")  # "(Local GRN)" and " - Yellow" qualify a type
+# Folders that only wrap the type folders: "Acme/Samples/Purchase Invoice/...".
+WRAPPER_NAMES = frozenset({"samples", "sample", "documents", "docs", "exporteddocuments"})
 
-# Words in a free-text data type, checked in this order. "Text (Alpha Numeric)" is text, not a number.
+# Words in a free-text data type, checked in this order after DATE_WORD. "Text (Alpha Numeric)" is text.
 DTYPE_WORDS: tuple[tuple[str, str], ...] = (
-    ("date", "date"),
     ("text", "text"),
     ("alpha", "text"),
     ("selection", "selection"),
@@ -47,24 +56,27 @@ ROLE_BY_FIELD_TYPE = {
 }
 FIXED_FIELD_TYPE = "fixed"
 # Values staff type in while indexing. They are not printed on the paper.
-OPERATIONAL_KEYWORDS = (
-    "box",
-    "pouch",
+# Whole normalised field names: "Year" is a filing field, "Model Year" is printed on the document.
+OPERATIONAL_NAMES = frozenset({"year", "month", "box", "pouch", "bundle", "remark", "remarks", "verified"})
+# Phrases that are operational wherever they occur in the name.
+OPERATIONAL_PHRASES = (
+    "box and pouch no",
+    "box no",
+    "box number",
+    "pouch no",
     "file number",
     "file no",
     "indexing person",
     "indexed by",
-    "year",
-    "month",
-    "verification",
-    "verified",
-    "remark",
-    "remarks",
+    "verification status",
     "posted by",
-    "driver",
-    "bundle",
+    "bundle no",
+    "remarks",
 )
-OPERATIONAL_NAME = re.compile(r"\b(" + "|".join(re.escape(k) for k in OPERATIONAL_KEYWORDS) + r")\b")
+# A postal box ("P.O. Box No", "Post Box No") is printed on the document.
+OPERATIONAL_PHRASE = re.compile(
+    r"(?<!\bpost )(?<!\bpo )(?<!\bp o )\b(" + "|".join(re.escape(k) for k in OPERATIONAL_PHRASES) + r")\b"
+)
 ERP_METHOD_MARK = "autofil"  # "Autofil(DB)", the client's spelling
 INDEXING_METHOD_KEY = "indexing method"
 DB_FIELD_KEY = "db_field"
@@ -100,11 +112,24 @@ class LabelMatch:
 
     target: str
     candidates: tuple[str, ...] = ()
+    loose: str = ""  # the one type a prefix or word step found but the label does not cover well enough
 
     @property
     def ambiguous(self) -> bool:
         """True when several types matched and none was chosen."""
         return bool(self.candidates)
+
+
+def _covers(label_words: set[str], type_name: str) -> bool:
+    """True when a label is close enough to a type it only partly matched.
+
+    The label covers at least MIN_LABEL_COVERAGE of the type's words, or all
+    words outside the type's qualifier ("(Local GRN)", " - Yellow").
+    """
+    words = norm(type_name).split()
+    covered = sum(w in label_words for w in words)
+    core = set(norm(TYPE_QUALIFIER.sub(" ", type_name)).split())
+    return covered >= MIN_LABEL_COVERAGE * len(words) or (bool(core) and core <= label_words)
 
 
 def match_label(label: str, types: Iterable[str]) -> LabelMatch:
@@ -114,6 +139,8 @@ def match_label(label: str, types: Iterable[str]) -> LabelMatch:
     names, then a type name that starts with the label ("LGRN" ->
     "LGRN (Local GRN)"), then a type whose words include all the label's
     words. A step that hits several types stops the search with no target.
+    A single prefix or word hit counts only when ``_covers`` holds; else it
+    comes back as ``loose`` with no target.
 
     Args:
         label: The folder name or file stem.
@@ -132,13 +159,28 @@ def match_label(label: str, types: Iterable[str]) -> LabelMatch:
         lambda t: t.startswith(n + " "),
         lambda t: words <= set(t.split()),
     )
-    for step in steps:
+    for exact, step in zip((True, False, False), steps, strict=True):
         hits = sorted(t for t, nt in normed.items() if step(nt))
-        if len(hits) == 1:
-            return LabelMatch(hits[0])
-        if hits:
+        if len(hits) > 1:
             return LabelMatch("", tuple(hits))
+        if hits:
+            return LabelMatch(hits[0]) if exact or _covers(words, hits[0]) else LabelMatch("", loose=hits[0])
     return LabelMatch("")
+
+
+def clean_stem(name: str) -> str:
+    """A file stem without copy suffixes.
+
+    Args:
+        name: File name, with or without extension.
+
+    Returns:
+        "PV-1 - Copy (2).pdf" -> "PV-1"; "Scan (1).tif" -> "Scan".
+    """
+    stem = PurePosixPath(name).stem.strip()
+    while (cut := COPY_SUFFIX.sub("", stem).strip()) and cut != stem:
+        stem = cut
+    return stem
 
 
 def key_gold(name: str) -> str:
@@ -148,9 +190,9 @@ def key_gold(name: str) -> str:
         name: File name, with or without extension.
 
     Returns:
-        The stem with a leading "<digits>_" removed, kept only when it holds a digit.
+        The stem without copy suffixes and a leading "<digits>_", kept only when it holds a digit.
     """
-    stem = KEY_PREFIX.sub("", PurePosixPath(name).stem).strip()
+    stem = KEY_PREFIX.sub("", clean_stem(name)).strip()
     return stem if any(c.isdigit() for c in stem) else ""
 
 
@@ -162,11 +204,16 @@ def parse_dtype(data_type: str) -> tuple[str, str | None]:
 
     Returns:
         (text|date|number|selection, the date format upper-cased or None).
+        A time part follows the date after one space: "DD/MM/YYYY HH:MM".
     """
-    low = data_type.lower()
-    dtype = next((out for word, out in DTYPE_WORDS if word in low), "text")
-    found = DATE_FORMAT.search(data_type) if dtype == "date" else None
-    return dtype, found.group(1).upper().replace(" ", "") if found else None
+    if not DATE_WORD.match(data_type):
+        low = data_type.lower()
+        return next((out for word, out in DTYPE_WORDS if word in low), "text"), None
+    found = DATE_FORMAT.search(data_type.replace("\\", "/"))
+    if not found:
+        return "date", None
+    date, time = found.group(1).upper().replace(" ", ""), found.group(2)
+    return "date", f"{date} {time.upper()}" if time else date
 
 
 def parse_role(field_type: str) -> str | None:
@@ -205,14 +252,16 @@ def field_origin(name: str, field_type: str, source: dict[str, str], role: str) 
 
     Returns:
         fixed for Fixed fields; erp when filled from an ERP view (Autofil(DB),
-        or a db_field on a non-key row); manual for operational names; else document.
+        or a db_field on a non-key row); manual for an OPERATIONAL_NAMES name
+        or a name holding an OPERATIONAL_PHRASES phrase; else document.
     """
     if norm(field_type) == FIXED_FIELD_TYPE:
         return "fixed"
     erp_method = ERP_METHOD_MARK in source.get(INDEXING_METHOD_KEY, "").lower()
     if erp_method or (source.get(DB_FIELD_KEY) and role != "key"):
         return "erp"
-    return "manual" if OPERATIONAL_NAME.search(norm(name)) else "document"
+    n = norm(name)
+    return "manual" if n in OPERATIONAL_NAMES or OPERATIONAL_PHRASE.search(n) else "document"
 
 
 def is_reference_image(name: str, folder_has_samples: bool, type_labels: set[str]) -> bool:
@@ -233,41 +282,110 @@ def is_reference_image(name: str, folder_has_samples: bool, type_labels: set[str
     return folder_has_samples or stem in type_labels or INDEX_FIELD_MARK in stem
 
 
-def case_folders(parts: Iterable[tuple[str, ...]]) -> set[str]:
-    """Type folders that hold case bundles.
+Folder = tuple[str, ...]
 
-    A type folder is a case folder when it has no documents of its own and
-    every child folder holds at least two documents.
+
+def folder_tree(parts: Iterable[Folder]) -> tuple[dict[Folder, set[str]], set[Folder]]:
+    """Child folder names of every folder, and the folders that hold documents.
 
     Args:
         parts: For each document, its folder parts below the cabinet.
 
     Returns:
-        The first-level folder names that are case folders.
+        (folder -> child folder names, folders with documents of their own).
     """
-    children: dict[str, Counter[str]] = defaultdict(Counter)
-    loose: set[str] = set()
+    children: dict[Folder, set[str]] = defaultdict(set)
+    holds: set[Folder] = set()
     for p in parts:
-        if len(p) == 1:
-            loose.add(p[0])
-        elif p:
-            children[p[0]][p[1]] += 1
-    return {top for top, kids in children.items() if top not in loose and min(kids.values()) >= MIN_CASE_DOCS}
+        holds.add(p)
+        for i in range(len(p)):
+            children[p[:i]].add(p[i])
+    return children, holds
 
 
-def dedup_rank(cabinet: str, folder: str, in_zip: str) -> tuple[bool, int, str]:
-    """Sort key for picking which copy of a duplicate to keep: lowest wins.
+def wrapper_folders(parts: Iterable[Folder], matches: Callable[[str], bool], has_schema: bool) -> set[Folder]:
+    """Folders that only wrap the type folders, such as "Samples".
 
-    Loose files beat zip members, shallow paths beat deep ones (a cabinet
-    copied inside another sits one level deeper), then path order.
+    A wrapper holds subfolders and no documents of its own, and its name
+    matches no schema type. It is a wrapper when its name is in WRAPPER_NAMES,
+    or one of its children matches a type. In a cabinet with no schema, it is
+    also a wrapper when it is the only folder of a parent without documents
+    and none of its children hold documents of their own.
 
     Args:
-        cabinet: Cabinet name.
+        parts: For each document, its folder parts below the cabinet.
+        matches: True when a folder name matches a schema type or an override.
+        has_schema: The cabinet has schema types.
+
+    Returns:
+        The folders that are wrappers.
+    """
+    children, holds = folder_tree(parts)
+
+    def wrapper(prefix: Folder) -> bool:
+        name, kids = prefix[-1], children[prefix]
+        if prefix in holds or matches(name):
+            return False
+        if norm(name) in WRAPPER_NAMES:
+            return True
+        if has_schema:
+            return any(matches(k) for k in kids)
+        parent = prefix[:-1]
+        return children[parent] == {name} and parent not in holds and not any(prefix + (k,) in holds for k in kids)
+
+    return {prefix for prefix in list(children) if prefix and wrapper(prefix)}
+
+
+def label_depth(parts: Folder, wrappers: set[Folder]) -> int:
+    """Index of the label folder in a document's folder parts, past any wrappers.
+
+    Args:
+        parts: Folder parts below the cabinet.
+        wrappers: From ``wrapper_folders``.
+
+    Returns:
+        The index; it equals len(parts) only when parts is empty.
+    """
+    depth = 0
+    while parts[: depth + 1] in wrappers:
+        depth += 1
+    return depth
+
+
+def holds_cases(children: dict[str, list[str]]) -> bool:
+    """True when the child folders of a label folder are case bundles.
+
+    They are cases when more than half of them hold MIN_CASE_DOCS or more
+    documents, or when a document's stem differs from its folder's name. So
+    "100/100.pdf" in every child is one document per number folder, not a case.
+
+    Args:
+        children: Child folder name -> the clean stems of the documents below it.
+
+    Returns:
+        True for case bundles.
+    """
+    multi = sum(len(stems) >= MIN_CASE_DOCS for stems in children.values())
+    if multi * 2 > len(children):
+        return True
+    return any(norm(stem) != norm(child) for child, stems in children.items() for stem in stems)
+
+
+def dedup_rank(foreign: bool, folder: str, in_zip: str, rel_path: str) -> tuple[bool, bool, int, str]:
+    """Sort key for picking which copy of a duplicate to keep: lowest wins.
+
+    The row in the cabinet that owns it beats a copy filed under another
+    cabinet's name. Then loose files beat zip members, shallow paths beat
+    deep ones, then path order.
+
+    Args:
+        foreign: The row's first folder names another cabinet.
         folder: Folder below the cabinet.
         in_zip: Zip name, or "".
+        rel_path: Path relative to the share root.
 
     Returns:
         The sort key.
     """
     depth = len([p for p in folder.split("/") if p])
-    return bool(in_zip), depth, f"{cabinet}/{folder}"
+    return foreign, bool(in_zip), depth, rel_path

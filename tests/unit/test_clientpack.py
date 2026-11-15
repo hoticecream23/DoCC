@@ -100,7 +100,7 @@ def test_label_prefix_matches_alias():
 
 
 def test_label_token_subset_matches():
-    assert match_label("Yellow Note", TYPES).target == "Delivery Note - Yellow"
+    assert match_label("Note Delivery", TYPES).target == "Delivery Note - Yellow"
 
 
 def test_label_matching_several_types_is_ambiguous():
@@ -116,11 +116,11 @@ def test_ambiguous_label_is_unmapped_and_reported(pack: Path):
 def test_label_map_override_wins_and_survives_rebuild(pack: Path, csvs: tuple[Path, Path]):
     path = pack / "label_map.yaml"
     data = yaml.safe_load(path.read_text())
-    data["Acme"]["Delivery Note"] = "Delivery Note - Pink"
+    data["Acme"]["overrides"]["Delivery Note"] = "Delivery Note - Pink"
     path.write_text(yaml.safe_dump(data))
     build_pack(*csvs, pack)
     assert _manifest(pack, "acme")["Acme/Acme/Delivery Note/dn_scan.pdf"]["label"] == "Delivery Note - Pink"
-    assert yaml.safe_load(path.read_text())["Acme"]["Delivery Note"] == "Delivery Note - Pink"
+    assert yaml.safe_load(path.read_text())["Acme"]["overrides"]["Delivery Note"] == "Delivery Note - Pink"
 
 
 def test_file_name_is_the_label_without_type_folders(pack: Path):
