@@ -1,5 +1,7 @@
 """Store additions: cabinets, document types, field definitions, routing and an audit log.
 
+Over 400 lines: the cabinet registry, routing and the audit log share one set of row helpers.
+
 ``baseline/db.py`` holds the JSONL mirror. This module holds what sits beside
 it. ``baseline/db_migrate.py`` adds these tables to an existing ``docc.sqlite``.
 
@@ -185,13 +187,35 @@ def record_audit(
         doc_id: Document acted on, if one.
         detail: Extra ids and counts, stored as JSON.
     """
-    body = None if detail is None else json.dumps(detail, sort_keys=True, ensure_ascii=False)
     with conn:
-        conn.execute(
-            "INSERT INTO audit_log (audit_id, at, actor, action, cabinet_id, doc_id, detail) "
-            "VALUES ((SELECT COALESCE(MAX(audit_id), 0) + 1 FROM audit_log), ?, ?, ?, ?, ?, ?)",
-            (utc_now(), actor, action, cabinet_id, doc_id, body),
-        )
+        insert_audit(conn, actor=actor, action=action, cabinet_id=cabinet_id, doc_id=doc_id, detail=detail)
+
+
+def insert_audit(
+    conn: sqlite3.Connection,
+    *,
+    actor: str,
+    action: str,
+    cabinet_id: str | None,
+    doc_id: str | None = None,
+    detail: dict[str, Any] | None = None,
+) -> None:
+    """The audit insert of record_audit, inside the caller's open transaction.
+
+    Args:
+        conn: Open store; the caller owns the transaction.
+        actor: Who acted.
+        action: What was done.
+        cabinet_id: Cabinet acted on, if one.
+        doc_id: Document acted on, if one.
+        detail: Extra ids and counts, stored as JSON.
+    """
+    body = None if detail is None else json.dumps(detail, sort_keys=True, ensure_ascii=False)
+    conn.execute(
+        "INSERT INTO audit_log (audit_id, at, actor, action, cabinet_id, doc_id, detail) "
+        "VALUES ((SELECT COALESCE(MAX(audit_id), 0) + 1 FROM audit_log), ?, ?, ?, ?, ?, ?)",
+        (utc_now(), actor, action, cabinet_id, doc_id, body),
+    )
 
 
 def list_audit(

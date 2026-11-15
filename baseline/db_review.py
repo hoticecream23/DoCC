@@ -85,9 +85,9 @@ def _event_id(event: ReviewEvent, predecessor: str | None) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
-_LATEST_EVENT = (
-    "SELECT event_id, old_value, new_value, source FROM review_events WHERE doc_id = ? AND field = ? "
-    "ORDER BY seq DESC LIMIT 1"
+_TAIL = (
+    "SELECT event_id, old_value, new_value, source FROM review_events WHERE doc_id = ? AND kind = ? AND field = ? "
+    "ORDER BY seq DESC LIMIT ?"
 )
 
 # seq is the next integer, taken in the same transaction, so no autoincrement is needed.
@@ -98,30 +98,37 @@ _INSERT_EVENT = (
 )
 
 
-def _write_event(conn: sqlite3.Connection, e: ReviewEvent, now: str) -> int:
-    """Insert one event unless it repeats the latest stored event for its field; return rows written."""
-    latest = conn.execute(_LATEST_EVENT, (e.doc_id, e.field)).fetchone()
-    if latest is not None and (latest["old_value"], latest["new_value"], latest["source"]) == (
-        e.old_value,
-        e.new_value,
-        e.source,
-    ):
+def _write_events(conn: sqlite3.Connection, group: list[ReviewEvent], now: str) -> int:
+    """Append one (doc_id, kind, field)'s events unless the stored tail already ends with them; return rows written."""
+    first = group[0]
+    kind = event_kind(first)
+    tail = conn.execute(_TAIL, (first.doc_id, kind, first.field, len(group))).fetchall()
+    stored = [(r["old_value"], r["new_value"], r["source"]) for r in reversed(tail)]
+    if stored == [(e.old_value, e.new_value, e.source) for e in group]:
         return 0
-    predecessor = None if latest is None else str(latest["event_id"])
-    row = (_event_id(e, predecessor), e.doc_id, e.field, e.old_value, e.new_value, e.source, now, e.verdict)
-    return int(conn.execute(_INSERT_EVENT, (*row, int(e.is_gold), event_kind(e))).rowcount)
+    predecessor = str(tail[0]["event_id"]) if tail else None
+    written = 0
+    for e in group:
+        event_id = _event_id(e, predecessor)
+        row = (event_id, e.doc_id, e.field, e.old_value, e.new_value, e.source, now, e.verdict)
+        written += conn.execute(_INSERT_EVENT, (*row, int(e.is_gold), kind)).rowcount
+        predecessor = event_id
+    return written
 
 
 def record_review_events(conn: sqlite3.Connection, events: list[ReviewEvent], *, actor: str = DEFAULT_ACTOR) -> int:
-    """Store review corrections, in order. An event identical to the latest stored one for its field is skipped.
+    """Store review corrections, in order. One call is idempotent as a whole.
 
-    Identical means the same old value, new value and source; verdict and
-    is_gold do not count, so a skipped row keeps its stored verdict. Importing
-    the same workbook twice in a row adds nothing, while a correction made
-    again after a different one (A to B, B to A, A to B) is stored and is
-    then the latest. Events for a doc_id the store does not hold are skipped:
-    the foreign key needs the document. One audit row per cabinet records the
-    counts and the source file names.
+    Events are grouped by (doc_id, kind, field), keeping their order. A group
+    is skipped when the stored events of that (doc_id, kind, field) already
+    end with exactly the same list; otherwise the whole list is appended.
+    Same means the same old value, new value and source; verdict and is_gold
+    do not count, so a skipped row keeps its stored verdict. Importing the
+    same workbook twice in a row adds nothing, even when it holds two rows
+    for one field, while a correction made again after a different one (A to
+    B, B to A, A to B) is stored and is then the latest. Events for a doc_id
+    the store does not hold are skipped: the foreign key needs the document.
+    One audit row per cabinet records the counts and the source file names.
 
     Args:
         conn: Open store.
@@ -134,13 +141,16 @@ def record_review_events(conn: sqlite3.Connection, events: list[ReviewEvent], *,
     now = _now()
     written: Counter[str] = Counter()
     sources: dict[str, set[str]] = {}
+    groups: dict[tuple[str, str, str], list[ReviewEvent]] = {}
+    for e in events:
+        groups.setdefault((e.doc_id, event_kind(e), e.field), []).append(e)
     with conn:
-        for e in events:
-            cabinet_id = document_cabinet(conn, e.doc_id)
+        for (doc_id, _, _), group in groups.items():
+            cabinet_id = document_cabinet(conn, doc_id)
             if cabinet_id is None:
                 continue
-            written[cabinet_id] += _write_event(conn, e, now)
-            sources.setdefault(cabinet_id, set()).add(Path(e.source.split("#")[0]).name)
+            written[cabinet_id] += _write_events(conn, group, now)
+            sources.setdefault(cabinet_id, set()).update(Path(e.source.split("#")[0]).name for e in group)
     for cabinet_id, names in sorted(sources.items()):
         detail = {"written": written[cabinet_id], "sources": sorted(names)}
         record_audit(conn, actor=actor, action="review_events.record", cabinet_id=cabinet_id, detail=detail)

@@ -33,7 +33,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, TypedDict
 
-from .db_migrate import migrate
+from .db_migrate import is_current, migrate
 from .db_registry import DEFAULT_ACTOR, ensure_cabinet, record_audit, routing_status
 from .db_registry import utc_now as _now
 from .db_review import KIND_CLASS as KIND_CLASS
@@ -234,10 +234,13 @@ def connect(path: str | Path, threads: bool = False) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         _enable_wal(conn)
-        with conn:
-            for stmt in SCHEMA_DDL:
-                conn.execute(stmt)
-        migrate(conn)
+        # A current store takes no write lock here, so an open never waits behind a writer.
+        # migrate re-checks the applied versions under the lock.
+        if not is_current(conn):
+            with conn:
+                for stmt in SCHEMA_DDL:
+                    conn.execute(stmt)
+            migrate(conn)
     except BaseException:
         conn.close()  # a failed open must not keep the file open; Windows would hold it locked
         raise
@@ -257,14 +260,66 @@ def start_run(conn: sqlite3.Connection, config: dict[str, Any], cabinet_id: str,
         A new run_id.
     """
     run_id = uuid.uuid4().hex
-    digest = hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     with conn:
         ensure_cabinet(conn, cabinet_id)
-        conn.execute(
-            "INSERT INTO runs (run_id, started_at, config_hash, schema_version, cabinet_id, trace_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (run_id, _now(), digest, SCHEMA_VERSION, cabinet_id, trace_id),
-        )
+        _insert_run(conn, run_id, config, cabinet_id, trace_id)
+    return run_id
+
+
+def _insert_run(
+    conn: sqlite3.Connection, run_id: str, config: dict[str, Any], cabinet_id: str, trace_id: str | None
+) -> None:
+    """The runs-table insert, inside the caller's transaction."""
+    digest = hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    conn.execute(
+        "INSERT INTO runs (run_id, started_at, config_hash, schema_version, cabinet_id, trace_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (run_id, _now(), digest, SCHEMA_VERSION, cabinet_id, trace_id),
+    )
+
+
+class _Refused(Exception):  # noqa: N818 - internal signal, never leaves this module
+    """Rolls back a transaction whose document upsert was refused."""
+
+
+def store_record(
+    conn: sqlite3.Connection,
+    record: DocumentRecord,
+    config: dict[str, Any],
+    *,
+    trace_id: str | None = None,
+    provenance: dict[str, Any] | None = None,
+) -> str:
+    """Record a run and upsert one record, and its provenance, in one transaction.
+
+    The API's write. On refusal the whole transaction rolls back, so no
+    cabinet, run or provenance row is left behind; only the "upsert_refused"
+    audit row is written, in its own transaction.
+
+    Args:
+        conn: Open store.
+        record: The record.
+        config: Every loaded config file; hashed, not stored.
+        trace_id: Request trace id.
+        provenance: The cascade provenance line, if any.
+
+    Returns:
+        The new run_id.
+
+    Raises:
+        DocumentInOtherCabinet: The doc_id is stored under another cabinet.
+    """
+    run_id = uuid.uuid4().hex
+    rows = _document_rows(record, run_id, None, None)
+    try:
+        with conn:
+            _insert_run(conn, run_id, config, record.cabinet_id, trace_id)
+            if not _write_document(conn, record.cabinet_id, *rows):
+                raise _Refused
+            if provenance is not None:
+                _write_provenance(conn, provenance)
+    except _Refused:
+        _refuse(conn, record.doc_id, record.cabinet_id)
     return run_id
 
 
@@ -313,6 +368,20 @@ def upsert_document(
         DocumentInOtherCabinet: The doc_id is stored under another cabinet.
     """
     bbox = bbox_path if bbox_path is not None and bbox_path.is_file() else None
+    rows = _document_rows(record, run_id, bbox, case_id)
+    with conn:
+        stored = _write_document(conn, record.cabinet_id, *rows)
+    if not stored:
+        _refuse(conn, record.doc_id, record.cabinet_id)
+
+
+_Rows = list[tuple[Any, ...]]
+
+
+def _document_rows(
+    record: DocumentRecord, run_id: str | None, bbox: Path | None, case_id: str | None
+) -> tuple[tuple[Any, ...], _Rows, _Rows]:
+    """The documents row, field rows and tag rows of one record."""
     doc = _document_row(record, run_id, bbox, case_id)
     fields = [
         (record.doc_id, i, m.field, m.value, m.normalized_value, m.page, m.char_start, m.char_end, m.method.value)
@@ -320,17 +389,27 @@ def upsert_document(
         for i, m in enumerate(record.metadata)
     ]
     tags = [(record.doc_id, i, t.tag, t.confidence, t.method.value) for i, t in enumerate(record.tags)]
-    with conn:
-        # The upsert's WHERE leaves a row of another cabinet alone and reports no change.
-        stored = conn.execute(_UPSERT_DOCUMENT, doc).rowcount > 0
-        if stored:
-            ensure_cabinet(conn, record.cabinet_id)
-            conn.execute("DELETE FROM fields WHERE doc_id = ?", (record.doc_id,))
-            conn.executemany("INSERT INTO fields VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", fields)
-            conn.execute("DELETE FROM tags WHERE doc_id = ?", (record.doc_id,))
-            conn.executemany("INSERT INTO tags VALUES (?, ?, ?, ?, ?)", tags)
-    if not stored:
-        _refuse(conn, record.doc_id, record.cabinet_id)
+    return doc, fields, tags
+
+
+def _write_document(
+    conn: sqlite3.Connection, cabinet_id: str, doc: tuple[Any, ...], fields: _Rows, tags: _Rows
+) -> bool:
+    """Upsert one document and replace its field and tag rows, inside the caller's transaction.
+
+    Returns:
+        False, with nothing written, when the doc_id is stored under another cabinet.
+    """
+    # The upsert's WHERE leaves a row of another cabinet alone and reports no change.
+    if conn.execute(_UPSERT_DOCUMENT, doc).rowcount == 0:
+        return False
+    doc_id = doc[0]
+    ensure_cabinet(conn, cabinet_id)
+    conn.execute("DELETE FROM fields WHERE doc_id = ?", (doc_id,))
+    conn.executemany("INSERT INTO fields VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", fields)
+    conn.execute("DELETE FROM tags WHERE doc_id = ?", (doc_id,))
+    conn.executemany("INSERT INTO tags VALUES (?, ?, ?, ?, ?)", tags)
+    return True
 
 
 def _refuse(conn: sqlite3.Connection, doc_id: str, cabinet_id: str) -> None:
@@ -371,10 +450,6 @@ def _document_row(
     )
 
 
-def _has_document(conn: sqlite3.Connection, doc_id: str) -> bool:
-    return conn.execute("SELECT 1 FROM documents WHERE doc_id = ?", (doc_id,)).fetchone() is not None
-
-
 def _upsert_tables(conn: sqlite3.Connection, rec: TableRecord, sidecar: Path) -> int:
     rows = [
         (rec.doc_id, t.table_id, t.page, t.n_rows, t.n_cols, t.method.value, t.confidence)
@@ -394,16 +469,21 @@ def upsert_provenance(conn: sqlite3.Connection, prov: dict[str, Any]) -> None:
         conn: Open store.
         prov: The provenance line, as written to the sidecar.
     """
+    with conn:
+        _write_provenance(conn, prov)
+
+
+def _write_provenance(conn: sqlite3.Connection, prov: dict[str, Any]) -> None:
+    """The provenance upsert, inside the caller's transaction."""
     fallback = bool(prov.get("fallback"))
     reason = "; ".join(prov.get("errors") or []) if fallback else None
     row = (prov["doc_id"], prov.get("model"), prov.get("finish_reason"), int(fallback), reason)
-    with conn:
-        conn.execute(
-            "INSERT INTO provenance VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (doc_id) DO UPDATE SET "
-            "model = excluded.model, finish_reason = excluded.finish_reason, fallback = excluded.fallback, "
-            "abstention_reason = excluded.abstention_reason, prov_json = excluded.prov_json",
-            (*row, json.dumps(prov, ensure_ascii=False, sort_keys=True)),
-        )
+    conn.execute(
+        "INSERT INTO provenance VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (doc_id) DO UPDATE SET "
+        "model = excluded.model, finish_reason = excluded.finish_reason, fallback = excluded.fallback, "
+        "abstention_reason = excluded.abstention_reason, prov_json = excluded.prov_json",
+        (*row, json.dumps(prov, ensure_ascii=False, sort_keys=True)),
+    )
 
 
 def import_jsonl(
@@ -416,9 +496,9 @@ def import_jsonl(
 ) -> ImportStats:
     """Load a results file, and optionally its sidecars, into the store. Idempotent.
 
-    Word-box sidecars are looked up in `<results>.bboxes/`. Sidecar lines for a
-    doc_id the store does not hold are skipped and counted. A record whose
-    doc_id is stored under another cabinet is counted as refused. documents
+    Word-box sidecars are looked up in `<results>.bboxes/`. Sidecar lines of a
+    doc_id this import did not upsert (refused ones too) are skipped and
+    counted. A record stored under another cabinet is counted as refused. documents
     counts distinct doc_ids; a doc_id seen again in the file counts as a
     duplicate, and its later line wins.
 
@@ -450,7 +530,7 @@ def import_jsonl(
         seen[record.doc_id] = record.cabinet_id
     stats["documents"] = len(seen)
     cabinets = Counter(seen.values())
-    _import_sidecars(conn, stats, tables_path, provenance_path)
+    _import_sidecars(conn, stats, set(seen), tables_path, provenance_path)
     for cabinet_id, n in sorted(cabinets.items()):
         detail = {"documents": n, "results": results.name}
         record_audit(conn, actor=actor, action="db.import", cabinet_id=cabinet_id, detail=detail)
@@ -461,20 +541,25 @@ def import_jsonl(
 def _import_sidecars(
     conn: sqlite3.Connection,
     stats: ImportStats,
+    accepted: set[str],
     tables_path: str | Path | None,
     provenance_path: str | Path | None,
 ) -> None:
-    """Load the tables and provenance sidecars, counting writes and skips into stats."""
+    """Load the tables and provenance sidecars, counting writes and skips into stats.
+
+    Only lines for a doc_id this import upserted are written. A refused doc_id
+    belongs to another cabinet, so its sidecar lines are skipped too.
+    """
     if tables_path:
         for row in read_jsonl(tables_path):
             rec = TableRecord.model_validate(row)
-            if not _has_document(conn, rec.doc_id):
+            if rec.doc_id not in accepted:
                 stats["skipped"] += 1
                 continue
             stats["tables"] += _upsert_tables(conn, rec, Path(tables_path))
     if provenance_path:
         for prov in read_jsonl(provenance_path):
-            if not _has_document(conn, str(prov.get("doc_id"))):
+            if str(prov.get("doc_id")) not in accepted:
                 stats["skipped"] += 1
                 continue
             upsert_provenance(conn, prov)
@@ -544,7 +629,14 @@ def get_document(conn: sqlite3.Connection, doc_id: str) -> DocumentRecord | None
         doc_id: The document.
 
     Returns:
-        The record, or None when the store does not hold it.
+        The record, or None when the store does not hold it or its record_json no
+        longer parses (logged with the doc_id only).
     """
     row = conn.execute("SELECT record_json FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
-    return None if row is None else DocumentRecord.model_validate_json(row["record_json"])
+    if row is None:
+        return None
+    try:
+        return DocumentRecord.model_validate_json(row["record_json"])
+    except ValueError:
+        log.warning("stored record is unreadable", extra={"doc_id": doc_id})
+        return None

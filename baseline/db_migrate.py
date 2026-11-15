@@ -1,6 +1,7 @@
 """In-place migration of an existing ``docc.sqlite`` to the current shape.
 
-``db.connect`` runs ``migrate`` on every open. Migrations are ordered steps in
+``db.connect`` checks ``is_current`` without a lock on every open and runs
+``migrate`` only when a version is pending. Migrations are ordered steps in
 ``MIGRATIONS``. Each applied version is a row of ``schema_migrations``. A step
 only creates tables with ``IF NOT EXISTS``, adds a column only when it is
 missing, and backfills only rows that are still NULL, so a step that stopped
@@ -18,13 +19,14 @@ import sqlite3
 from collections.abc import Callable, Iterable
 from typing import NamedTuple
 
-from .db_registry import ROUTE_FAILED, routing_status, utc_now
+from .db_registry import DEFAULT_ACTOR, ROUTE_REVIEW, insert_audit, routing_status, utc_now
 from .logging_setup import get_logger
-from .schema import DocumentRecord
+from .schema import SCHEMA_VERSION, DocumentRecord
 
 log = get_logger(__name__)
 
 BACKFILL_BATCH = 500
+UNREADABLE_ACTION = "migration_unreadable_records"
 
 
 class AddColumn(NamedTuple):
@@ -96,30 +98,47 @@ _V1: tuple[Step, ...] = (
 )
 
 
-def _backfill_routing(conn: sqlite3.Connection) -> None:
-    """Set routing_status from record_json wherever it is NULL, in doc_id batches.
+def _route(body: str) -> str | None:
+    """routing_status of a stored record; None when it does not parse or is from another schema version."""
+    try:
+        record = DocumentRecord.model_validate_json(body)
+    except ValueError:
+        return None
+    return routing_status(record) if record.schema_version == SCHEMA_VERSION else None
 
-    Uses the same rule as upsert_document. A stored record that no longer
-    validates routes to failed, so the step always finishes.
+
+def _reroute(conn: sqlite3.Connection, where: str) -> None:
+    """Route the rows `where` selects from their record_json, in doc_id batches.
+
+    Uses the same rule as upsert_document. A record that is unreadable (see
+    _route) routes to review, so a person looks at it and the step always
+    finishes; their count goes into one audit row, never their content.
     """
-    after = ""
-    while True:
-        rows = conn.execute(
-            "SELECT doc_id, record_json FROM documents WHERE routing_status IS NULL AND doc_id > ? "
-            "ORDER BY doc_id LIMIT ?",
-            (after, BACKFILL_BATCH),
-        ).fetchall()
-        if not rows:
-            return
+    after, unreadable = "", 0
+    # `where` is one of this module's constants, never input, so this is not injectable.
+    sql = "SELECT doc_id, record_json FROM documents WHERE " + where  # nosec B608
+    sql += " AND doc_id > ? ORDER BY doc_id LIMIT ?"
+    while rows := conn.execute(sql, (after, BACKFILL_BATCH)).fetchall():
         updates = []
         for doc_id, body in rows:
-            try:
-                status = routing_status(DocumentRecord.model_validate_json(body))
-            except ValueError:
-                status = ROUTE_FAILED
-            updates.append((status, doc_id))
+            status = _route(body)
+            unreadable += status is None
+            updates.append((status or ROUTE_REVIEW, doc_id))
         conn.executemany("UPDATE documents SET routing_status = ? WHERE doc_id = ?", updates)
         after = rows[-1][0]
+    if unreadable:
+        insert_audit(conn, actor=DEFAULT_ACTOR, action=UNREADABLE_ACTION, cabinet_id=None, detail={"count": unreadable})
+        log.warning("unreadable stored records routed to review", extra={"count": unreadable})
+
+
+def _backfill_routing(conn: sqlite3.Connection) -> None:
+    """Set routing_status wherever it is NULL."""
+    _reroute(conn, "routing_status IS NULL")
+
+
+def _reroute_failed(conn: sqlite3.Connection) -> None:
+    """Re-check rows routed to failed: before v3 an unreadable record was routed there silently."""
+    _reroute(conn, "routing_status = 'failed'")
 
 
 # The importer's convention: class corrections come from the Documents sheet as
@@ -145,8 +164,19 @@ _V2: tuple[Step, ...] = (
     _backfill_routing,
 )
 
+_V3: tuple[Step, ...] = (
+    # One API process per store: the live one's boot id and heartbeat (api/jobs.py).
+    """CREATE TABLE IF NOT EXISTS api_instances (
+        boot_id TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        heartbeat_at REAL NOT NULL
+    )""",
+    _reroute_failed,
+)
+
 # Ordered (version, steps). Append a new version; never edit an applied one.
-MIGRATIONS: tuple[tuple[int, tuple[Step, ...]], ...] = ((1, _V1), (2, _V2))
+MIGRATIONS: tuple[tuple[int, tuple[Step, ...]], ...] = ((1, _V1), (2, _V2), (3, _V3))
+LATEST_VERSION = MIGRATIONS[-1][0]
 
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -163,6 +193,21 @@ def _apply(conn: sqlite3.Connection, steps: Iterable[Step]) -> None:
             conn.execute(step)
         else:
             step(conn)
+
+
+def is_current(conn: sqlite3.Connection) -> bool:
+    """Whether every migration is recorded, read without taking the write lock.
+
+    Args:
+        conn: Open store with no transaction open.
+
+    Returns:
+        True when LATEST_VERSION is applied; False for a new or older store.
+    """
+    known = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").fetchone()
+    if known is None:
+        return False
+    return conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (LATEST_VERSION,)).fetchone() is not None
 
 
 def migrate(conn: sqlite3.Connection) -> list[int]:

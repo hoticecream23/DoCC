@@ -125,7 +125,7 @@ def test_migrate_is_a_no_op_the_second_time(conn):
 def test_a_half_applied_step_is_safe_to_run_again(conn):
     with conn:
         conn.execute("DELETE FROM schema_migrations")
-    assert db_migrate.migrate(conn) == [1, 2]
+    assert db_migrate.migrate(conn) == [1, 2, 3]
 
 
 def test_export_of_a_migrated_store_is_unchanged(tmp_path):
