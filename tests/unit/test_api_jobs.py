@@ -129,11 +129,12 @@ def test_sqlite_job_is_visible_from_a_second_store_on_the_same_file(tmp_path):
 def test_sqlite_job_left_running_is_failed_on_reopen(tmp_path):
     from api.jobs import STALE_JOB_ERROR
 
-    first = _sqlite_store(tmp_path)
+    first = _sqlite_store(tmp_path, boot_id="old-boot")
     running, queued = first.create(), first.create()
     first.set_running(running)
     first.close()
     second = _sqlite_store(tmp_path)
+    assert second.sweep_stale() == 2
     for job_id in (running, queued):
         assert second.get(job_id).state == "failed" and second.get(job_id).error == STALE_JOB_ERROR
     second.close()

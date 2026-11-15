@@ -1,5 +1,7 @@
 """FastAPI shell over the baseline and cascade pipelines.
 
+Over 400 lines: the routes, the error mapping and the body limit form one HTTP surface.
+
 Baseline runs synchronously in the request. Cascade runs as a background job
 (12-40 s per document), polled at GET /jobs/{job_id}. Without a VLM model the
 cascade route answers 503, like the demo server.
@@ -8,9 +10,11 @@ With `db.path` set (a relative path resolves in `root`), every record the API
 produces is upserted into the SQLite store, jobs live in its `jobs` table, and
 the document read routes serve from it. With `db.path: null` jobs stay in
 memory and the read routes answer 503.
-"""
 
-# Over 400 lines: the routes, the error mapping and the body limit form one HTTP surface; splitting would scatter it.
+Security limits: no authentication and no tenant check. Bind to loopback (the
+default); any caller can read every cabinet. The optional `cabinet_id` query
+on the document routes is a guard against mix-ups, not access control.
+"""
 
 from __future__ import annotations
 
@@ -36,7 +40,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from api.jobs import DEFAULT_WORKERS, Busy, InMemoryJobStore, Job, JobRunner, SqliteJobStore
 from baseline import db, db_registry
 from baseline.config import DEFAULT_DB_NAME, Config, load_config
-from baseline.errors import BadInput, ConfigError, DoccError, Unavailable, summarize_exception
+from baseline.errors import (
+    BadInput,
+    ConfigError,
+    DoccError,
+    DocumentInOtherCabinet,
+    Unavailable,
+    summarize_exception,
+)
 from baseline.extract import SUPPORTED_EXT
 from baseline.pipeline import Models, process_document
 from baseline.schema import DocumentRecord
@@ -66,6 +77,12 @@ ROUTING_PATTERN = "^(auto|review|failed)$"
 MAX_PAGE_LIMIT = 500
 LIST_COLUMNS = ("doc_id", "cabinet_id", "doc_type", "confidence", "filename", "updated_at", "routing_status", "case_id")
 API_ACTOR = "api"
+MAX_FILENAME_CHARS = 255
+# A client file name is kept as metadata only; it may not hold control or path characters.
+SAFE_FILENAME_RE = re.compile(r'[^<>:"/\\|?*\x00-\x1f\x7f]+')
+# Every upload is written under this stem plus its extension, never under the client's name.
+UPLOAD_STEM = "upload"
+OTHER_CABINET_ERROR = "document already stored under another cabinet"
 
 trace_id: ContextVar[str] = ContextVar("trace_id", default="")
 
@@ -142,12 +159,16 @@ class ApiState:
 
         Each record gets its own run carrying the request trace id, and an
         audit row. A store failure is logged, never raised: the caller still
-        gets the record.
+        gets the record. The one exception is a document stored under another
+        cabinet, which the API answers with 409.
 
         Args:
             record: The record the API produced.
             provenance: The cascade provenance line, if any.
             trace: The request trace id; empty for the current request's.
+
+        Raises:
+            DocumentInOtherCabinet: The doc_id is stored under another cabinet.
         """
         if self.conn is None:
             return
@@ -167,6 +188,8 @@ class ApiState:
                     doc_id=record.doc_id,
                     detail=detail,
                 )
+        except DocumentInOtherCabinet:
+            raise
         except sqlite3.Error as exc:
             extra = {"trace_id": tid, "doc_id": record.doc_id, "error": summarize_exception(exc)}
             log.error("db write failed, record returned but not stored", extra=extra)
@@ -188,30 +211,37 @@ class ApiState:
         with self.db_lock:
             return fn(self.conn)
 
-    def save(self, upload: UploadFile) -> Path:
-        """Write an upload to a new temp directory under its own base name.
+    def save(self, upload: UploadFile) -> tuple[Path, str]:
+        """Write an upload to a new temp directory under a generated name.
+
+        The client's name never reaches the file system: the file is
+        UPLOAD_STEM plus the validated extension. The client's base name is
+        returned only as metadata, for the record.
 
         Args:
             upload: The uploaded file.
 
         Returns:
-            The saved file; remove its parent directory when done.
+            The saved file (remove its parent directory when done) and the client's base name.
 
         Raises:
-            BadInput: Bad name, unsupported extension, empty, or over MAX_UPLOAD_BYTES.
+            BadInput: Bad or over-long name, unsupported extension, empty, or over MAX_UPLOAD_BYTES.
         """
         name = Path((upload.filename or "").replace("\\", "/")).name
-        if not name or name.startswith("."):
-            raise BadInput(f"invalid file name: {upload.filename!r}")
-        if Path(name).suffix.lower() not in SUPPORTED_EXT:
+        if len(name) > MAX_FILENAME_CHARS:
+            raise BadInput(f"file name longer than {MAX_FILENAME_CHARS} characters")
+        if name.startswith(".") or not SAFE_FILENAME_RE.fullmatch(name):
+            raise BadInput('invalid file name; control characters and <>:"/\\|?* are not allowed')
+        suffix = Path(name).suffix.lower()
+        if suffix not in SUPPORTED_EXT:
             raise BadInput(f"unsupported file type; use one of {sorted(SUPPORTED_EXT)}")
-        target = Path(tempfile.mkdtemp(prefix="docc_api_", dir=self.upload_dir)) / name
+        target = Path(tempfile.mkdtemp(prefix="docc_api_", dir=self.upload_dir)) / (UPLOAD_STEM + suffix)
         try:
             _copy_limited(upload, target)
-        except BadInput:
+        except BaseException:
             _discard(target)
             raise
-        return target
+        return target, name
 
 
 CabinetForm = Annotated[str | None, Form()]
@@ -227,11 +257,12 @@ def _routes(api: ApiState) -> APIRouter:
     @router.post("/documents/process", response_model=DocumentRecord)
     def process(file: UploadFile, cabinet_id: CabinetForm = None) -> DocumentRecord:
         cabinet = api.cabinet(cabinet_id)
-        path = api.save(file)
+        path, name = api.save(file)
         try:
             record, _ = process_document(path, api.cfg, api.models, cabinet)
         finally:
             _discard(path)
+        record = _named(record, name)
         api.persist(record)
         return record
 
@@ -239,7 +270,7 @@ def _routes(api: ApiState) -> APIRouter:
     def process_async(file: UploadFile, cabinet_id: CabinetForm = None) -> dict[str, str]:
         cabinet = api.cabinet(cabinet_id)
         backend = api.backend()  # 503 before anything is saved
-        path = api.save(file)
+        path, name = api.save(file)
         tid = trace_id.get()  # the job thread does not see this request's context
 
         def work() -> DocumentRecord:
@@ -247,21 +278,16 @@ def _routes(api: ApiState) -> APIRouter:
                 result = cascade_process(path, api.cfg, api.ccfg, backend, api.models, cabinet)
             finally:
                 _discard(path)
-            api.persist(result.record, result.provenance, trace=tid)
-            return result.record
+            record = _named(result.record, name)
+            result.provenance["filename"] = name
+            api.persist(record, result.provenance, trace=tid)
+            return record
 
         try:
             return {"job_id": api.runner.submit(work, tid, cabinet)}
-        except Busy:
+        except BaseException:  # the job never started, so the upload is this route's to remove
             _discard(path)
             raise
-
-    @router.get("/jobs/{job_id}", response_model=Job)
-    def job(job_id: str) -> Job:
-        found = api.runner.store.get(job_id)
-        if found is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown job id")
-        return found
 
     router.include_router(_read_routes(api))
     return router
@@ -269,6 +295,13 @@ def _routes(api: ApiState) -> APIRouter:
 
 def _read_routes(api: ApiState) -> APIRouter:
     router = APIRouter()
+
+    @router.get("/jobs/{job_id}", response_model=Job)
+    def job(job_id: str) -> Job:
+        found = api.runner.get(job_id)
+        if found is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown job id")
+        return found
 
     @router.get("/documents")
     def documents(
@@ -286,21 +319,26 @@ def _read_routes(api: ApiState) -> APIRouter:
         return [{k: row[k] for k in LIST_COLUMNS} for row in rows]
 
     @router.get("/documents/{doc_id}", response_model=DocumentRecord)
-    def document(doc_id: str) -> DocumentRecord:
-        found: DocumentRecord | None = api.read(lambda conn: db.get_document(conn, doc_id))
-        if found is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown doc_id")
-        return found
+    def document(doc_id: str, cabinet_id: str | None = None) -> DocumentRecord:
+        found: DocumentRecord = _of_document(api, doc_id, cabinet_id, db.get_document)
+        return _named(found, found.filename)
 
     @router.get("/documents/{doc_id}/review_events")
-    def review_events(doc_id: str) -> list[dict[str, Any]]:
-        events: list[dict[str, Any]] = api.read(lambda conn: db.list_review_events(conn, doc_id))
+    def review_events(doc_id: str, cabinet_id: str | None = None) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = _of_document(api, doc_id, cabinet_id, db.list_review_events)
         return events
 
     @router.get("/documents/{doc_id}/fields")
-    def fields(doc_id: str) -> list[dict[str, Any]]:
-        found: list[dict[str, Any]] = api.read(lambda conn: db_registry.effective_fields(conn, doc_id))
+    def fields(doc_id: str, cabinet_id: str | None = None) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = _of_document(api, doc_id, cabinet_id, db_registry.effective_fields)
         return found
+
+    router.include_router(_cabinet_routes(api))
+    return router
+
+
+def _cabinet_routes(api: ApiState) -> APIRouter:
+    router = APIRouter()
 
     @router.get("/cabinets")
     def cabinets() -> list[dict[str, Any]]:
@@ -309,14 +347,40 @@ def _read_routes(api: ApiState) -> APIRouter:
 
     @router.get("/cabinets/{cabinet_id}/doc_types")
     def doc_types(cabinet_id: str) -> list[dict[str, Any]]:
-        found: list[dict[str, Any]] = api.read(lambda conn: _doc_types(conn, cabinet_id))
+        found: list[dict[str, Any]] | None = api.read(lambda conn: _doc_types(conn, cabinet_id))
+        if found is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown cabinet_id")
         return found
 
     return router
 
 
-def _doc_types(conn: sqlite3.Connection, cabinet_id: str) -> list[dict[str, Any]]:
-    """A cabinet's document types, each with its field definitions."""
+def _named(record: DocumentRecord, name: str) -> DocumentRecord:
+    """The record as the API shows and stores it: the client's file name, never a server path."""
+    return record.model_copy(update={"filename": name, "source_path": name})
+
+
+def _of_document(
+    api: ApiState, doc_id: str, cabinet_id: str | None, fn: Callable[[sqlite3.Connection, str], Any]
+) -> Any:
+    """fn(conn, doc_id) for a stored document; 404 when it is unknown or held by a cabinet other than cabinet_id."""
+
+    def read(conn: sqlite3.Connection) -> tuple[bool, Any]:
+        stored = db.document_cabinet(conn, doc_id)
+        if stored is None or (cabinet_id is not None and cabinet_id != stored):
+            return False, None
+        return True, fn(conn, doc_id)
+
+    found, value = api.read(read)
+    if not found:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown doc_id")
+    return value
+
+
+def _doc_types(conn: sqlite3.Connection, cabinet_id: str) -> list[dict[str, Any]] | None:
+    """A cabinet's document types, each with its field definitions; None for an unknown cabinet."""
+    if not db_registry.cabinet_exists(conn, cabinet_id):
+        return None
     by_type: dict[str, list[dict[str, Any]]] = {}
     for f in db_registry.list_field_defs(conn, cabinet_id):
         by_type.setdefault(f.pop("doc_type"), []).append(f)
@@ -325,7 +389,11 @@ def _doc_types(conn: sqlite3.Connection, cabinet_id: str) -> list[dict[str, Any]
 
 async def _on_docc_error(request: Request, exc: Exception) -> JSONResponse:
     """The one error mapping. Messages of 400 and 503 are ours; a 500 shows nothing."""
-    if isinstance(exc, BadInput):
+    body: dict[str, str] = {}
+    if isinstance(exc, DocumentInOtherCabinet):
+        # The owning cabinet is not the caller's, so it is not named.
+        code, msg, body = status.HTTP_409_CONFLICT, OTHER_CABINET_ERROR, {"doc_id": exc.doc_id}
+    elif isinstance(exc, BadInput):
         code, msg = status.HTTP_400_BAD_REQUEST, str(exc)
     elif isinstance(exc, (Unavailable, ConfigError)):
         code, msg = status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)
@@ -334,7 +402,7 @@ async def _on_docc_error(request: Request, exc: Exception) -> JSONResponse:
     extra = {"trace_id": trace_id.get(), "path": request.url.path, "status": code, "error": summarize_exception(exc)}
     log.warning("request failed", extra=extra)
     headers = {"Retry-After": str(RETRY_AFTER_S)} if isinstance(exc, Busy) else None
-    return JSONResponse({"error": msg}, status_code=code, headers=headers)
+    return JSONResponse({"error": msg, **body}, status_code=code, headers=headers)
 
 
 class _TooLarge(Exception):  # noqa: N818 - internal signal, never leaves BodyLimit
@@ -438,6 +506,8 @@ def create_app(
     # db_path resolves a relative db.path beside a results file; here that file would sit in root.
     db_file = cfg.db_path(base / DEFAULT_DB_NAME)
     jobs = SqliteJobStore(db_file) if db_file else None
+    if jobs is not None:
+        jobs.sweep_stale()  # only the API, once at startup: a pipeline run opening the store fails nothing
     conn = db.connect(db_file, threads=True) if db_file else None
     runner = JobRunner(jobs or InMemoryJobStore(), workers)
     api = ApiState(cfg, ccfg, Models.load(cfg, base), vlm_settings(ccfg), upload_dir, runner, conn)

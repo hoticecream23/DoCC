@@ -102,7 +102,9 @@ A thin FastAPI shell over the same functions. Install the extra and run it on lo
 - `GET /api/v1/documents/{doc_id}`: the stored record; 404 if absent.
 - `GET /api/v1/documents/{doc_id}/review_events`: the reviewer corrections recorded for it.
 
-The API uses the SQLite store at `db.path` (a relative path resolves in the working directory). Jobs live in its `jobs` table; a job a previous process left queued or running is marked failed at startup, since it cannot resume. With `db.path: null`, jobs live in memory only and the document read routes answer 503.
+The API uses the SQLite store at `db.path` (a relative path resolves in the working directory). Jobs live in its `jobs` table; at startup the API marks failed the jobs another API process left queued or running, since they cannot resume. Uploading a file already stored under another cabinet answers 409. The document detail, `fields` and `review_events` routes take an optional `cabinet_id` and answer 404 when it does not match. Responses carry the uploaded file name, never a server path.
+
+Security limits: the API has no authentication and no tenant check. It binds to loopback (127.0.0.1) by default; keep it there. Any caller that can reach it can read every cabinet. Do not expose it on a network. With `db.path: null`, jobs live in memory only and the document read routes answer 503.
 
 ## What comes out
 

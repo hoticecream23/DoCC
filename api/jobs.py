@@ -2,13 +2,20 @@
 
 Job state lives in a JobStore: InMemoryJobStore (lost on restart) or
 SqliteJobStore (the `jobs` table of the SQLite store). The runner is in
-process, so a job cannot resume after a restart: SqliteJobStore marks the jobs
-a previous process left queued or running as failed when it opens.
+process, so a job cannot resume after a restart. Each job row carries the
+boot id of the process that made it; the API calls `SqliteJobStore.sweep_stale`
+once at startup, which fails only the queued or running jobs of another boot id.
+A finished job (done or failed) is never written again.
+
+A state write that raises sqlite3.Error is retried JOB_STATE_ATTEMPTS times
+(each attempt already waits out the busy timeout). If every attempt fails, the
+runner marks the job failed in memory, logs it, and `JobRunner.get` reports it.
 """
 
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import uuid
 from collections import deque
@@ -30,6 +37,10 @@ DEFAULT_WORKERS = 1  # one GPU: one cascade document at a time
 MAX_PENDING_JOBS = 8  # queued plus running; more answers 503
 MAX_FINISHED_JOBS = 1000  # finished jobs kept for polling; the oldest go first
 STALE_JOB_ERROR = "server restarted before the job finished"
+JOB_STATE_ATTEMPTS = 3
+JOB_STATE_ERROR = "job state could not be saved"
+# Identifies this process's jobs, so a sweep leaves a live process's jobs alone.
+BOOT_ID = uuid.uuid4().hex
 
 
 class Busy(Unavailable):
@@ -150,26 +161,39 @@ _EVICT = (
 
 
 class SqliteJobStore:
-    """A JobStore in the `jobs` table. Survives a restart; unfinished jobs then fail."""
+    """A JobStore in the `jobs` table. Survives a restart; sweep_stale then fails another boot's unfinished jobs."""
 
-    def __init__(self, path: str | Path, max_finished: int = MAX_FINISHED_JOBS) -> None:
-        """Open the store and fail the jobs a previous process left unfinished.
+    def __init__(self, path: str | Path, max_finished: int = MAX_FINISHED_JOBS, boot_id: str = BOOT_ID) -> None:
+        """Open the store and drop the oldest finished jobs.
 
         Args:
             path: SQLite file, shared with the document store.
             max_finished: Finished jobs kept; the oldest rows are deleted.
+            boot_id: Stamped on every job this store creates; the process's BOOT_ID by default.
         """
         self._conn = db.connect(path, threads=True)
         self._max_finished = max_finished
+        self._boot_id = boot_id
         self._lock = threading.Lock()
         with self._lock, self._conn:
-            stale = self._conn.execute(
-                "UPDATE jobs SET state = 'failed', error = ?, updated_at = ? WHERE state IN ('queued', 'running')",
-                (STALE_JOB_ERROR, _now()),
-            ).rowcount
             self._conn.execute(_EVICT, (max_finished,))
+
+    def sweep_stale(self) -> int:
+        """Fail the queued or running jobs another boot left behind. The API runs it once, at startup.
+
+        Returns:
+            How many jobs were marked failed.
+        """
+        with self._lock, self._conn:
+            stale = self._conn.execute(
+                "UPDATE jobs SET state = 'failed', error = ?, updated_at = ? "
+                "WHERE state IN ('queued', 'running') AND (boot_id IS NULL OR boot_id <> ?)",
+                (STALE_JOB_ERROR, _now(), self._boot_id),
+            ).rowcount
+            self._conn.execute(_EVICT, (self._max_finished,))
         if stale:
             log.warning("stale jobs marked failed", extra={"count": stale})
+        return int(stale)
 
     def create(self, trace_id: str = "", cabinet_id: str = DEFAULT_CABINET) -> str:
         """Create a queued job.
@@ -184,9 +208,9 @@ class SqliteJobStore:
         job_id, now = uuid.uuid4().hex, _now()
         with self._lock, self._conn:
             self._conn.execute(
-                "INSERT INTO jobs (job_id, cabinet_id, state, trace_id, created_at, updated_at) "
-                "VALUES (?, ?, 'queued', ?, ?, ?)",
-                (job_id, cabinet_id, trace_id, now, now),
+                "INSERT INTO jobs (job_id, cabinet_id, state, trace_id, created_at, updated_at, boot_id) "
+                "VALUES (?, ?, 'queued', ?, ?, ?, ?)",
+                (job_id, cabinet_id, trace_id, now, now, self._boot_id),
             )
         return job_id
 
@@ -195,13 +219,17 @@ class SqliteJobStore:
     ) -> None:
         doc_id = result.doc_id if result is not None else None
         body = result.model_dump_json() if result is not None else None
+        # A finished job, such as one a sweep failed, is left as it is.
         with self._lock, self._conn:
-            self._conn.execute(
-                "UPDATE jobs SET state = ?, doc_id = ?, error = ?, result_json = ?, updated_at = ? WHERE job_id = ?",
+            changed = self._conn.execute(
+                "UPDATE jobs SET state = ?, doc_id = ?, error = ?, result_json = ?, updated_at = ? "
+                "WHERE job_id = ? AND state IN ('queued', 'running')",
                 (state, doc_id, error, body, _now(), job_id),
-            )
+            ).rowcount
             if state in ("done", "failed"):
                 self._conn.execute(_EVICT, (self._max_finished,))
+        if not changed:
+            log.warning("job already finished, state not changed", extra={"job_id": job_id, "state": state})
 
     def set_running(self, job_id: str) -> None:
         """Mark a job as running.
@@ -258,6 +286,7 @@ class JobRunner:
 
     def __init__(self, store: JobStore, workers: int = DEFAULT_WORKERS, max_pending: int = MAX_PENDING_JOBS) -> None:
         self.store = store
+        self._lost: dict[str, Job] = {}
         self._slots = threading.BoundedSemaphore(max_pending)
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="docc-job")
 
@@ -291,17 +320,44 @@ class JobRunner:
         finally:
             self._slots.release()
 
+    def get(self, job_id: str) -> Job | None:
+        """Look up a job; one whose state could not be saved reads as failed.
+
+        Args:
+            job_id: The job.
+
+        Returns:
+            The job, or None for an unknown id.
+        """
+        return self._lost.get(job_id) or self.store.get(job_id)
+
+    def _save(self, job_id: str, write: Callable[[], None]) -> bool:
+        """Run one state write, retried; after the last failure mark the job failed in memory."""
+        for attempt in range(1, JOB_STATE_ATTEMPTS + 1):
+            try:
+                write()
+                return True
+            except sqlite3.Error as exc:
+                extra = {"job_id": job_id, "attempt": attempt, "error": summarize_exception(exc)}
+                log.warning("job state write failed", extra=extra)
+        self._lost[job_id] = Job(job_id=job_id, state="failed", error=JOB_STATE_ERROR)
+        log.error("job state not saved, marked failed in memory", extra={"job_id": job_id})
+        return False
+
     def _execute(self, job_id: str, fn: Callable[[], DocumentRecord], trace_id: str) -> None:
-        self.store.set_running(job_id)
+        # ponytail: a job whose running state cannot be saved is not run, so its upload folder stays behind.
+        if not self._save(job_id, lambda: self.store.set_running(job_id)):
+            return
         try:
             record = fn()
         except Exception as exc:  # noqa: BLE001 - job boundary: any failure marks the job failed
             log.error("job failed", extra={"job_id": job_id, "trace_id": trace_id, "error": summarize_exception(exc)})
             # Only the type: a message can embed document text.
-            self.store.set_failed(job_id, f"processing failed: {type(exc).__name__}")
+            error = f"processing failed: {type(exc).__name__}"
+            self._save(job_id, lambda: self.store.set_failed(job_id, error))
             return
-        self.store.set_done(job_id, record)
-        log.info("job done", extra={"job_id": job_id, "trace_id": trace_id})
+        if self._save(job_id, lambda: self.store.set_done(job_id, record)):
+            log.info("job done", extra={"job_id": job_id, "trace_id": trace_id})
 
     def shutdown(self) -> None:
         """Wait for running jobs and stop the pool."""

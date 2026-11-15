@@ -214,7 +214,7 @@ def test_review_events_of_a_document(client, corpus, tmp_path):
 def test_jobs_survive_a_restart_of_the_app(cfg, tmp_path, monkeypatch):
     from api.jobs import STALE_JOB_ERROR, SqliteJobStore
 
-    store = SqliteJobStore(tmp_path / "docc.sqlite")
+    store = SqliteJobStore(tmp_path / "docc.sqlite", boot_id="old-boot")
     job_id = store.create()
     store.close()
     with _client(cfg, tmp_path, monkeypatch) as c:
