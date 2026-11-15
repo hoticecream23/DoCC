@@ -552,7 +552,7 @@ def extract(path: str | Path, cfg: Config) -> ExtractionResult:
             try:
                 handler(p, cfg, res)
             except Exception as exc:  # noqa: BLE001 - boundary: extract() never raises on content (see docstring)
-                log.error("extraction failed", extra={"path": str(p), "error": summarize_exception(exc)})
+                log.error("extraction failed", extra={"file": p.name, "error": summarize_exception(exc, hide=p)})
                 log.debug("extraction traceback", exc_info=True)  # debug only: the message can hold document text
                 res.errors.append("extract: " + summarize_exception(exc))
             break

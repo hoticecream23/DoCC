@@ -6,7 +6,10 @@ Every domain error subclasses DoccError. Some also subclass a builtin
 
 from __future__ import annotations
 
+import os
+import re
 import sqlite3
+from pathlib import Path
 
 
 class DoccError(Exception):
@@ -71,7 +74,30 @@ class PackRegistrationError(DoccError, ValueError):
     """A client pack cannot be registered in the store; the message names types and fields, never values."""
 
 
-def summarize_exception(exc: BaseException, limit: int = 200) -> str:
+def without_path(text: str, path: Path) -> str:
+    """Replace every spelling of ``path`` in ``text`` with the file name only.
+
+    Covers the path as given and resolved, both slash styles and the repr
+    form with doubled backslashes; case-insensitive on Windows.
+
+    Args:
+        text: Message that may hold the path, e.g. a PyMuPDF "Failed to open file" error.
+        path: The file whose directory must not leak.
+
+    Returns:
+        The text with each full path cut down to ``path.name``.
+    """
+    forms: set[str] = set()
+    for base in (str(path), str(path.resolve())):
+        for form in (base, base.replace("\\", "/")):
+            forms.update({form, form.replace("\\", "\\\\")})
+    flags = re.IGNORECASE if os.name == "nt" else 0
+    for form in sorted((f for f in forms if f and f != path.name), key=len, reverse=True):
+        text = re.sub(re.escape(form), lambda _m: path.name, text, flags=flags)
+    return text
+
+
+def summarize_exception(exc: BaseException, limit: int = 200, hide: Path | None = None) -> str:
     """Return the exception type and a truncated message, safe to log.
 
     Parser, OCR and VLM messages can embed document text, so the message is
@@ -80,11 +106,12 @@ def summarize_exception(exc: BaseException, limit: int = 200) -> str:
     Args:
         exc: The exception to describe.
         limit: Maximum number of message characters kept.
+        hide: A file whose full path is cut to its name before truncation.
 
     Returns:
         A string like ``"ValueError: first 200 chars..."``.
     """
-    msg = str(exc)
+    msg = str(exc) if hide is None else without_path(str(exc), hide)
     if len(msg) > limit:
         msg = msg[:limit] + "..."
     return f"{type(exc).__name__}: {msg}"

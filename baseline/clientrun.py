@@ -138,7 +138,7 @@ def client_run(
         model = _run(str(pack_dir), cabinet, config_dir, work, root, cascade, resume)
         stage = "score"
         score = score_cabinet(pack_dir, cabinet, results)
-    except Exception:
+    except Exception:  # noqa: BLE001 - writes the failure stub for any stage error, then re-raises
         atomic_write_text(report, _failure_stub(pack.cabinet.name, stage, started))
         raise
     header = _run_header(started, time.monotonic() - clock, model, results.resolve())

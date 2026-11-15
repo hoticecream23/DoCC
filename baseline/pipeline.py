@@ -217,14 +217,6 @@ def process_document(
     meta = _metadata_stage(st, text, cfg, cls.label, res)
     tags = _tag_stage(st, text, cfg, meta, res, models)
 
-    diagnostics = Diagnostics(
-        page_count=res.page_count,
-        is_scanned=res.is_scanned,
-        has_native_text=res.has_native_text,
-        timings_ms=st.timings,
-        errors=st.errors,
-        notes=list(res.notes),
-    )
     record = DocumentRecord(
         doc_id=doc_id,
         source_path=p.as_posix(),
@@ -234,10 +226,22 @@ def process_document(
         classification=cls,
         metadata=meta,
         tags=tags,
-        diagnostics=diagnostics,
+        diagnostics=_diagnostics(res, st),
     )
     _verify_offsets(record)
     return record, BBoxSidecar(doc_id=doc_id, page_sizes=res.page_sizes, words=res.words)
+
+
+def _diagnostics(res: ExtractionResult, st: _Stages) -> Diagnostics:
+    """Build the record's diagnostics from the extraction and the stage runner."""
+    return Diagnostics(
+        page_count=res.page_count,
+        is_scanned=res.is_scanned,
+        has_native_text=res.has_native_text,
+        timings_ms=st.timings,
+        errors=st.errors,
+        notes=list(res.notes),
+    )
 
 
 def _verify_offsets(record: DocumentRecord) -> None:
@@ -343,7 +347,9 @@ def _run_one(job: tuple[str, str, str]) -> str:
         return dumps(record)
     except Exception as exc:  # noqa: BLE001 - boundary: per-document loop of the batch runner
         # Unreadable file. Emit nothing but say so loudly.
-        log.error("document failed", extra={"path": str(path), "error": summarize_exception(exc)})
+        log.error(
+            "document failed", extra={"file": Path(path).name, "error": summarize_exception(exc, hide=Path(path))}
+        )
         return ""
 
 
@@ -362,7 +368,7 @@ def _pending(paths: list[Path], out_path: Path, resume: bool, cfg: Config) -> li
             if packmode.resume_key(p, cfg) in skip:
                 continue
         except OSError as exc:
-            log.error("cannot hash file", extra={"path": str(p), "error": str(exc)})
+            log.error("cannot hash file", extra={"file": p.name, "error": summarize_exception(exc, hide=p)})
             continue
         todo.append(p)
     return todo

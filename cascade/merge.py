@@ -1,5 +1,8 @@
 """Turn a grounded model answer into the record's class and fields.
 
+Over 400 lines because class and field decisions share one trust model; split, the
+checksum prior would live in two places and could drift. About 90 lines are docstrings.
+
 The rule and checksum layer is a hard prior over the model:
 
 - a value whose checksum passed is never removed or replaced, and a model

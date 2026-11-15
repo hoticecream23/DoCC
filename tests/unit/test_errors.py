@@ -1,5 +1,7 @@
 """Shared error hierarchy and the cascade model check."""
 
+import os
+
 import pytest
 
 from baseline import errors
@@ -60,3 +62,32 @@ def test_demo_has_no_default_model(monkeypatch):
     assert settings.model is None
     with pytest.raises(ConfigError, match="DOCC_VLM_MODEL"):
         require_model(settings)
+
+
+def test_without_path_cuts_every_spelling_of_the_path_to_the_name(tmp_path):
+    p = tmp_path / "Acme Client" / "x.pdf"
+    raw = str(p)
+    forms = [raw, p.as_posix(), raw.replace("\\", "\\\\")] + ([raw.upper()] if os.name == "nt" else [])
+    out = errors.without_path(" | ".join(forms), p)
+    assert "acme client" not in out.lower()
+    assert out == " | ".join(["x.pdf"] * len(forms))
+
+
+def test_failed_extraction_logs_the_file_name_not_its_directory(tmp_path, caplog, cfg):
+    from baseline.extract import extract
+
+    folder = tmp_path / "Acme Client"
+    folder.mkdir()
+    bad = folder / "garbage.pdf"
+    bad.write_bytes(b"not a pdf at all")
+    with caplog.at_level("ERROR"):
+        res = extract(bad, cfg)
+    assert res.errors
+    records = [r for r in caplog.records if r.getMessage() == "extraction failed"]
+    assert records
+    for record in records:
+        dump = str(record.__dict__)
+        assert "garbage.pdf" in dump
+        assert str(folder) not in dump and folder.as_posix() not in dump
+        assert str(folder).replace("\\", "\\\\") not in dump
+        assert record.__dict__["file"] == "garbage.pdf"
