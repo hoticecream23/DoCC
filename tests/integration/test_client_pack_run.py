@@ -1,6 +1,7 @@
 """Pack-mode runs: the cabinet's classes and fields in place of the global ones, end to end."""
 
 import json
+import shutil
 from pathlib import Path
 
 import make_pack
@@ -123,6 +124,30 @@ def test_client_run_with_a_model_writes_cascade_provenance(pack, corpus, tmp_pat
         monkeypatch.setenv("DOCC_VLM_MODEL", "stub")
         client_run(pack, make_pack.CABINET, corpus, tmp_path / "work", config_dir=str(CONFIG))
     assert (tmp_path / "work" / make_pack.SLUG / f"{RESULTS_FILE}.provenance").is_file()
+
+
+def test_client_run_starts_from_an_empty_results_file(pack, corpus, tmp_path, monkeypatch):
+    monkeypatch.delenv("DOCC_VLM_MODEL", raising=False)
+    results = tmp_path / "work" / make_pack.SLUG / RESULTS_FILE
+    results.parent.mkdir(parents=True)
+    results.write_text(json.dumps({"filename": "stale.txt"}) + "\n", encoding="utf-8")
+    client_run(pack, make_pack.CABINET, corpus, tmp_path / "work", config_dir=str(CONFIG))
+    assert "stale.txt" not in results.read_text(encoding="utf-8")
+
+
+def test_client_run_report_header_names_the_stages(pack, corpus, tmp_path, monkeypatch):
+    monkeypatch.delenv("DOCC_VLM_MODEL", raising=False)
+    client_run(pack, make_pack.CABINET, corpus, tmp_path / "work", config_dir=str(CONFIG))
+    report = (tmp_path / "work" / make_pack.SLUG / REPORT_FILE).read_text(encoding="utf-8")
+    assert "Stages: baseline only" in report and "Results file:" in report and "Run started:" in report
+
+
+def test_client_run_works_with_spaces_in_paths(pack, corpus, tmp_path, monkeypatch):
+    monkeypatch.delenv("DOCC_VLM_MODEL", raising=False)
+    spaced_pack = shutil.copytree(pack, tmp_path / "client pack")
+    share = shutil.copytree(corpus, tmp_path / "share root")
+    score = client_run(spaced_pack, make_pack.CABINET, share, tmp_path / "work dir", config_dir=str(CONFIG))
+    assert score is not None and score.missing == 0
 
 
 def test_client_run_dry_run_writes_nothing(pack, corpus, tmp_path):

@@ -19,7 +19,7 @@ baseline db-export       out.jsonl [--db PATH] [--cabinet ID]
 baseline client-pack build       inventory.csv schema.csv --out DIR [--all-types]
 baseline client-pack materialize --pack DIR --cabinet NAME --share ROOT --work DIR
 baseline client-eval     --pack DIR --cabinet NAME --results FILE [--out report.md]
-baseline client-run      --pack DIR --cabinet NAME --share ROOT --work DIR [--no-cascade]
+baseline client-run      --pack DIR --cabinet NAME --share ROOT --work DIR [--no-cascade] [--resume]
 
 Every command that writes takes --dry-run: it logs the paths and document count, then stops.
 
@@ -404,6 +404,7 @@ def cmd_client_run(args: argparse.Namespace) -> int:
         root=args.root,
         cascade=args.cascade,
         dry_run=args.dry_run,
+        resume=args.resume,
     )
     return 0
 
@@ -570,6 +571,7 @@ def _add_client_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]
     cr.add_argument("--work", required=True, help="work directory, outside the share")
     cr.add_argument("--cascade", action=argparse.BooleanOptionalAction, default=True, help="run the model stage")
     cr.add_argument("--dry-run", action="store_true", help="log what would be written and stop")
+    cr.add_argument("--resume", action="store_true", help="keep earlier results; default: start from an empty file")
     cr.set_defaults(func=cmd_client_run)
 
 
