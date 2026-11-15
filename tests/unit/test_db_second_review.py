@@ -81,11 +81,11 @@ def test_a_workbook_with_two_rows_for_one_field_adds_nothing_when_repeated(conn)
     assert [db.record_review_events(conn, w1) for _ in range(3)] == [2, 0, 0]
 
 
-def test_a_workbook_imported_again_after_another_is_re_applied_and_wins(conn):
+def test_a_workbook_replayed_after_another_is_ignored(conn):
     db.upsert_document(conn, _record())
     w1, w2 = _events(("X1", "X2"), ("X2", "X3")), _events(("X1", "Y9"))
-    assert [db.record_review_events(conn, w) for w in (w1, w2, w1)] == [2, 1, 2]
-    assert _effective(conn) == "X3"
+    assert [db.record_review_events(conn, w) for w in (w1, w2, w1)] == [2, 1, 0]
+    assert _effective(conn) == "Y9"
 
 
 def test_a_correction_and_its_undo_across_three_imports_ends_at_the_last(conn):

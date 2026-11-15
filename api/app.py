@@ -9,8 +9,9 @@ cascade route answers 503, like the demo server.
 With `db.path` set (a relative path resolves in `root`), every record the API
 produces is upserted into the SQLite store, jobs live in its `jobs` table, and
 the document read routes serve from it. With `db.path: null` jobs stay in
-memory and the read routes answer 503. One API process per store: a second
-process on the same store fails at startup with ConfigError (api/jobs.py).
+memory and the read routes answer 503. One API instance per store: a second
+app on the same store, in this process or another, fails at startup with
+ConfigError (api/jobs.py).
 
 Server upload paths never leave the API: they are replaced by the client's
 file name in diagnostics.errors, in cascade provenance errors and in the
@@ -39,6 +40,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, FastAPI, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse
@@ -80,8 +82,9 @@ TRACE_HEADER = "X-Request-ID"
 TRACE_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 # A cabinet id is a slug, as client packs make them: lower-case letters, digits, '_' or '-'.
 # The store compares ids case-sensitively, so "Acme" would be a second cabinet; it is refused.
-CABINET_ID_RE = re.compile(r"[\w-]{1,64}")
-CABINET_ID_ERROR = "cabinet_id must be 1-64 lower-case letters, digits, '_' or '-'"
+CABINET_ID_MAX_CHARS = 64
+CABINET_ID_RE = re.compile(rf"[\w-]{{1,{CABINET_ID_MAX_CHARS}}}")
+CABINET_ID_ERROR = f"cabinet_id must be 1-{CABINET_ID_MAX_CHARS} lower-case letters, digits, '_' or '-'"
 DEFAULT_PAGE_LIMIT = 50
 ROUTING_PATTERN = "^(auto|review|failed)$"
 MAX_PAGE_LIMIT = 500
@@ -99,6 +102,12 @@ OTHER_CABINET_ERROR = "document already stored under another cabinet"
 UNREADABLE_RECORD_ERROR = "the stored record is unreadable"
 # Windows paths compare case-insensitively, so their scrubbing does too.
 _PATH_FLAGS = re.IGNORECASE if os.name == "nt" else 0
+# A generated upload directory name: UPLOAD_PREFIX plus tempfile's random suffix.
+_TEMP_NAME = re.escape(UPLOAD_PREFIX) + r"[A-Za-z0-9_]+"
+# Buffer size, in characters, for a Windows short path (the long-path limit).
+SHORT_PATH_CHARS = 32768
+# Characters left unencoded in the percent-encoded path forms that are scrubbed.
+PERCENT_SAFE_SETS = ("/:", "/", "")
 
 trace_id: ContextVar[str] = ContextVar("trace_id", default="")
 # This request's uploads: saved file -> client file name. A dict set per request, filled by save().
@@ -109,17 +118,41 @@ def _discard(path: Path) -> None:
     shutil.rmtree(path.parent, ignore_errors=True)
 
 
+def _short_path(path: Path) -> Path | None:
+    """The Windows 8.3 short form of an existing path; None elsewhere, or when there is none."""
+    if os.name != "nt" or not path.exists():
+        return None
+    import ctypes  # Windows only: GetShortPathNameW
+
+    buf = ctypes.create_unicode_buffer(SHORT_PATH_CHARS)
+    size = ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, SHORT_PATH_CHARS)  # type: ignore[attr-defined]
+    return Path(buf.value) if 0 < size < SHORT_PATH_CHARS else None
+
+
 def _path_forms(path: Path) -> set[str]:
-    """How a path can appear in a message: both slash styles and the repr() doubled backslashes."""
+    """How a path can appear in a message.
+
+    Both slash styles, the repr() doubled backslashes, the file:// URI,
+    percent-encoded forms, and the same for the Windows 8.3 short path.
+    """
     forms = set()
-    for p in {path, path.resolve()}:
-        s = str(p)
-        forms |= {s, p.as_posix(), s.replace("\\", "\\\\")}
+    candidates = {path, path.resolve()}
+    candidates |= {short for p in list(candidates) if (short := _short_path(p)) is not None}
+    for p in candidates:
+        s, posix = str(p), p.as_posix()
+        forms |= {s, posix, s.replace("\\", "\\\\"), quote(s, safe="")}
+        forms |= {quote(posix, safe=safe) for safe in PERCENT_SAFE_SETS}
+        if p.is_absolute():
+            forms.add(p.as_uri())
     return forms
 
 
 def scrub(text: str, names: Mapping[Path, str]) -> str:
-    """Replace each saved upload's file path, temp directory and temp directory name with the client's name.
+    """Replace each saved upload's path, temp directory and upload root with the client's file name.
+
+    Whole path matches only: a path must not run on into a longer name. A
+    generated temp directory name (UPLOAD_PREFIX plus its random suffix) is
+    replaced on its own too; no other bare directory name is.
 
     Args:
         text: A message, such as an extractor error.
@@ -129,9 +162,10 @@ def scrub(text: str, names: Mapping[Path, str]) -> str:
         The text with no server upload path left in it.
     """
     for path, name in names.items():
-        targets = _path_forms(path) | _path_forms(path.parent) | {path.parent.name}
+        targets = _path_forms(path) | _path_forms(path.parent) | _path_forms(path.parent.parent)
         # Longest first, so the file path goes before the directory it sits in.
-        pattern = "|".join(re.escape(t) for t in sorted(targets, key=len, reverse=True))
+        alternatives = [re.escape(t) for t in sorted(targets, key=len, reverse=True)] + [_TEMP_NAME]
+        pattern = "(?:" + "|".join(alternatives) + r")(?![\w-])"
         text = re.sub(pattern, lambda _, n=name: n, text, flags=_PATH_FLAGS)  # a function: no backslash escapes
     return text
 
@@ -567,7 +601,7 @@ async def _trace(request: Request, call_next: Callable[[Request], Awaitable[Resp
 
 
 def _open_store(db_file: Path | None) -> tuple[SqliteJobStore | None, sqlite3.Connection | None]:
-    """The job store, claimed for this process with another boot's unfinished jobs failed, and the document store.
+    """The job store, claimed for this app with another boot's unfinished jobs failed, and the document store.
 
     On any failure the claim is given up, so a retry is not refused.
     """
@@ -602,7 +636,7 @@ def create_app(
         The app. A missing VLM model is not an error here.
 
     Raises:
-        ConfigError: Another API process is serving the same store (one API process per store).
+        ConfigError: Another API instance is serving the same store (one API instance per store).
     """
     cfg = load_config(config_dir)
     ccfg = load_cascade_config(config_dir)

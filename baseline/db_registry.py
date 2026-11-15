@@ -31,6 +31,14 @@ ROUTE_AUTO = "auto"
 ROUTE_REVIEW = "review"
 ROUTE_FAILED = "failed"
 _HIGH_PRIORITY = "HIGH"
+# Stable prefixes of the diagnostics notes that say pages or frames were dropped or text was cut:
+# baseline/extract.py (multi-frame images) and cascade/runner.py (_page_notes).
+TRUNCATION_NOTE_PREFIXES = (
+    "read frame 1 of ",
+    "cascade: image mode sent ",
+    "cascade: text mode sent ",
+    "cascade: text mode cut ",
+)
 
 
 def utc_now() -> str:
@@ -47,7 +55,9 @@ def routing_status(record: DocumentRecord) -> str:
 
     failed: diagnostics carry errors. review: the class abstained (method
     fallback, or confidence below the review priority's HIGH edge) or any field
-    has HIGH review priority, the rule the workbook export uses. Else auto.
+    has HIGH review priority, the rule the workbook export uses, or a
+    diagnostics note says pages or frames were dropped or text was cut
+    (TRUNCATION_NOTE_PREFIXES). Else auto.
 
     Args:
         record: The record as written to the JSONL.
@@ -64,6 +74,8 @@ def routing_status(record: DocumentRecord) -> str:
     if cls.method == ClassifyMethod.FALLBACK or cls.confidence < PRIORITY_HIGH_BELOW:
         return ROUTE_REVIEW
     if any(review_priority(m.model_dump(mode="json")) == _HIGH_PRIORITY for m in record.metadata):
+        return ROUTE_REVIEW
+    if any(note.startswith(TRUNCATION_NOTE_PREFIXES) for note in record.diagnostics.notes):
         return ROUTE_REVIEW
     return ROUTE_AUTO
 

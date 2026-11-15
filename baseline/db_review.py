@@ -85,9 +85,8 @@ def _event_id(event: ReviewEvent, predecessor: str | None) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
-_TAIL = (
-    "SELECT event_id, old_value, new_value, source FROM review_events WHERE doc_id = ? AND kind = ? AND field = ? "
-    "ORDER BY seq DESC LIMIT ?"
+_STORED = (
+    "SELECT event_id, old_value, new_value FROM review_events WHERE doc_id = ? AND kind = ? AND field = ? ORDER BY seq"
 )
 
 # seq is the next integer, taken in the same transaction, so no autoincrement is needed.
@@ -98,17 +97,42 @@ _INSERT_EVENT = (
 )
 
 
+def _contains(stored: list[tuple[Any, Any]], incoming: list[tuple[Any, Any]]) -> bool:
+    """Whether incoming appears as a contiguous window of stored."""
+    n = len(incoming)
+    return any(stored[i : i + n] == incoming for i in range(len(stored) - n + 1))
+
+
+def _new_events(stored: list[tuple[Any, Any]], incoming: list[tuple[Any, Any]]) -> int:
+    """How many leading incoming events are already stored history; the rest are written.
+
+    In order: the stored list already ends with incoming (a repeat import):
+    all. A prefix of incoming equals the stored tail (an extension): that
+    prefix. Incoming starts from the current value (a new correction, even
+    one made before): none. Incoming is a window elsewhere in stored (an older
+    workbook replayed): all. Else none: the reviewer saw another value.
+    """
+    n = len(incoming)
+    if stored[-n:] == incoming:
+        return n
+    for k in range(min(n - 1, len(stored)), 0, -1):
+        if incoming[:k] == stored[-k:]:
+            return k
+    if stored and incoming[0][0] == stored[-1][1]:
+        return 0
+    return n if _contains(stored, incoming) else 0
+
+
 def _write_events(conn: sqlite3.Connection, group: list[ReviewEvent], now: str) -> int:
-    """Append one (doc_id, kind, field)'s events unless the stored tail already ends with them; return rows written."""
+    """Append the part of one (doc_id, kind, field)'s events that is not stored history; return rows written."""
     first = group[0]
     kind = event_kind(first)
-    tail = conn.execute(_TAIL, (first.doc_id, kind, first.field, len(group))).fetchall()
-    stored = [(r["old_value"], r["new_value"], r["source"]) for r in reversed(tail)]
-    if stored == [(e.old_value, e.new_value, e.source) for e in group]:
-        return 0
-    predecessor = str(tail[0]["event_id"]) if tail else None
+    rows = conn.execute(_STORED, (first.doc_id, kind, first.field)).fetchall()
+    stored = [(r["old_value"], r["new_value"]) for r in rows]
+    skip = _new_events(stored, [(e.old_value, e.new_value) for e in group])
+    predecessor = str(rows[-1]["event_id"]) if rows else None
     written = 0
-    for e in group:
+    for e in group[skip:]:
         event_id = _event_id(e, predecessor)
         row = (event_id, e.doc_id, e.field, e.old_value, e.new_value, e.source, now, e.verdict)
         written += conn.execute(_INSERT_EVENT, (*row, int(e.is_gold), kind)).rowcount
@@ -119,14 +143,16 @@ def _write_events(conn: sqlite3.Connection, group: list[ReviewEvent], now: str) 
 def record_review_events(conn: sqlite3.Connection, events: list[ReviewEvent], *, actor: str = DEFAULT_ACTOR) -> int:
     """Store review corrections, in order. One call is idempotent as a whole.
 
-    Events are grouped by (doc_id, kind, field), keeping their order. A group
-    is skipped when the stored events of that (doc_id, kind, field) already
-    end with exactly the same list; otherwise the whole list is appended.
-    Same means the same old value, new value and source; verdict and is_gold
-    do not count, so a skipped row keeps its stored verdict. Importing the
-    same workbook twice in a row adds nothing, even when it holds two rows
-    for one field, while a correction made again after a different one (A to
-    B, B to A, A to B) is stored and is then the latest. Events for a doc_id
+    Events are grouped by (doc_id, kind, field), keeping their order, and
+    compared with that key's stored events on old and new value (source,
+    verdict and is_gold do not count, so a skipped row keeps its stored
+    verdict). A group the stored events already end with adds nothing. A
+    group that extends the stored tail adds only its new suffix. A group that
+    starts from the current value is a new correction and is appended, so A
+    to B, B to A, A to B over three imports ends at B. A group found earlier
+    in the stored history is a replayed older workbook and adds nothing: to go
+    back to an older value, enter a new correction. Anything else is appended
+    whole. Events for a doc_id
     the store does not hold are skipped: the foreign key needs the document.
     One audit row per cabinet records the counts and the source file names.
 

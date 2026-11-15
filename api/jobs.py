@@ -10,9 +10,12 @@ once at startup, which fails only the queued or running jobs of another boot id.
 A finished job (done or failed) is never written again.
 
 One API process per store: at startup the API claims the store with
-`SqliteJobStore.claim` (a row of `api_instances` with its boot id and a
-heartbeat that a timer refreshes). A second process fails with ConfigError
-while the first one's heartbeat is younger than API_INSTANCE_TIMEOUT_S.
+`SqliteJobStore.claim` (a row of `api_instances` with the store's own
+instance id, a uuid4 per SqliteJobStore so per app, and a heartbeat that a
+timer refreshes). A second app, in this process or another, fails with
+ConfigError while the first one's heartbeat is live: wall-clock seconds no
+older than API_INSTANCE_TIMEOUT_S and no further than that in the future (a
+clock step back cannot keep a dead claim alive). Close removes only its own row.
 
 A state write that raises sqlite3.Error is retried JOB_STATE_ATTEMPTS times
 (each attempt already waits out the busy timeout). If every attempt fails, the
@@ -51,7 +54,7 @@ JOB_STATE_ATTEMPTS = 3
 JOB_STATE_ERROR = "job state could not be saved"
 # Identifies this process's jobs, so a sweep leaves a live process's jobs alone.
 BOOT_ID = uuid.uuid4().hex
-# Another API process on the store counts as live while its heartbeat is younger than this.
+# Another API instance on the store counts as live while its heartbeat is younger than this.
 API_INSTANCE_TIMEOUT_S = 30.0
 HEARTBEAT_S = API_INSTANCE_TIMEOUT_S / 3
 SECOND_INSTANCE_ERROR = (
@@ -180,17 +183,25 @@ _EVICT = (
 class SqliteJobStore:
     """A JobStore in the `jobs` table. Survives a restart; sweep_stale then fails another boot's unfinished jobs."""
 
-    def __init__(self, path: str | Path, max_finished: int = MAX_FINISHED_JOBS, boot_id: str = BOOT_ID) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        max_finished: int = MAX_FINISHED_JOBS,
+        boot_id: str = BOOT_ID,
+        instance_id: str | None = None,
+    ) -> None:
         """Open the store and drop the oldest finished jobs.
 
         Args:
             path: SQLite file, shared with the document store.
             max_finished: Finished jobs kept; the oldest rows are deleted.
             boot_id: Stamped on every job this store creates; the process's BOOT_ID by default.
+            instance_id: Key of this store's `api_instances` claim; None for a new uuid4.
         """
         self._conn = db.connect(path, threads=True)
         self._max_finished = max_finished
         self._boot_id = boot_id
+        self.instance_id = instance_id or uuid.uuid4().hex
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._beater: threading.Thread | None = None
@@ -198,31 +209,33 @@ class SqliteJobStore:
             self._conn.execute(_EVICT, (max_finished,))
 
     def claim(self, timeout_s: float = API_INSTANCE_TIMEOUT_S) -> None:
-        """Make this process the store's one API process and start its heartbeat timer.
+        """Make this app the store's one API instance and start its heartbeat timer.
 
-        A stale row (heartbeat older than timeout_s) is replaced.
+        Another instance's row is stale when its heartbeat is older than
+        timeout_s or more than timeout_s in the future; stale rows are replaced.
 
         Args:
-            timeout_s: Age after which another process's heartbeat no longer counts.
+            timeout_s: Age after which another instance's heartbeat no longer counts.
 
         Raises:
-            ConfigError: Another process's heartbeat is younger than timeout_s.
+            ConfigError: Another instance, in any process, has a live heartbeat.
         """
         now = time.time()
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
+                # The column is named boot_id; it holds the instance id.
                 live = self._conn.execute(
-                    "SELECT 1 FROM api_instances WHERE boot_id <> ? AND heartbeat_at > ?",
-                    (self._boot_id, now - timeout_s),
+                    "SELECT 1 FROM api_instances WHERE boot_id <> ? AND heartbeat_at > ? AND heartbeat_at < ?",
+                    (self.instance_id, now - timeout_s, now + timeout_s),
                 ).fetchone()
                 if live is not None:
                     raise ConfigError(SECOND_INSTANCE_ERROR.format(timeout=timeout_s))
-                self._conn.execute("DELETE FROM api_instances WHERE boot_id <> ?", (self._boot_id,))
+                self._conn.execute("DELETE FROM api_instances WHERE boot_id <> ?", (self.instance_id,))
                 self._conn.execute(
                     "INSERT INTO api_instances (boot_id, started_at, heartbeat_at) VALUES (?, ?, ?) "
                     "ON CONFLICT (boot_id) DO UPDATE SET heartbeat_at = excluded.heartbeat_at",
-                    (self._boot_id, _now(), now),
+                    (self.instance_id, _now(), now),
                 )
                 self._conn.commit()
             except BaseException:
@@ -232,12 +245,12 @@ class SqliteJobStore:
         self._beater.start()
 
     def _heartbeat(self) -> None:
-        """Refresh this process's heartbeat every HEARTBEAT_S until close."""
+        """Refresh this instance's heartbeat every HEARTBEAT_S until close."""
         while not self._stop.wait(HEARTBEAT_S):
             try:
                 with self._lock, self._conn:
                     self._conn.execute(
-                        "UPDATE api_instances SET heartbeat_at = ? WHERE boot_id = ?", (time.time(), self._boot_id)
+                        "UPDATE api_instances SET heartbeat_at = ? WHERE boot_id = ?", (time.time(), self.instance_id)
                     )
             except sqlite3.Error as exc:
                 log.warning("api heartbeat not saved", extra={"error": summarize_exception(exc)})
@@ -345,7 +358,7 @@ class SqliteJobStore:
         if self._beater is not None:
             self._beater.join()
             with self._lock, contextlib.suppress(sqlite3.Error), self._conn:
-                self._conn.execute("DELETE FROM api_instances WHERE boot_id = ?", (self._boot_id,))
+                self._conn.execute("DELETE FROM api_instances WHERE boot_id = ?", (self.instance_id,))
         with self._lock:
             self._conn.close()
 
