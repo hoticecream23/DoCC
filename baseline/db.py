@@ -280,9 +280,29 @@ def upsert_document(
         case_id: Case the document belongs to (a pack manifest's case_id); None keeps the stored one.
     """
     bbox = bbox_path if bbox_path is not None and bbox_path.is_file() else None
+    doc = _document_row(record, run_id, bbox, case_id)
+    fields = [
+        (record.doc_id, i, m.field, m.value, m.normalized_value, m.page, m.char_start, m.char_end, m.method.value)
+        + (int(m.validated), m.normalizer_version, m.confidence, m.currency)
+        for i, m in enumerate(record.metadata)
+    ]
+    tags = [(record.doc_id, i, t.tag, t.confidence, t.method.value) for i, t in enumerate(record.tags)]
+    with conn:
+        ensure_cabinet(conn, record.cabinet_id)
+        conn.execute(_UPSERT_DOCUMENT, doc)
+        conn.execute("DELETE FROM fields WHERE doc_id = ?", (record.doc_id,))
+        conn.executemany("INSERT INTO fields VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", fields)
+        conn.execute("DELETE FROM tags WHERE doc_id = ?", (record.doc_id,))
+        conn.executemany("INSERT INTO tags VALUES (?, ?, ?, ?, ?)", tags)
+
+
+def _document_row(
+    record: DocumentRecord, run_id: str | None, bbox: Path | None, case_id: str | None
+) -> tuple[Any, ...]:
+    """Build the documents-table row for one record, with created_at and updated_at set to now."""
     now = _now()
     cls = record.classification
-    doc = (
+    return (
         record.doc_id,
         record.cabinet_id,
         record.source_path,
@@ -301,19 +321,6 @@ def upsert_document(
         routing_status(record),
         case_id or None,
     )
-    fields = [
-        (record.doc_id, i, m.field, m.value, m.normalized_value, m.page, m.char_start, m.char_end, m.method.value)
-        + (int(m.validated), m.normalizer_version, m.confidence, m.currency)
-        for i, m in enumerate(record.metadata)
-    ]
-    tags = [(record.doc_id, i, t.tag, t.confidence, t.method.value) for i, t in enumerate(record.tags)]
-    with conn:
-        ensure_cabinet(conn, record.cabinet_id)
-        conn.execute(_UPSERT_DOCUMENT, doc)
-        conn.execute("DELETE FROM fields WHERE doc_id = ?", (record.doc_id,))
-        conn.executemany("INSERT INTO fields VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", fields)
-        conn.execute("DELETE FROM tags WHERE doc_id = ?", (record.doc_id,))
-        conn.executemany("INSERT INTO tags VALUES (?, ?, ?, ?, ?)", tags)
 
 
 def _has_document(conn: sqlite3.Connection, doc_id: str) -> bool:
@@ -386,6 +393,21 @@ def import_jsonl(
         upsert_document(conn, record, bbox_path=bbox_dir / f"{record.doc_id}.json.gz")
         stats["documents"] += 1
         cabinets[record.cabinet_id] += 1
+    _import_sidecars(conn, stats, tables_path, provenance_path)
+    for cabinet_id, n in sorted(cabinets.items()):
+        detail = {"documents": n, "results": results.name}
+        record_audit(conn, actor=actor, action="db.import", cabinet_id=cabinet_id, detail=detail)
+    log.info("db import done", extra={"results": str(results), **stats})
+    return stats
+
+
+def _import_sidecars(
+    conn: sqlite3.Connection,
+    stats: ImportStats,
+    tables_path: str | Path | None,
+    provenance_path: str | Path | None,
+) -> None:
+    """Load the tables and provenance sidecars, counting writes and skips into stats."""
     if tables_path:
         for row in read_jsonl(tables_path):
             rec = TableRecord.model_validate(row)
@@ -400,11 +422,6 @@ def import_jsonl(
                 continue
             upsert_provenance(conn, prov)
             stats["provenance"] += 1
-    for cabinet_id, n in sorted(cabinets.items()):
-        detail = {"documents": n, "results": results.name}
-        record_audit(conn, actor=actor, action="db.import", cabinet_id=cabinet_id, detail=detail)
-    log.info("db import done", extra={"results": str(results), **stats})
-    return stats
 
 
 def export_jsonl(conn: sqlite3.Connection, out_path: str | Path, cabinet_id: str | None = None) -> int:
