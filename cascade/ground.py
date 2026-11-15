@@ -8,7 +8,8 @@ and the guard against invention.
 Three steps, and the first that matches wins:
 
 1. exact: the value occurs verbatim;
-2. loose: it occurs once whitespace runs are collapsed and case is folded;
+2. loose: it occurs once whitespace runs are collapsed, case is folded,
+   Unicode digits are mapped to ASCII and direction marks are dropped, on both sides;
 3. normalised: the field's own normalizer gives the same value for it and for
    a place a value of the field's shape is printed (`scan_spans`) or a rule
    candidate.
@@ -24,6 +25,7 @@ from typing import Any
 
 from baseline.metadata import Candidate, NormCtx, normalize
 from baseline.metadata.fields import scan_spans
+from baseline.metadata.normalizers import DIRECTION_MARKS, ascii_digits
 from baseline.schema import page_spans
 
 EXACT = "exact"
@@ -60,7 +62,7 @@ class Grounding:
 
 
 def _fold(text: str) -> tuple[str, list[int]]:
-    """Casefold, and collapse each whitespace run to one space.
+    """Casefold, collapse each whitespace run to one space, map digits to ASCII and drop direction marks.
 
     Returns the folded string and, for each of its characters, the index in
     `text` it came from. Casefolding can lengthen a character (ß to ss), which
@@ -76,8 +78,10 @@ def _fold(text: str) -> tuple[str, list[int]]:
                 src.append(i)
             in_space = True
             continue
+        if ord(ch) in DIRECTION_MARKS:
+            continue
         in_space = False
-        for f in ch.casefold():
+        for f in ascii_digits(ch).casefold():
             out.append(f)
             src.append(i)
     return "".join(out), src

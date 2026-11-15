@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 import pytest
+import yaml
 from PIL import Image
 
 from baseline.config import load_config
@@ -66,3 +67,16 @@ def test_an_unknown_or_mistyped_key_fails_the_load(section, line, tmp_path, requ
     (cdir / "pipeline.yaml").write_text(text, encoding="utf-8")
     with pytest.raises(ConfigError, match=section):
         load_config(cdir)
+
+
+def test_normal_mode_notes_the_skipped_tiff_frames_without_an_error(cfg, tmp_path):
+    res = extract(_tiff(tmp_path, 3), cfg)
+    assert any("2 skipped (extraction.multi_frame_images)" in n for n in res.notes)
+    assert not any("multi_frame_images" in e for e in res.errors)
+
+
+def test_a_null_extraction_section_loads_as_the_defaults(tmp_path, request):
+    cdir = _config_dir(tmp_path, request.config.rootpath)
+    data = yaml.safe_load((cdir / "pipeline.yaml").read_text(encoding="utf-8"))
+    (cdir / "pipeline.yaml").write_text(yaml.safe_dump({**data, "extraction": None}), encoding="utf-8")
+    assert load_config(cdir).extract_opts() == {}

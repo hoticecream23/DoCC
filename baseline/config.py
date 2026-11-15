@@ -158,7 +158,7 @@ class Config:
 
     def _section(self, key: str) -> dict[str, Any]:
         """One top-level section of pipeline.yaml, or {}."""
-        opts: dict[str, Any] = self.pipeline.get(key, {})
+        opts: dict[str, Any] = self.pipeline.get(key) or {}  # a null section means its defaults
         return opts
 
     def extract_opts(self) -> dict[str, Any]:
@@ -261,6 +261,9 @@ def load_config(config_dir: str | Path | None = None) -> Config:
     d = d.resolve()
     pipeline = _load(d / "pipeline.yaml")
     _check_pipeline(pipeline, d / "pipeline.yaml")
+    for key in _CHECKED_SECTIONS:
+        if key in pipeline and pipeline[key] is None:
+            pipeline[key] = {}  # "extraction:" with nothing under it means the defaults
     return Config(
         config_dir=d,
         pipeline=pipeline,

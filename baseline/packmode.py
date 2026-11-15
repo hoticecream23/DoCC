@@ -69,22 +69,42 @@ SYNONYMS: tuple[tuple[str, ...], ...] = (
     ("qty", "quantity"),
 )
 _SYNONYM_OF = {word: group for group in SYNONYMS for word in group}
+# Safe abbreviations, matched in the text under the complete-label rule, each word with an
+# optional dot ("Inv. No"). One concept per group, like SYNONYMS, which they extend.
+ABBREVIATIONS: tuple[tuple[str, ...], ...] = (
+    ("no", "number", "num", "nbr", "#"),
+    ("inv", "invoice"),
+    ("dt", "date"),
+    ("amt", "amnt", "amount"),
+    ("qty", "quantity"),
+    ("ref", "reference"),
+    ("doc", "document"),
+)
+WORD_VARIANTS = {word: list(group) for group in ABBREVIATIONS for word in group}
 # A field whose name holds one of these words is an identifier: text normaliser, never the amount one.
-IDENTIFIER_TOKENS = frozenset({"no", "number", "num", "#", "id", "code", "ref", "reference"})
+IDENTIFIER_TOKENS = frozenset({"no", "number", "num", "nbr", "#", "id", "code", "ref", "reference"})
+# A number field named with one of these words or phrases counts things: integer normaliser.
+INTEGER_WORDS = frozenset({"year", "month", "qty", "quantity", "count", "pages"})
+INTEGER_PHRASES = ("no of", "number of")
+INTEGER_NORMALIZER = "integer"
 # Client field names whose value shape (not labels) an existing extractor gives.
 SHAPE_BY_NAME = {"vendor name": "vendor_name", "supplier name": "vendor_name", "customer name": "buyer_name"}
 # Extractor whose value shape a non-identifier field of each dtype borrows.
 SHAPE_BY_DTYPE = {"date": "invoice_date", "number": "total_amount"}
 SHAPE_KEYS = ("value_regex", "window", "direction", "ignorecase")
-# Identifier value: right after the label, has a digit, keeps leading zeros and separators.
-ID_VALUE_REGEX = r"^[\s:.#\[-]*((?=[^\s]*[0-9])[A-Za-z0-9](?:[A-Za-z0-9/_.,-]*[A-Za-z0-9])?)"
-# Free text value: the rest of the label's line.
-TEXT_VALUE_REGEX = r"^[ \t:#-]*(\S[^\n]{0,79}?)[ \t]*(?:\n|$)"
+# Identifier value: right after the label, has a digit (any script), keeps leading zeros and separators.
+ID_VALUE_REGEX = r"^[\s:.#\[-]*((?=\S*\d)[^\W_](?:[\w/.,-]*[^\W_])?)"
+# Free text value: the rest of the label's line after separators; it holds at least one letter or digit.
+TEXT_VALUE_REGEX = r"^[ \t:#.=|-]*(?=[^\n]{0,80}[^\W_])([^\s:#.=|-][^\n]{0,79}?)[ \t]*(?:\n|$)"
+# Borrowed value patterns are widened: any decimal digit, and the Arabic separators in numbers.
+WIDEN_PATTERN = (("0-9", r"\d"), (r"\.", "[.\u066b]"), ("(?:,", "(?:[,\u066c\u060c]"))
 VALUE_WINDOW = 60
 TEXT_NORMALIZER = "text_norm"
+# Anchor attributes that switch on the complete-label rule and the value layouts (metadata/layouts.py).
+PACK_ANCHOR = {"label_rule": "complete", "combined_labels": True, "word_variants": WORD_VARIANTS}
 # A label must not be glued to a word; a one-word label must not follow another word on its line.
 REJECT_GLUED = r"[^\W_]$"
-REJECT_AFTER_WORD = r"[^\W_][ \t]?$"
+REJECT_AFTER_WORD = r"[^\W_] ?$"  # one space only: a tab or two spaces start a new line segment
 ROLE_ORDER = {"key": 0, "required": 1, "optional": 2}
 LABEL_SPECIFICITY = 1.0
 RULE_DTYPES = ("date", "number", "text")
@@ -149,13 +169,34 @@ def is_identifier(spec: FieldSpec) -> bool:
     Returns:
         Whether the field holds an identifier.
     """
-    return spec.role == "key" or bool(IDENTIFIER_TOKENS & set(_words(spec.name)))
+    return spec.role == "key" or (bool(IDENTIFIER_TOKENS & set(_words(spec.name))) and not is_integer_like(spec))
+
+
+def is_integer_like(spec: FieldSpec) -> bool:
+    """A non-key number field that counts things (year, qty, number of ...): integer, not amount.
+
+    Args:
+        spec: The client field.
+
+    Returns:
+        Whether the field's number is integer-like.
+    """
+    words = _words(spec.name)
+    joined = f" {' '.join(words)} "
+    named = bool(INTEGER_WORDS & set(words)) or any(f" {p} " in joined for p in INTEGER_PHRASES)
+    return spec.role != "key" and spec.dtype == "number" and named
+
+
+def _widen(pattern: str) -> str:
+    for old, new in WIDEN_PATTERN:
+        pattern = pattern.replace(old, new)
+    return pattern
 
 
 def _shape(spec: FieldSpec, by_name: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     """Value pattern, normaliser and type for a field; None when no rule can read it."""
     if is_identifier(spec):
-        anchor = {"value_regex": ID_VALUE_REGEX, "window": VALUE_WINDOW, "direction": "after"}
+        anchor = {"value_regex": ID_VALUE_REGEX, "window": VALUE_WINDOW, "direction": "after", "next_line": True}
         return {"type": "text", "normalizer": TEXT_NORMALIZER, "anchor": anchor}
     source = SHAPE_BY_NAME.get(" ".join(_words(spec.name))) or SHAPE_BY_DTYPE.get(spec.dtype)
     if source is None:
@@ -164,8 +205,11 @@ def _shape(spec: FieldSpec, by_name: dict[str, dict[str, Any]]) -> dict[str, Any
     borrowed = by_name.get(source) or {}
     if not (borrowed.get("anchor") or {}).get("value_regex"):
         return None
-    anchor = {k: copy.deepcopy(v) for k, v in borrowed["anchor"].items() if k in SHAPE_KEYS}
-    return {"type": borrowed.get("type", "text"), "normalizer": borrowed.get("normalizer"), "anchor": anchor}
+    shaped: dict[str, Any] = {k: copy.deepcopy(v) for k, v in borrowed["anchor"].items() if k in SHAPE_KEYS}
+    shaped["value_regex"] = _widen(shaped["value_regex"])
+    shaped["next_line"] = source in SHAPE_BY_DTYPE.values()  # a date or number, never free text
+    normalizer = INTEGER_NORMALIZER if is_integer_like(spec) else borrowed.get("normalizer")
+    return {"type": borrowed.get("type", "text"), "normalizer": normalizer, "anchor": shaped}
 
 
 def _field_def(spec: FieldSpec, type_name: str, by_name: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -176,7 +220,7 @@ def _field_def(spec: FieldSpec, type_name: str, by_name: dict[str, dict[str, Any
     if shape is None or not labels:
         return {**head, "type": "text", "strategies": []}  # the cascade asks the model; no rule finds it
     reject = REJECT_AFTER_WORD if len(_words(spec.name)) == 1 else REJECT_GLUED
-    anchor = {**shape["anchor"], "labels": labels, "reject_before": reject}
+    anchor = {**shape["anchor"], **copy.deepcopy(PACK_ANCHOR), "labels": labels, "reject_before": reject}
     return {**head, **shape, "strategies": ["anchor"], "anchor": anchor}
 
 
@@ -206,9 +250,11 @@ def pack_config(cfg: Config, pack_dir: str | Path, cabinet: str) -> Config:
     pipeline = copy.deepcopy(cfg.pipeline)
     pipeline["cabinet_id"] = pack.cabinet.slug
     pipeline[PACK_KEY] = {"dir": str(Path(pack_dir).resolve()), "cabinet": pack.cabinet.name, "slug": pack.cabinet.slug}
-    pipeline.setdefault("classification", {})["unknown_label"] = OTHER_CLASS
-    pipeline.setdefault("metadata", {})["run_scoped_fields_when_unknown"] = False
-    extraction = pipeline.setdefault("extraction", {})
+    for section in ("classification", "metadata", "extraction"):
+        pipeline[section] = pipeline.get(section) or {}  # a null section means its defaults
+    pipeline["classification"]["unknown_label"] = OTHER_CLASS
+    pipeline["metadata"]["run_scoped_fields_when_unknown"] = False
+    extraction = pipeline["extraction"]
     extraction.setdefault("max_pages", PACK_MAX_PAGES)
     extraction.setdefault("multi_frame_images", PACK_MULTI_FRAME_IMAGES)
     classes = [_class_entry(c) for c in pack.classes if not _is_reserved(c.name)]

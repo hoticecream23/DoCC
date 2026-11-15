@@ -47,6 +47,7 @@ class ExtractionResult:
         page_sizes: Page width and height in the page's own units.
         words: Word boxes, page local offsets until to_canonical_offsets runs.
         errors: Problems that did not stop extraction.
+        notes: Facts worth reporting that are not problems, such as skipped frames.
     """
 
     pages: list[str] = field(default_factory=list)
@@ -55,6 +56,7 @@ class ExtractionResult:
     page_sizes: list[tuple[float, float]] = field(default_factory=list)
     words: list[WordBox] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
     @property
     def page_count(self) -> int:
@@ -513,6 +515,9 @@ def _extract_image(path: Path, cfg: Config, res: ExtractionResult) -> None:
     with Image.open(path) as img:
         if not cfg.extract_opts().get("multi_frame_images", False):
             _ocr_frame(img, 0, cfg.extract_opts(), res)
+            frames = int(getattr(img, "n_frames", 1))
+            if frames > 1:
+                res.notes.append(f"read frame 1 of {frames}, {frames - 1} skipped (extraction.multi_frame_images)")
             return
         count = _page_limit(cfg, int(getattr(img, "n_frames", 1)), res)
         for pno, frame in enumerate(ImageSequence.Iterator(img)):

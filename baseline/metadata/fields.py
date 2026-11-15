@@ -16,6 +16,7 @@ from ..config import Config
 from ..errors import OffsetMismatch  # noqa: F401 - re-exported
 from ..logging_setup import get_logger
 from ..schema import MetadataField, MetadataMethod, WordBox, page_for_offset, page_spans
+from . import layouts
 from .normalizers import NormCtx, normalize
 from .validators import CHECKSUM_VALIDATORS, run_validator
 
@@ -181,6 +182,21 @@ def _anchor_candidate(hit: _AnchorHit, spec: dict[str, Any], spec_score: float, 
     )
 
 
+def _complete_candidates(
+    full: str, low: str, spec: dict[str, Any], value_rx: re.Pattern[str], window: int
+) -> list[Candidate]:
+    """Anchor candidates under the complete-label rule (layouts.py); the value is the document's own text."""
+    rej_value = spec.get("reject_value")
+    hits = layouts.complete_hits(
+        full, spec, value_rx, window, lambda pos, end: _label_rejected(full, low, pos, end, spec)
+    )
+    return [
+        Candidate(full[h.start : h.end], h.start, h.end, h.confidence, MetadataMethod.ANCHOR, False)
+        for h in hits
+        if not (rej_value and _compile(rej_value, False).fullmatch(full[h.start : h.end]))
+    ]
+
+
 def _anchor_candidates(full: str, fdef: dict[str, Any], default_window: int, limit: int) -> list[Candidate]:
     spec = fdef.get("anchor") or {}
     labels = spec.get("labels") or []
@@ -191,6 +207,8 @@ def _anchor_candidates(full: str, fdef: dict[str, Any], default_window: int, lim
     direction = spec.get("direction", "after")
     value_rx = _compile(value_regex, bool(spec.get("ignorecase", False)))
     low = full.lower()
+    if spec.get("label_rule") == layouts.COMPLETE_RULE:
+        return _complete_candidates(full, low, spec, value_rx, window)[:limit]
 
     out: list[Candidate] = []
     # Most specific labels first so a weak label never shadows a strong one.

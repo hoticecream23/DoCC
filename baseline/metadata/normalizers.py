@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -24,6 +25,11 @@ CENTURY_PIVOT = 70
 # A year below this is a two digit year.
 TWO_DIGIT_YEAR_LIMIT = 100
 MONTHS_PER_YEAR = 12
+
+# Right-to-left and left-to-right marks and embeddings, dropped before a value is normalised.
+DIRECTION_MARKS = dict.fromkeys(range(0x202A, 0x202F), None) | {0x200E: None, 0x200F: None}
+# Arabic decimal separator, Arabic thousands separator and Arabic comma, read in amounts.
+ARABIC_NUMBER_SEPARATORS = str.maketrans({"\u066b": ".", "\u066c": ",", "\u060c": ","})
 
 # (normalized value or None, extras such as the currency code).
 NormResult = tuple[str | None, dict[str, Any]]
@@ -42,6 +48,23 @@ _MONTHS = {
     "nov": 11,
     "dec": 12,
 }
+
+
+def ascii_digits(text: str) -> str:
+    """Map every Unicode decimal digit to its ASCII digit and drop direction marks.
+
+    ASCII text comes back unchanged.
+
+    Args:
+        text: Any text.
+
+    Returns:
+        The text with ASCII digits and no direction marks.
+    """
+    if text.isascii():
+        return text
+    out = text.translate(DIRECTION_MARKS)
+    return "".join(str(unicodedata.decimal(c)) if c.isdecimal() and not c.isascii() else c for c in out)
 
 
 def _full_year(y: int) -> int:
@@ -149,6 +172,14 @@ def _n_text_norm(value: str, ctx: NormCtx) -> NormResult:
     return re.sub(r"\s+", " ", value).strip(), {}
 
 
+def _n_integer(value: str, ctx: NormCtx) -> NormResult:
+    """An integral number as an integer string ("12.00" to "12"); anything else as text."""
+    dec = _to_decimal(value.translate(ARABIC_NUMBER_SEPARATORS))
+    if dec is not None and dec == dec.to_integral_value():
+        return str(int(dec)), {}
+    return _n_text_norm(value, ctx)
+
+
 def _n_date_iso(value: str, ctx: NormCtx) -> NormResult:
     o = ctx.opts.get("date_iso", {})
     parsed = _parse_date(value, bool(o.get("dayfirst", True)))
@@ -158,7 +189,7 @@ def _n_date_iso(value: str, ctx: NormCtx) -> NormResult:
 def _n_currency(value: str, ctx: NormCtx) -> NormResult:
     """Decimal string plus a separately reported currency code."""
     o = ctx.opts.get("currency", {})
-    dec = _to_decimal(value)
+    dec = _to_decimal(value.translate(ARABIC_NUMBER_SEPARATORS))
     norm = str(dec.quantize(Decimal("0.01"))) if dec is not None else None
 
     symbols: dict[str, str] = o.get("symbols", {}) or {}
@@ -182,6 +213,7 @@ NORMALIZERS: dict[str, Callable[[str, NormCtx], NormResult]] = {
     "text_norm": _n_text_norm,
     "date_iso": _n_date_iso,
     "currency": _n_currency,
+    "integer": _n_integer,
 }
 
 
@@ -195,7 +227,8 @@ def normalize(name: str | None, value: str, ctx: NormCtx) -> NormResult:
 
     Returns:
         (normalized value, extras). An empty or unknown name returns the value
-        unchanged; a normalizer that raises returns (None, {}).
+        unchanged; a normalizer that raises returns (None, {}). A named
+        normalizer sees the value with ASCII digits (ascii_digits).
     """
     if not name:
         return value, {}
@@ -204,7 +237,7 @@ def normalize(name: str | None, value: str, ctx: NormCtx) -> NormResult:
         log.warning("unknown normalizer", extra={"normalizer": name})
         return value, {}
     try:
-        return fn(value, ctx)
+        return fn(ascii_digits(value), ctx)
     except (ValueError, TypeError, KeyError, IndexError, ArithmeticError, AttributeError) as exc:  # bad value
         log.warning("normalizer raised", extra={"normalizer": name, "error": summarize_exception(exc)})
         return None, {}

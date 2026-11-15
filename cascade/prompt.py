@@ -188,7 +188,9 @@ def plan_text(pages: list[str], page_chars: int, total_chars: int) -> TextPlan:
         head = min(len(pages[i]), page_chars)
         if head and budget <= 0:
             continue
-        kept[i] = min(head, budget)
+        # The first page leaves the last page up to half the budget, so a tight total never drops it.
+        reserve = min(len(pages[-1]), page_chars, budget // 2) if i == 0 and len(pages) > 1 else 0
+        kept[i] = min(head, budget - reserve)
         budget -= kept[i]
         included.append(i)
     truncated = any(k < len(p) for k, p in zip(kept, pages, strict=True))

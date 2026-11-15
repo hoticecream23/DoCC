@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, field_validator, model_serializer
 
 SCHEMA_VERSION = "1.3.0"
 
@@ -158,13 +158,26 @@ class Tag(Strict):
 
 
 class Diagnostics(Strict):
-    """Per-document run facts: page count, scan status, timings and errors."""
+    """Per-document run facts: page count, scan status, timings, errors and notes.
+
+    Errors are problems and mark a document failed. Notes are facts only (for
+    example frames skipped by setting) and never count as a failure. Empty
+    notes are left out of the serialised record, so older output is unchanged.
+    """
 
     page_count: int = Field(ge=0)
     is_scanned: bool
     has_native_text: bool
     timings_ms: dict[str, float] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _drop_empty_notes(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if not self.notes:
+            data.pop("notes", None)
+        return data
 
 
 class DocumentRecord(Strict):
