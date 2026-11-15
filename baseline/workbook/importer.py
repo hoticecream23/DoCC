@@ -52,7 +52,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Config
-from ..db import ReviewEvent
+from ..db import ReviewEvent, event_kind
 from ..logging_setup import get_logger
 from ..metadata import NormCtx, normalize
 from ..schema import compute_doc_id
@@ -93,9 +93,10 @@ class WorkbookImport:
     def record(
         self, sheet: str, doc_id: str, name: str, old: str | None, new: str | None, verdict: str, gold: bool
     ) -> None:
-        """Note one reviewer change made on `sheet`, with its store verdict and IS_GOLD mark."""
+        """Note one reviewer change made on `sheet`, with its store verdict, IS_GOLD mark and kind."""
         source = f"{self.source}#{sheet}"
-        self.events.append(ReviewEvent(doc_id, name, old or None, new or None, source, verdict, gold))
+        event = ReviewEvent(doc_id, name, old or None, new or None, source, verdict, gold)
+        self.events.append(event._replace(kind=event_kind(event)))
 
     @property
     def problems(self) -> list[str]:

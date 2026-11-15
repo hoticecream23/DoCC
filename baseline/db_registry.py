@@ -1,29 +1,23 @@
 """Store additions: cabinets, document types, field definitions, routing and an audit log.
 
-Over 400 lines: the migration steps and the tables they create are read together.
-
 ``baseline/db.py`` holds the JSONL mirror. This module holds what sits beside
-it and the in-place migration that adds it to an existing ``docc.sqlite``.
-``db.connect`` runs ``migrate`` on every open.
-
-Migrations are ordered steps in ``MIGRATIONS``. Each applied version is a row
-of ``schema_migrations``. A step only creates tables with ``IF NOT EXISTS``
-and adds a column only when it is missing, so a step that stopped half way is
-safe to run again. The DDL stays portable (TEXT, INTEGER, REAL, JSON as TEXT).
+it. ``baseline/db_migrate.py`` adds these tables to an existing ``docc.sqlite``.
 
 Corrections stay append-only in ``review_events``. ``effective_fields`` reads
-the latest correction over the stored value; nothing is overwritten.
+the latest correction (highest ``seq``, which is import order) over the stored
+value; nothing is overwritten.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections import Counter
 from datetime import datetime, timezone
-from typing import Any, NamedTuple
+from typing import Any
 
 from .clientpack import ClientPack
+from .errors import PackRegistrationError
 from .logging_setup import get_logger
 from .schema import ClassifyMethod, DocumentRecord
 
@@ -37,78 +31,6 @@ ROUTE_FAILED = "failed"
 _HIGH_PRIORITY = "HIGH"
 
 
-class AddColumn(NamedTuple):
-    """One guarded ALTER: run `ddl` only when `table` lacks `column`."""
-
-    table: str
-    column: str
-    ddl: str
-
-
-Step = str | AddColumn
-
-_V1: tuple[Step, ...] = (
-    """CREATE TABLE IF NOT EXISTS tenants (
-        tenant_id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        domain_type TEXT,
-        is_active INTEGER NOT NULL DEFAULT 1
-    )""",
-    """CREATE TABLE IF NOT EXISTS cabinets (
-        cabinet_id TEXT PRIMARY KEY,
-        tenant_id TEXT REFERENCES tenants(tenant_id),
-        name TEXT NOT NULL,
-        root_path TEXT,
-        created_at TEXT NOT NULL
-    )""",
-    """CREATE TABLE IF NOT EXISTS doc_types (
-        cabinet_id TEXT NOT NULL REFERENCES cabinets(cabinet_id) ON DELETE CASCADE,
-        name TEXT NOT NULL,
-        aliases TEXT NOT NULL,
-        has_samples INTEGER NOT NULL,
-        PRIMARY KEY (cabinet_id, name)
-    )""",
-    """CREATE TABLE IF NOT EXISTS field_defs (
-        cabinet_id TEXT NOT NULL,
-        doc_type TEXT NOT NULL,
-        name TEXT NOT NULL,
-        ord INTEGER NOT NULL,
-        dtype TEXT NOT NULL,
-        date_format TEXT,
-        role TEXT NOT NULL,
-        origin TEXT NOT NULL,
-        PRIMARY KEY (cabinet_id, doc_type, name),
-        FOREIGN KEY (cabinet_id, doc_type) REFERENCES doc_types(cabinet_id, name) ON DELETE CASCADE
-    )""",
-    """CREATE TABLE IF NOT EXISTS audit_log (
-        audit_id INTEGER PRIMARY KEY,
-        at TEXT NOT NULL,
-        actor TEXT NOT NULL,
-        action TEXT NOT NULL,
-        cabinet_id TEXT,
-        doc_id TEXT,
-        detail TEXT
-    )""",
-    "CREATE INDEX IF NOT EXISTS audit_log_cabinet ON audit_log (cabinet_id, audit_id)",
-    AddColumn("review_events", "verdict", "ALTER TABLE review_events ADD COLUMN verdict TEXT"),
-    AddColumn("review_events", "is_gold", "ALTER TABLE review_events ADD COLUMN is_gold INTEGER NOT NULL DEFAULT 0"),
-    AddColumn("runs", "trace_id", "ALTER TABLE runs ADD COLUMN trace_id TEXT"),
-    AddColumn("documents", "routing_status", "ALTER TABLE documents ADD COLUMN routing_status TEXT"),
-    AddColumn("documents", "case_id", "ALTER TABLE documents ADD COLUMN case_id TEXT"),
-    "CREATE INDEX IF NOT EXISTS documents_routing ON documents (routing_status, doc_id)",
-    # Cabinets that already hold documents or runs get their row, named by id.
-    """INSERT INTO cabinets (cabinet_id, tenant_id, name, root_path, created_at)
-       SELECT cabinet_id, NULL, cabinet_id, NULL, MIN(created_at) FROM documents GROUP BY cabinet_id
-       ON CONFLICT (cabinet_id) DO NOTHING""",
-    """INSERT INTO cabinets (cabinet_id, tenant_id, name, root_path, created_at)
-       SELECT cabinet_id, NULL, cabinet_id, NULL, MIN(started_at) FROM runs GROUP BY cabinet_id
-       ON CONFLICT (cabinet_id) DO NOTHING""",
-)
-
-# Ordered (version, steps). Append a new version; never edit an applied one.
-MIGRATIONS: tuple[tuple[int, tuple[Step, ...]], ...] = ((1, _V1),)
-
-
 def utc_now() -> str:
     """Current UTC time, ISO 8601 to the second.
 
@@ -116,47 +38,6 @@ def utc_now() -> str:
         The timestamp the store writes.
     """
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    rows = conn.execute("SELECT name FROM pragma_table_info(?)", (table,)).fetchall()
-    return column in {r[0] for r in rows}
-
-
-def _apply(conn: sqlite3.Connection, steps: Iterable[Step]) -> None:
-    for step in steps:
-        if isinstance(step, AddColumn):
-            if not _has_column(conn, step.table, step.column):
-                conn.execute(step.ddl)
-        else:
-            conn.execute(step)
-
-
-def migrate(conn: sqlite3.Connection) -> list[int]:
-    """Apply every migration the store has not recorded yet, in order.
-
-    Args:
-        conn: Open store whose base tables already exist.
-
-    Returns:
-        The versions applied by this call; empty when the store is current.
-    """
-    conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
-    done = {r[0] for r in conn.execute("SELECT version FROM schema_migrations").fetchall()}
-    applied = []
-    for version, steps in MIGRATIONS:
-        if version in done:
-            continue
-        with conn:
-            _apply(conn, steps)
-            conn.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING",
-                (version, utc_now()),
-            )
-        applied.append(version)
-    if applied:
-        log.info("store migrated", extra={"versions": applied})
-    return applied
 
 
 def routing_status(record: DocumentRecord) -> str:
@@ -227,22 +108,42 @@ def upsert_cabinet(
     tenant_id: str | None = None,
     root_path: str | None = None,
 ) -> None:
-    """Insert or update one cabinet; created_at is kept on update.
+    """Insert or update one cabinet. A value left as None never overwrites a stored one; created_at is kept.
 
     Args:
         conn: Open store.
         cabinet_id: The cabinet.
-        name: Display name; None for the id.
-        tenant_id: Owning tenant, if any; it must exist.
-        root_path: Folder the cabinet is read from, if any.
+        name: Display name; None keeps the stored one, or the id for a new cabinet.
+        tenant_id: Owning tenant, if any; it must exist. None keeps the stored one.
+        root_path: Folder the cabinet is read from; None keeps the stored one.
     """
     with conn:
-        conn.execute(
-            "INSERT INTO cabinets (cabinet_id, tenant_id, name, root_path, created_at) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT (cabinet_id) DO UPDATE SET tenant_id = excluded.tenant_id, name = excluded.name, "
-            "root_path = excluded.root_path",
-            (cabinet_id, tenant_id, name or cabinet_id, root_path, utc_now()),
-        )
+        _write_cabinet(conn, cabinet_id, name, tenant_id, root_path)
+
+
+def _write_cabinet(
+    conn: sqlite3.Connection, cabinet_id: str, name: str | None, tenant_id: str | None, root_path: str | None
+) -> None:
+    """The cabinet upsert, inside the caller's transaction."""
+    conn.execute(
+        "INSERT INTO cabinets (cabinet_id, tenant_id, name, root_path, created_at) VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT (cabinet_id) DO UPDATE SET tenant_id = COALESCE(excluded.tenant_id, cabinets.tenant_id), "
+        "name = COALESCE(?, cabinets.name), root_path = COALESCE(excluded.root_path, cabinets.root_path)",
+        (cabinet_id, tenant_id, name or cabinet_id, root_path, utc_now(), name),
+    )
+
+
+def cabinet_exists(conn: sqlite3.Connection, cabinet_id: str) -> bool:
+    """Whether the store has a row for this cabinet.
+
+    Args:
+        conn: Open store.
+        cabinet_id: The cabinet.
+
+    Returns:
+        True when the cabinet is known.
+    """
+    return conn.execute("SELECT 1 FROM cabinets WHERE cabinet_id = ?", (cabinet_id,)).fetchone() is not None
 
 
 def list_cabinets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -318,13 +219,17 @@ def list_audit(
 def register_pack(conn: sqlite3.Connection, pack: ClientPack, *, actor: str = DEFAULT_ACTOR) -> None:
     """Load a pack cabinet's classes and field definitions, replacing that cabinet's rows.
 
-    Idempotent: one transaction deletes and re-inserts. The cabinet id is the
-    pack slug, as in a pack-mode run.
+    Idempotent: one transaction upserts the cabinet (keeping its stored
+    tenant and root path), deletes and re-inserts. A pack that fails changes
+    nothing. The cabinet id is the pack slug, as in a pack-mode run.
 
     Args:
         conn: Open store.
         pack: One cabinet of a client pack.
         actor: Who registered it, for the audit log.
+
+    Raises:
+        PackRegistrationError: A class or a type's field is named twice, or the store refused a row.
     """
     cab = pack.cabinet.slug
     types = [(cab, c.name, json.dumps(c.aliases, ensure_ascii=False), int(c.has_samples)) for c in pack.classes]
@@ -335,19 +240,35 @@ def register_pack(conn: sqlite3.Connection, pack: ClientPack, *, actor: str = DE
         if t in known
         for i, f in enumerate(specs)
     ]
-    upsert_cabinet(conn, cab, name=pack.cabinet.name)
-    with conn:
-        conn.execute("DELETE FROM field_defs WHERE cabinet_id = ?", (cab,))
-        conn.execute("DELETE FROM doc_types WHERE cabinet_id = ?", (cab,))
-        conn.executemany("INSERT INTO doc_types (cabinet_id, name, aliases, has_samples) VALUES (?, ?, ?, ?)", types)
-        conn.executemany(
-            "INSERT INTO field_defs (cabinet_id, doc_type, name, ord, dtype, date_format, role, origin) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            defs,
-        )
+    _check_unique(cab, [t[1] for t in types], [(d[1], d[2]) for d in defs])
+    try:
+        with conn:
+            _write_cabinet(conn, cab, pack.cabinet.name, None, None)
+            conn.execute("DELETE FROM field_defs WHERE cabinet_id = ?", (cab,))
+            conn.execute("DELETE FROM doc_types WHERE cabinet_id = ?", (cab,))
+            conn.executemany(
+                "INSERT INTO doc_types (cabinet_id, name, aliases, has_samples) VALUES (?, ?, ?, ?)", types
+            )
+            conn.executemany(
+                "INSERT INTO field_defs (cabinet_id, doc_type, name, ord, dtype, date_format, role, origin) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                defs,
+            )
+    except sqlite3.IntegrityError as e:
+        raise PackRegistrationError(f"pack cabinet {cab} was not registered: the store refused a row") from e
     skipped = sum(len(v) for t, v in pack.fields.items() if t not in known)
     detail = {"doc_types": len(types), "field_defs": len(defs), "skipped_field_defs": skipped}
     record_audit(conn, actor=actor, action="pack.register", cabinet_id=cab, detail=detail)
+
+
+def _check_unique(cabinet_id: str, type_names: list[str], field_keys: list[tuple[str, str]]) -> None:
+    """Raise PackRegistrationError naming every class or (type, field) given twice."""
+    types = sorted(n for n, c in Counter(type_names).items() if c > 1)
+    fields = sorted(f"{t}/{f}" for (t, f), c in Counter(field_keys).items() if c > 1)
+    if types or fields:
+        raise PackRegistrationError(
+            f"pack cabinet {cabinet_id} names these twice: types {types}, fields {fields}; nothing was registered"
+        )
 
 
 def list_doc_types(conn: sqlite3.Connection, cabinet_id: str) -> list[dict[str, Any]]:
@@ -404,16 +325,9 @@ def key_field(conn: sqlite3.Connection, cabinet_id: str, doc_type: str) -> str |
     return None if row is None else str(row["name"])
 
 
-# The latest correction of a field: newest created_at, event_id breaking a tie in the same second.
-_EFFECTIVE_FIELDS = """
+_FIELDS_WITH_DEFS = """
 SELECT f.ord, f.name, f.value, f.normalized_value, f.page, f.char_start, f.char_end, f.method,
-    f.validated, f.confidence, fd.role, fd.origin,
-    (SELECT COUNT(*) FROM review_events e WHERE e.doc_id = f.doc_id AND LOWER(e.field) = LOWER(f.name))
-        AS corrections,
-    (SELECT e.new_value FROM review_events e WHERE e.doc_id = f.doc_id AND LOWER(e.field) = LOWER(f.name)
-        ORDER BY e.created_at DESC, e.event_id DESC LIMIT 1) AS corrected_value,
-    (SELECT e.verdict FROM review_events e WHERE e.doc_id = f.doc_id AND LOWER(e.field) = LOWER(f.name)
-        ORDER BY e.created_at DESC, e.event_id DESC LIMIT 1) AS verdict
+    f.validated, f.confidence, fd.role, fd.origin
 FROM fields f
 JOIN documents d ON d.doc_id = f.doc_id
 LEFT JOIN field_defs fd ON fd.cabinet_id = d.cabinet_id AND fd.doc_type = d.doc_type AND fd.name = f.name
@@ -421,15 +335,26 @@ WHERE f.doc_id = ?
 ORDER BY f.ord
 """
 
+# Field corrections only, in import order; the last one per name wins.
+_FIELD_EVENTS = "SELECT field, new_value, verdict FROM review_events WHERE doc_id = ? AND kind = 'field' ORDER BY seq"
+
+
+def _norm(name: str) -> str:
+    """A field name as the workbook importer stores it."""
+    return name.casefold()
+
 
 def effective_fields(conn: sqlite3.Connection, doc_id: str) -> list[dict[str, Any]]:
     """Each stored field of a document with the latest review correction laid over it.
 
-    A pure read. `effective_value` is the latest correction's new value when a
-    correction exists (None when the reviewer removed the field), else the
-    normalized value, else the raw value. role and origin come from field_defs
-    when the cabinet has them, else None. Fields a reviewer added that the
-    record never held are not listed; see list_review_events.
+    A pure read. Only field corrections (kind field) apply, matched on the
+    casefolded name; class and tag corrections never overlay a field. The
+    latest correction is the one with the highest seq, which is import order.
+    `effective_value` is its new value when one exists (None when the reviewer
+    removed the field), else the normalized value, else the raw value. role and
+    origin come from field_defs when the cabinet has them, else None. Fields a
+    reviewer added that the record never held are not listed; see
+    list_review_events.
 
     Args:
         conn: Open store.
@@ -438,13 +363,16 @@ def effective_fields(conn: sqlite3.Connection, doc_id: str) -> list[dict[str, An
     Returns:
         One dict per stored field, in record order.
     """
+    latest: dict[str, tuple[str | None, str | None]] = {}
+    for e in conn.execute(_FIELD_EVENTS, (doc_id,)).fetchall():
+        latest[_norm(e["field"])] = (e["new_value"], e["verdict"])
     out = []
-    for r in conn.execute(_EFFECTIVE_FIELDS, (doc_id,)).fetchall():
+    for r in conn.execute(_FIELDS_WITH_DEFS, (doc_id,)).fetchall():
         row = dict(r)
-        corrected = row["corrections"] > 0
+        found = latest.get(_norm(row["name"]))
         row["validated"] = bool(row["validated"])
-        row["corrected"] = corrected
-        row["effective_value"] = row["corrected_value"] if corrected else row["normalized_value"] or row["value"]
-        del row["corrections"]
+        row["corrected"] = found is not None
+        row["corrected_value"], row["verdict"] = found if found is not None else (None, None)
+        row["effective_value"] = found[0] if found is not None else row["normalized_value"] or row["value"]
         out.append(row)
     return out

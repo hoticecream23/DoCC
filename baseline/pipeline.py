@@ -28,7 +28,7 @@ from . import classify as classify_mod
 from . import db, packmode
 from . import tagging as tagging_mod
 from .config import Config, load_config_cached
-from .errors import summarize_exception
+from .errors import DoccError, DocumentInOtherCabinet, summarize_exception
 from .extract import ExtractionResult, extract, to_canonical_offsets
 from .io import cut_partial_tail
 from .logging_setup import get_logger, setup_logging
@@ -401,6 +401,9 @@ class _Store:
         try:
             bbox = self.bbox_dir / f"{record.doc_id}.json.gz"
             db.upsert_document(self.conn, record, self.run_id, bbox, case_id=self.case_id(record))
+        except DocumentInOtherCabinet as exc:
+            extra = {"doc_id": exc.doc_id, "cabinet_id": exc.cabinet_id, "stored_cabinet_id": exc.stored_cabinet_id}
+            log.warning("document is stored under another cabinet, results line kept, store unchanged", extra=extra)
         except sqlite3.Error as exc:
             log.error(
                 "db write failed, results line kept; run db-import to repair",
@@ -416,6 +419,10 @@ def _start_store(conn: sqlite3.Connection, cfg: Config, bbox_dir: Path, cabinet_
     return _Store(conn, run_id, bbox_dir, packmode.register(conn, cfg))
 
 
+# The store is optional: any of these while opening it turns it off for the run.
+_STORE_ERRORS = (sqlite3.Error, OSError, DoccError)
+
+
 @contextmanager
 def _open_store(cfg: Config, out_path: Path, bbox_dir: Path, cabinet_id: str, root: Path) -> Iterator[_Store | None]:
     """The run's store, or None when db.path is null or the store cannot be opened."""
@@ -425,14 +432,14 @@ def _open_store(cfg: Config, out_path: Path, bbox_dir: Path, cabinet_id: str, ro
         return
     try:
         conn = db.connect(path)
-    except sqlite3.Error as exc:
+    except _STORE_ERRORS as exc:
         log.error("db unavailable, writing JSONL only", extra={"db": str(path), "error": summarize_exception(exc)})
         yield None
         return
     with closing(conn):
         try:
             store: _Store | None = _start_store(conn, cfg, bbox_dir, cabinet_id, root)
-        except sqlite3.Error as exc:
+        except _STORE_ERRORS as exc:
             log.error("db unavailable, writing JSONL only", extra={"db": str(path), "error": summarize_exception(exc)})
             store = None
         yield store

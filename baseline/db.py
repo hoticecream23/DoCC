@@ -14,7 +14,12 @@ mode and foreign keys are connection pragmas, not part of the schema.
 The `jobs` table holds API job state (api/jobs.py SqliteJobStore); it is not
 part of the JSONL mirror. `SCHEMA_DDL` is the base shape; the tables and
 columns added since (cabinets, field definitions, routing, verdicts, audit log)
-live in `db_registry.py` and reach an existing store through its migrations.
+live in `db_registry.py` and reach an existing store through the migrations
+in `db_migrate.py`.
+
+A document stays in the cabinet that first stored it: doc_id is the content
+hash and the primary key, so an upsert naming another cabinet is refused with
+DocumentInOtherCabinet. A composite (cabinet_id, doc_id) key is a later change.
 """
 
 from __future__ import annotations
@@ -22,13 +27,24 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 import uuid
 from collections import Counter
 from pathlib import Path
-from typing import Any, NamedTuple, TypedDict
+from typing import Any, TypedDict
 
-from .db_registry import DEFAULT_ACTOR, ensure_cabinet, migrate, record_audit, routing_status
+from .db_migrate import migrate
+from .db_registry import DEFAULT_ACTOR, ensure_cabinet, record_audit, routing_status
 from .db_registry import utc_now as _now
+from .db_review import KIND_CLASS as KIND_CLASS
+from .db_review import KIND_FIELD as KIND_FIELD
+from .db_review import KIND_TAG as KIND_TAG
+from .db_review import ReviewEvent as ReviewEvent
+from .db_review import document_cabinet
+from .db_review import event_kind as event_kind
+from .db_review import list_review_events as list_review_events
+from .db_review import record_review_events as record_review_events
+from .errors import DocumentInOtherCabinet
 from .io import atomic_open
 from .logging_setup import get_logger
 from .schema import SCHEMA_VERSION, DocumentRecord, TableRecord, read_jsonl
@@ -37,6 +53,10 @@ log = get_logger(__name__)
 
 DEFAULT_LIST_LIMIT = 100
 _HASH_CHUNK = 1 << 20
+# How long a connection waits for another writer's lock before it fails.
+BUSY_TIMEOUT_S = 30.0
+WAL_RETRY_S = 0.05
+
 
 SCHEMA_DDL: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS runs (
@@ -143,7 +163,7 @@ INSERT INTO documents (doc_id, cabinet_id, source_path, filename, doc_type, conf
     routing_status, case_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (doc_id) DO UPDATE SET
-    cabinet_id = excluded.cabinet_id, source_path = excluded.source_path, filename = excluded.filename,
+    source_path = excluded.source_path, filename = excluded.filename,
     doc_type = excluded.doc_type, confidence = excluded.confidence, classify_method = excluded.classify_method,
     schema_version = excluded.schema_version, page_count = excluded.page_count,
     run_id = COALESCE(excluded.run_id, documents.run_id),
@@ -151,29 +171,13 @@ ON CONFLICT (doc_id) DO UPDATE SET
     bbox_sha256 = COALESCE(excluded.bbox_sha256, documents.bbox_sha256),
     record_json = excluded.record_json, updated_at = excluded.updated_at,
     routing_status = excluded.routing_status, case_id = COALESCE(excluded.case_id, documents.case_id)
+WHERE documents.cabinet_id = excluded.cabinet_id
 """
 
 _DOC_COLUMNS = (
     "doc_id, cabinet_id, source_path, filename, doc_type, confidence, classify_method, "
     "schema_version, page_count, run_id, bbox_path, bbox_sha256, created_at, updated_at, routing_status, case_id"
 )
-
-
-class ReviewEvent(NamedTuple):
-    """One human correction: a field, class or tag that a review changed.
-
-    verdict is correct, incorrect, corrected or added, when the source says;
-    is_gold is whether the reviewer marked the row as gold. Neither is part of
-    the event id.
-    """
-
-    doc_id: str
-    field: str
-    old_value: str | None
-    new_value: str | None
-    source: str
-    verdict: str | None = None
-    is_gold: bool = False
 
 
 class ImportStats(TypedDict):
@@ -183,6 +187,8 @@ class ImportStats(TypedDict):
     tables: int
     provenance: int
     skipped: int
+    refused: int
+    duplicates: int
 
 
 def _file_sha256(path: Path) -> str:
@@ -191,6 +197,24 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: fh.read(_HASH_CHUNK), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    """Turn on WAL, retrying until BUSY_TIMEOUT_S passes.
+
+    Leaving the rollback journal needs every other connection gone, and SQLite
+    answers "locked" at once instead of calling the busy handler, so two
+    processes opening an old store together would otherwise fail.
+    """
+    deadline = time.monotonic() + BUSY_TIMEOUT_S
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(WAL_RETRY_S)
 
 
 def connect(path: str | Path, threads: bool = False) -> sqlite3.Connection:
@@ -205,14 +229,18 @@ def connect(path: str | Path, threads: bool = False) -> sqlite3.Connection:
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(p, check_same_thread=not threads)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    with conn:
-        for stmt in SCHEMA_DDL:
-            conn.execute(stmt)
-    migrate(conn)
+    conn = sqlite3.connect(p, check_same_thread=not threads, timeout=BUSY_TIMEOUT_S)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        _enable_wal(conn)
+        with conn:
+            for stmt in SCHEMA_DDL:
+                conn.execute(stmt)
+        migrate(conn)
+    except BaseException:
+        conn.close()  # a failed open must not keep the file open; Windows would hold it locked
+        raise
     return conn
 
 
@@ -270,7 +298,9 @@ def upsert_document(
 
     Re-importing the same record leaves the store unchanged except updated_at.
     Review events, tables and provenance are not touched. routing_status is
-    derived from the record; the cabinet gets a row if it has none.
+    derived from the record; the cabinet gets a row if it has none. A document
+    is never moved between cabinets: when the doc_id is stored under another
+    cabinet nothing is written except an "upsert_refused" audit row (ids only).
 
     Args:
         conn: Open store.
@@ -278,6 +308,9 @@ def upsert_document(
         run_id: Run that produced it; None keeps whatever run is stored.
         bbox_path: Word-box sidecar; stored with its hash only if the file exists.
         case_id: Case the document belongs to (a pack manifest's case_id); None keeps the stored one.
+
+    Raises:
+        DocumentInOtherCabinet: The doc_id is stored under another cabinet.
     """
     bbox = bbox_path if bbox_path is not None and bbox_path.is_file() else None
     doc = _document_row(record, run_id, bbox, case_id)
@@ -288,12 +321,27 @@ def upsert_document(
     ]
     tags = [(record.doc_id, i, t.tag, t.confidence, t.method.value) for i, t in enumerate(record.tags)]
     with conn:
-        ensure_cabinet(conn, record.cabinet_id)
-        conn.execute(_UPSERT_DOCUMENT, doc)
-        conn.execute("DELETE FROM fields WHERE doc_id = ?", (record.doc_id,))
-        conn.executemany("INSERT INTO fields VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", fields)
-        conn.execute("DELETE FROM tags WHERE doc_id = ?", (record.doc_id,))
-        conn.executemany("INSERT INTO tags VALUES (?, ?, ?, ?, ?)", tags)
+        # The upsert's WHERE leaves a row of another cabinet alone and reports no change.
+        stored = conn.execute(_UPSERT_DOCUMENT, doc).rowcount > 0
+        if stored:
+            ensure_cabinet(conn, record.cabinet_id)
+            conn.execute("DELETE FROM fields WHERE doc_id = ?", (record.doc_id,))
+            conn.executemany("INSERT INTO fields VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", fields)
+            conn.execute("DELETE FROM tags WHERE doc_id = ?", (record.doc_id,))
+            conn.executemany("INSERT INTO tags VALUES (?, ?, ?, ?, ?)", tags)
+    if not stored:
+        _refuse(conn, record.doc_id, record.cabinet_id)
+
+
+def _refuse(conn: sqlite3.Connection, doc_id: str, cabinet_id: str) -> None:
+    """Audit and raise a refused move of doc_id into cabinet_id."""
+    owner = document_cabinet(conn, doc_id) or ""
+    detail = {"stored_cabinet_id": owner}
+    record_audit(
+        conn, actor=DEFAULT_ACTOR, action="upsert_refused", cabinet_id=cabinet_id, doc_id=doc_id, detail=detail
+    )
+    log.warning("upsert refused, document is in another cabinet", extra={"doc_id": doc_id, "cabinet_id": cabinet_id})
+    raise DocumentInOtherCabinet(doc_id, owner, cabinet_id)
 
 
 def _document_row(
@@ -369,7 +417,10 @@ def import_jsonl(
     """Load a results file, and optionally its sidecars, into the store. Idempotent.
 
     Word-box sidecars are looked up in `<results>.bboxes/`. Sidecar lines for a
-    doc_id the store does not hold are skipped and counted.
+    doc_id the store does not hold are skipped and counted. A record whose
+    doc_id is stored under another cabinet is counted as refused. documents
+    counts distinct doc_ids; a doc_id seen again in the file counts as a
+    duplicate, and its later line wins.
 
     Args:
         conn: Open store.
@@ -379,20 +430,26 @@ def import_jsonl(
         actor: Who ran the import, for the audit log.
 
     Returns:
-        How many documents, tables and provenance rows were written, and how many sidecar lines skipped.
+        Distinct documents, tables and provenance rows written; sidecar lines skipped; refused; duplicates.
 
     Raises:
         ValueError: A line is not valid JSON or not a valid record.
     """
     results = Path(results_path)
     bbox_dir = results.with_suffix(results.suffix + ".bboxes")
-    stats: ImportStats = {"documents": 0, "tables": 0, "provenance": 0, "skipped": 0}
-    cabinets: Counter[str] = Counter()
+    stats: ImportStats = {"documents": 0, "tables": 0, "provenance": 0, "skipped": 0, "refused": 0, "duplicates": 0}
+    seen: dict[str, str] = {}
     for row in read_jsonl(results):
         record = DocumentRecord.model_validate(row)
-        upsert_document(conn, record, bbox_path=bbox_dir / f"{record.doc_id}.json.gz")
-        stats["documents"] += 1
-        cabinets[record.cabinet_id] += 1
+        try:
+            upsert_document(conn, record, bbox_path=bbox_dir / f"{record.doc_id}.json.gz")
+        except DocumentInOtherCabinet:
+            stats["refused"] += 1
+            continue
+        stats["duplicates"] += record.doc_id in seen
+        seen[record.doc_id] = record.cabinet_id
+    stats["documents"] = len(seen)
+    cabinets = Counter(seen.values())
     _import_sidecars(conn, stats, tables_path, provenance_path)
     for cabinet_id, n in sorted(cabinets.items()):
         detail = {"documents": n, "results": results.name}
@@ -491,67 +548,3 @@ def get_document(conn: sqlite3.Connection, doc_id: str) -> DocumentRecord | None
     """
     row = conn.execute("SELECT record_json FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
     return None if row is None else DocumentRecord.model_validate_json(row["record_json"])
-
-
-def _event_id(event: ReviewEvent) -> str:
-    """Stable id, so the same correction from the same source is stored once."""
-    key = json.dumps([event.doc_id, event.field, event.old_value, event.new_value, event.source])
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()
-
-
-_INSERT_EVENT = (
-    "INSERT INTO review_events (event_id, doc_id, field, old_value, new_value, source, created_at, verdict, is_gold) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (event_id) DO NOTHING"
-)
-
-
-def _cabinet_of(conn: sqlite3.Connection, doc_id: str) -> str | None:
-    row = conn.execute("SELECT cabinet_id FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
-    return None if row is None else str(row["cabinet_id"])
-
-
-def record_review_events(conn: sqlite3.Connection, events: list[ReviewEvent], *, actor: str = DEFAULT_ACTOR) -> int:
-    """Store review corrections. Idempotent on (doc_id, field, old, new, source).
-
-    Events for a doc_id the store does not hold are skipped: the foreign key
-    needs the document. A row that already exists keeps its verdict. One audit
-    row per cabinet records the counts and the source file names.
-
-    Args:
-        conn: Open store.
-        events: The corrections, in sheet order.
-        actor: Who recorded them, for the audit log.
-
-    Returns:
-        Number of new rows written.
-    """
-    now = _now()
-    written: Counter[str] = Counter()
-    sources: dict[str, set[str]] = {}
-    with conn:
-        for e in events:
-            cabinet_id = _cabinet_of(conn, e.doc_id)
-            if cabinet_id is None:
-                continue
-            row = (_event_id(e), e.doc_id, e.field, e.old_value, e.new_value, e.source, now, e.verdict, int(e.is_gold))
-            written[cabinet_id] += conn.execute(_INSERT_EVENT, row).rowcount
-            sources.setdefault(cabinet_id, set()).add(Path(e.source.split("#")[0]).name)
-    for cabinet_id, names in sorted(sources.items()):
-        detail = {"written": written[cabinet_id], "sources": sorted(names)}
-        record_audit(conn, actor=actor, action="review_events.record", cabinet_id=cabinet_id, detail=detail)
-    log.info("review events recorded", extra={"events": len(events), "written": sum(written.values())})
-    return sum(written.values())
-
-
-def list_review_events(conn: sqlite3.Connection, doc_id: str | None = None) -> list[dict[str, Any]]:
-    """Stored review events, ordered by doc_id, time and field.
-
-    Args:
-        conn: Open store.
-        doc_id: Only this document; None for every document.
-
-    Returns:
-        One dict per event, keyed by column name.
-    """
-    sql = "SELECT * FROM review_events WHERE (? IS NULL OR doc_id = ?) ORDER BY doc_id, created_at, field, event_id"
-    return [dict(r) for r in conn.execute(sql, [doc_id, doc_id]).fetchall()]

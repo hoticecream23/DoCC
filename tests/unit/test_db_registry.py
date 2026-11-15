@@ -8,7 +8,7 @@ from contextlib import closing
 import make_pack
 import pytest
 
-from baseline import db, db_registry, packmode
+from baseline import db, db_migrate, db_registry, packmode
 from baseline.clientpack import CabinetEntry, ClientPack, FieldSpec, ManifestRow, TaxonomyClass
 from baseline.pipeline import _start_store, dumps
 from baseline.schema import (
@@ -119,12 +119,13 @@ def test_a_migrated_store_lists_its_existing_cabinet(tmp_path):
 
 
 def test_migrate_is_a_no_op_the_second_time(conn):
-    assert db_registry.migrate(conn) == []
+    assert db_migrate.migrate(conn) == []
 
 
 def test_a_half_applied_step_is_safe_to_run_again(conn):
-    conn.execute("DELETE FROM schema_migrations")
-    assert db_registry.migrate(conn) == [1]
+    with conn:
+        conn.execute("DELETE FROM schema_migrations")
+    assert db_migrate.migrate(conn) == [1, 2]
 
 
 def test_export_of_a_migrated_store_is_unchanged(tmp_path):
