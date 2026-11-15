@@ -107,3 +107,21 @@ Paused here: usage limit reached. A fresh session can resume from this log.
 - The zip on the client machine (3fcc86d) predates the review. Its scores
   are unreliable: partial runs can show 100 %, real documents are dropped
   as duplicates, and a wrong key can be returned.
+
+## Review closed (2026-11-15)
+- Three review passes by independent agents, every finding reproduced by
+  script before it was reported, every fix carrying a regression test.
+  Pass 1: 9 high, ~15 medium. Pass 2: 0 high, ~10 medium. Pass 3
+  (confirmation): 1 high (case id = folder name only), 2 medium; all fixed
+  in b24cb47, 112fbdd, 490f3ac.
+- Final verification by the orchestrator on 490f3ac: 1127 tests pass
+  (765 before the review), coverage 91.8 %, ruff/black/isort/mypy/bandit
+  clean, no function over 50 lines, no client names in tree or history.
+- Known and accepted, not fixed: the API has no authentication or tenant
+  isolation (documented; bind to loopback); byte-identical twins in one
+  cabinet collapse to one store row; the built-in amount pattern drops a
+  leading minus sign (pre-existing); a document id is a content hash, so
+  the same file cannot belong to two cabinets in the store (refused with
+  an audit row; a composite key is the planned fix).
+- Not reviewed a fourth time: the three pass-3 fixes were verified by
+  their own regression tests and the full suite only.
