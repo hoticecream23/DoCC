@@ -34,9 +34,6 @@ DOCX_EXT = {".docx"}
 TEXT_EXT = {".txt", ".md"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 SUPPORTED_EXT = PDF_EXT | DOCX_EXT | TEXT_EXT | IMAGE_EXT
-# Pages read from one PDF or multi-page TIFF; extraction.max_pages overrides.
-# Past it the file is still one record, and diagnostics say pages were left unread.
-DEFAULT_MAX_PAGES = 500
 
 
 @dataclass
@@ -377,8 +374,14 @@ def _add_ocr_page(res: ExtractionResult, pending: Future[OCRPage], native: str, 
 
 
 def _page_limit(cfg: Config, total: int, res: ExtractionResult) -> int:
-    """Pages to read of a file with `total`; past the limit the cut is recorded in errors, not raised."""
-    limit = int(cfg.extract_opts().get("max_pages", DEFAULT_MAX_PAGES))
+    """Pages to read of a file with `total`; past extraction.max_pages the cut is recorded in errors, not raised.
+
+    max_pages null or unset (the normal-mode default) reads every page.
+    """
+    raw = cfg.extract_opts().get("max_pages")
+    if raw is None:
+        return total
+    limit = int(raw)
     if total > limit:
         res.errors.append(f"page limit: read {limit} of {total} pages (extraction.max_pages)")
         return limit
@@ -501,10 +504,16 @@ def _ocr_frame(img: PILImage.Image, pno: int, opts: dict[str, Any], res: Extract
 
 
 def _extract_image(path: Path, cfg: Config, res: ExtractionResult) -> None:
-    """OCR every frame of an image file up to the page limit; a multi-page TIFF stays one document."""
+    """OCR frame 0 of an image file, or with extraction.multi_frame_images every frame up to the page limit.
+
+    Either way a multi-frame TIFF stays one document.
+    """
     from PIL import Image, ImageSequence
 
     with Image.open(path) as img:
+        if not cfg.extract_opts().get("multi_frame_images", False):
+            _ocr_frame(img, 0, cfg.extract_opts(), res)
+            return
         count = _page_limit(cfg, int(getattr(img, "n_frames", 1)), res)
         for pno, frame in enumerate(ImageSequence.Iterator(img)):
             if pno >= count:

@@ -42,13 +42,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     Raises:
         ValueError: The VLM model is not set or the host is not local.
     """
+    # --cabinet picks the cabinet of --client-pack or of the configured pack; with no pack it stamps cabinet_id.
+    cfg = packmode.resolve(load_config_cached(args.config), (args.client_pack, args.cabinet))
+    pack = packmode.is_active(cfg)
     if args.dry_run:
         out = Path(args.output)
-        paths, _ = scan_documents(args.input)
+        paths = packmode.inputs(cfg, args.input) if pack else scan_documents(args.input)[0]
         outputs = [out, f"{out}.provenance", args.bbox_dir or f"{out}.bboxes"]
         return report_dry_run(outputs, len(paths))
-    client_pack = (args.client_pack, args.cabinet) if args.client_pack else None
-    cfg = packmode.resolve(load_config_cached(args.config), client_pack)
     ccfg = load_cascade_config(args.config)
     overrides = {k: v for k, v in (("model", args.model), ("base_url", args.base_url)) if v}
     settings = ccfg.vlm.model_copy(update=overrides)
@@ -65,7 +66,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         bbox_dir=args.bbox_dir,
         resume=args.resume,
         root=root,
-        cabinet_id=None if client_pack else args.cabinet,
+        cabinet_id=None if pack else args.cabinet,
     )
     log.info("run complete", extra=stats)
     return 0
@@ -93,7 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume", action=argparse.BooleanOptionalAction, default=True, help="skip documents already written"
     )
     r.add_argument("--dry-run", action="store_true", help="log what would be written and stop")
-    r.add_argument("--cabinet", default=None, help="cabinet_id for every record; with --client-pack, the pack cabinet")
+    r.add_argument(
+        "--cabinet",
+        default=None,
+        help="the pack cabinet, with --client-pack or a configured client_pack; else cabinet_id for every record",
+    )
     r.add_argument("--client-pack", default=None, help="client pack directory: classify and extract by its cabinet")
     r.set_defaults(func=cmd_run)
     return p

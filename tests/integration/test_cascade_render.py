@@ -39,3 +39,22 @@ def test_formats_without_a_page_image_give_none(corpus):
 
     assert render_pages(corpus / "salary_slip.docx", 4, 150, 1600) == []
     assert render_pages(corpus / "contract.txt", 4, 150, 1600) == []
+
+
+def _tiff(tmp_path, frames):
+    path = tmp_path / "frames.tif"
+    images = [Image.new("RGB", (60, 40), "white") for _ in range(frames)]
+    images[0].save(path, save_all=True, append_images=images[1:])
+    return path
+
+
+def test_a_multi_frame_tiff_gives_frame_zero_by_default(tmp_path):
+    from cascade.render import render_pages
+
+    assert len(render_pages(_tiff(tmp_path, 3), max_pages=4, dpi=150, max_long_edge=1600)) == 1
+
+
+def test_multi_frame_renders_every_frame_up_to_the_limit(tmp_path):
+    from cascade.render import render_pages
+
+    assert len(render_pages(_tiff(tmp_path, 3), max_pages=2, dpi=150, max_long_edge=1600, multi_frame=True)) == 2

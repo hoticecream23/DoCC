@@ -12,13 +12,65 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import ConfigDict, Field, ValidationError
 
+from .errors import ConfigError
 from .io import atomic_open
-from .schema import DEFAULT_CABINET
+from .schema import DEFAULT_CABINET, Strict
 
 DEFAULT_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 # SQLite store file name, beside the results file, when db.path is not set.
 DEFAULT_DB_NAME = "docc.sqlite"
+
+
+class _Section(Strict):
+    """A checked pipeline.yaml section: unknown keys and wrong types fail the load."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ExtractionSettings(_Section):
+    """pipeline.yaml `extraction`. Only the keys are checked; extract.py reads the values."""
+
+    native_char_threshold: int = Field(default=100, ge=0)
+    strip_before_count: bool = True
+    ocr: dict[str, Any] = Field(default_factory=dict)
+    quality_gate: dict[str, Any] = Field(default_factory=dict)
+    native_confidence: float = Field(default=0.98, ge=0.0, le=1.0)
+    # Pages read from one file; null reads every page. Pack mode defaults it to 500.
+    max_pages: int | None = Field(default=None, gt=0)
+    # OCR every frame of a multi-frame image; false reads frame 0 only. Pack mode defaults it to true.
+    multi_frame_images: bool = False
+    capture_bboxes: bool = True
+
+
+class ClientPackSettings(_Section):
+    """pipeline.yaml `client_pack`. A relative dir resolves against the config directory."""
+
+    dir: str | None = None
+    cabinet: str | None = None
+    slug: str | None = None  # set by packmode.pack_config, never by hand
+
+
+_CHECKED_SECTIONS: dict[str, type[_Section]] = {"extraction": ExtractionSettings, "client_pack": ClientPackSettings}
+
+
+def _check_pipeline(data: dict[str, Any], path: Path) -> None:
+    """Validate the checked sections of pipeline.yaml.
+
+    Args:
+        data: The parsed pipeline.yaml.
+        path: Its path, for the error message.
+
+    Raises:
+        ConfigError: A section has an unknown key or a value of the wrong type.
+    """
+    for key, model in _CHECKED_SECTIONS.items():
+        try:
+            model.model_validate(data.get(key) or {})
+        except ValidationError as e:
+            problems = "; ".join(f"{key}.{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors())
+            raise ConfigError(f"{path}: {problems}") from e
 
 
 def read_yaml(path: Path) -> Any:
@@ -203,12 +255,15 @@ def load_config(config_dir: str | Path | None = None) -> Config:
     Raises:
         FileNotFoundError: A required file is missing.
         ValueError: A file does not hold a mapping at top level.
+        ConfigError: pipeline.yaml extraction or client_pack has an unknown or mistyped key.
     """
     d = Path(config_dir) if config_dir else DEFAULT_CONFIG_DIR
     d = d.resolve()
+    pipeline = _load(d / "pipeline.yaml")
+    _check_pipeline(pipeline, d / "pipeline.yaml")
     return Config(
         config_dir=d,
-        pipeline=_load(d / "pipeline.yaml"),
+        pipeline=pipeline,
         classes=_load(d / "classes.yaml"),
         fields=_load(d / "fields.yaml"),
         tags=_load(d / "tags.yaml"),

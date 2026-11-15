@@ -1,7 +1,9 @@
 """Page images for the model, one per page the extractor read.
 
-An image file gives one image per frame, as the baseline extractor reads
-every frame of a multi-page TIFF, and the model must see the pages the text came from.
+An image file gives frame 0 only, as the baseline extractor does, unless
+extraction.multi_frame_images is on (pack mode's default): then one image per
+frame, as the extractor then reads every frame. The model must see the pages
+the text came from.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ def _pdf(path: Path, max_pages: int, dpi: int, max_long_edge: int) -> list[bytes
     return out
 
 
-def render_pages(path: Path, max_pages: int, dpi: int, max_long_edge: int) -> list[bytes]:
+def render_pages(path: Path, max_pages: int, dpi: int, max_long_edge: int, multi_frame: bool = False) -> list[bytes]:
     """Render the first pages of a PDF or image file as PNG.
 
     Args:
@@ -51,6 +53,7 @@ def render_pages(path: Path, max_pages: int, dpi: int, max_long_edge: int) -> li
         max_pages: Pages to render at most.
         dpi: Resolution for PDF pages.
         max_long_edge: Larger pages are scaled down to this many pixels.
+        multi_frame: Render every frame of an image file, not frame 0 alone.
 
     Returns:
         PNG bytes per page; empty for a file type with no image, such as text.
@@ -62,6 +65,8 @@ def render_pages(path: Path, max_pages: int, dpi: int, max_long_edge: int) -> li
         from PIL import Image, ImageSequence
 
         with Image.open(path) as img:
+            if not multi_frame:
+                return [_png(img, max_long_edge)]
             frames = ImageSequence.Iterator(img)
             return [_png(frame, max_long_edge) for _, frame in zip(range(max_pages), frames, strict=False)]
     return []

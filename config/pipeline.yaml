@@ -14,6 +14,7 @@ db:
 # run classifies and extracts by that cabinet's classes and fields instead of
 # classes.yaml and fields.yaml, and stamps the cabinet slug as cabinet_id.
 # `--client-pack DIR --cabinet NAME` on `baseline run` and `cascade run` overrides.
+# A relative dir resolves against this config directory, not the working directory.
 client_pack:
   dir: null
   cabinet: null
@@ -65,9 +66,13 @@ extraction:
     threshold: 0.02
     min_tokens: 40
   native_confidence: 0.98
-  # Pages read from one PDF or multi-page TIFF. Past it the file is still one
-  # record, and its diagnostics say how many pages were left unread.
-  max_pages: 500
+  # Two settings left unset on purpose, so each run mode keeps its own default
+  # (docs/parts/pack-mode.md). Set them here to force a value in both modes.
+  #   max_pages: pages read from one PDF or multi-frame image; null reads all.
+  #     Past it the file is still one record and its diagnostics say so.
+  #     Normal mode: null. Pack mode: 500.
+  #   multi_frame_images: OCR every frame of a TIFF or animated image; false
+  #     reads frame 0 only. Normal mode: false. Pack mode: true.
   capture_bboxes: true
 
 classification:
