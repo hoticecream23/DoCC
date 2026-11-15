@@ -346,16 +346,19 @@ def _run_one(job: tuple[str, str, str]) -> str:
         return ""
 
 
-def _pending(paths: list[Path], out_path: Path, resume: bool) -> list[Path]:
-    """Paths not yet in the output. On resume, first cut a line a crash left half written."""
+def _pending(paths: list[Path], out_path: Path, resume: bool, cfg: Config) -> list[Path]:
+    """Paths not yet in the output. On resume, first cut a line a crash left half written.
+
+    A pack run keys resume by file stem, so byte-identical manifest documents each get a record.
+    """
     skip: set[str] = set()
     if resume:
         cut_partial_tail(out_path)
-        skip = existing_doc_ids(out_path)
+        skip = packmode.done_keys(out_path, cfg) if packmode.is_active(cfg) else existing_doc_ids(out_path)
     todo = []
     for p in paths:
         try:
-            if compute_doc_id(p) in skip:
+            if packmode.resume_key(p, cfg) in skip:
                 continue
         except OSError as exc:
             log.error("cannot hash file", extra={"path": str(p), "error": str(exc)})
@@ -521,7 +524,7 @@ def run_batch(
     bdir = Path(bbox_dir) if bbox_dir else out_path.with_suffix(out_path.suffix + ".bboxes")
 
     paths, excluded_counts = _scan_logged(input_dir, cfg)
-    todo = _pending(paths, out_path, resume)
+    todo = _pending(paths, out_path, resume, cfg)
     stats = _start_stats(len(paths), len(todo), excluded_counts, workers)
     if not todo:
         return stats

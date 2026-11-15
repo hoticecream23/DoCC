@@ -78,6 +78,18 @@ def test_the_pipeline_mirror_logs_a_refused_document_and_carries_on(conn, tmp_pa
     assert db.document_cabinet(conn, A) == "north"
 
 
+def test_the_cascade_mirror_logs_a_refused_document_as_a_warning_not_an_error(conn, tmp_path, caplog):
+    from cascade.runner import Result, _mirror
+
+    db.upsert_document(conn, _record(cabinet="north"))
+    rec = _record(cabinet="south")
+    store = pipeline_mod._Store(conn, db.start_run(conn, {}, "south"), tmp_path)
+    with caplog.at_level(logging.WARNING):
+        _mirror(store, Result(rec, None, {"doc_id": rec.doc_id}))
+    assert "stored under another cabinet" in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
 # 13. Import counts distinct documents.
 
 

@@ -1,6 +1,7 @@
 """Regression tests for the job sweep and job state writes a review reproduced."""
 
 import sqlite3
+import threading
 from contextlib import closing
 
 import pytest
@@ -90,6 +91,29 @@ def test_a_failed_running_write_releases_the_queue_slot():
     runner.submit(lambda: RECORD)
     runner.shutdown()
     assert runner._slots.acquire(blocking=False)
+
+
+def test_a_job_whose_running_write_keeps_failing_still_runs_its_cleanup():
+    cleaned = []
+    runner = JobRunner(_Flaky("set_running", JOB_STATE_ATTEMPTS), max_pending=1)
+    runner.submit(lambda: RECORD, cleanup=lambda: cleaned.append(True))
+    runner.shutdown()
+    assert cleaned == [True]
+
+
+def test_a_job_whose_running_write_keeps_failing_releases_its_slot_once():
+    releases = []
+
+    class CountingSlots(threading.Semaphore):
+        def release(self, n=1):
+            releases.append(n)
+            super().release(n)
+
+    runner = JobRunner(_Flaky("set_running", JOB_STATE_ATTEMPTS), max_pending=1)
+    runner._slots = CountingSlots(1)
+    runner.submit(lambda: RECORD, cleanup=lambda: None)
+    runner.shutdown()
+    assert releases == [1]
 
 
 def test_a_new_job_carries_the_stores_boot_id(tmp_path):

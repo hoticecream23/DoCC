@@ -140,7 +140,7 @@ def test_chunked_oversize_body_is_cut_off_with_413(client, tmp_path, monkeypatch
 def test_full_queue_is_503_with_retry_after_and_drops_the_upload(cfg, tmp_path, monkeypatch):
     from api.jobs import Busy
 
-    def busy(*args):
+    def busy(*args, **kwargs):
         raise Busy("job queue is full; retry later")
 
     monkeypatch.setattr(api_app.JobRunner, "submit", busy)

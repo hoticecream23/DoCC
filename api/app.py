@@ -274,17 +274,15 @@ def _routes(api: ApiState) -> APIRouter:
         tid = trace_id.get()  # the job thread does not see this request's context
 
         def work() -> DocumentRecord:
-            try:
-                result = cascade_process(path, api.cfg, api.ccfg, backend, api.models, cabinet)
-            finally:
-                _discard(path)
+            result = cascade_process(path, api.cfg, api.ccfg, backend, api.models, cabinet)
             record = _named(result.record, name)
             result.provenance["filename"] = name
             api.persist(record, result.provenance, trace=tid)
             return record
 
         try:
-            return {"job_id": api.runner.submit(work, tid, cabinet)}
+            # The runner removes the upload when the job ends, even one that never ran.
+            return {"job_id": api.runner.submit(work, tid, cabinet, cleanup=lambda: _discard(path))}
         except BaseException:  # the job never started, so the upload is this route's to remove
             _discard(path)
             raise

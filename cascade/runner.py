@@ -34,7 +34,7 @@ from baseline import db, packmode
 from baseline import pipeline as baseline_pipeline
 from baseline.classify import rule_scores
 from baseline.config import Config
-from baseline.errors import summarize_exception
+from baseline.errors import DocumentInOtherCabinet, summarize_exception
 from baseline.io import atomic_open, cut_partial_tail
 from baseline.logging_setup import get_logger
 from baseline.scan import scan_documents
@@ -426,6 +426,9 @@ def _mirror(store: baseline_pipeline._Store | None, outcome: Result) -> None:
         bbox = store.bbox_dir / f"{outcome.record.doc_id}.json.gz"
         db.upsert_document(store.conn, outcome.record, store.run_id, bbox, case_id=store.case_id(outcome.record))
         db.upsert_provenance(store.conn, dict(outcome.provenance))
+    except DocumentInOtherCabinet as exc:
+        extra = {"doc_id": exc.doc_id, "cabinet_id": exc.cabinet_id, "stored_cabinet_id": exc.stored_cabinet_id}
+        log.warning("document is stored under another cabinet, results line kept, store unchanged", extra=extra)
     except sqlite3.Error as exc:
         log.error(
             "db write failed, results line kept; run db-import to repair",

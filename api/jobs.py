@@ -290,13 +290,20 @@ class JobRunner:
         self._slots = threading.BoundedSemaphore(max_pending)
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="docc-job")
 
-    def submit(self, fn: Callable[[], DocumentRecord], trace_id: str = "", cabinet_id: str = DEFAULT_CABINET) -> str:
+    def submit(
+        self,
+        fn: Callable[[], DocumentRecord],
+        trace_id: str = "",
+        cabinet_id: str = DEFAULT_CABINET,
+        cleanup: Callable[[], None] | None = None,
+    ) -> str:
         """Queue a job.
 
         Args:
             fn: Produces the record; runs on a worker thread.
             trace_id: Request id, added to the job's log lines.
             cabinet_id: Cabinet the job writes into.
+            cleanup: Runs once the job ends, whether fn ran or not; not run if submit raises.
 
         Returns:
             The job id.
@@ -308,17 +315,23 @@ class JobRunner:
             raise Busy("job queue is full; retry later")
         try:
             job_id = self.store.create(trace_id, cabinet_id)
-            self._pool.submit(self._run, job_id, fn, trace_id)
+            self._pool.submit(self._run, job_id, fn, trace_id, cleanup)
         except Exception:  # noqa: BLE001 - free the queue slot on any submit failure, then re-raise
             self._slots.release()
             raise
         return job_id
 
-    def _run(self, job_id: str, fn: Callable[[], DocumentRecord], trace_id: str) -> None:
+    def _run(
+        self, job_id: str, fn: Callable[[], DocumentRecord], trace_id: str, cleanup: Callable[[], None] | None
+    ) -> None:
         try:
             self._execute(job_id, fn, trace_id)
         finally:
-            self._slots.release()
+            try:
+                if cleanup is not None:
+                    cleanup()
+            finally:
+                self._slots.release()
 
     def get(self, job_id: str) -> Job | None:
         """Look up a job; one whose state could not be saved reads as failed.
@@ -345,7 +358,6 @@ class JobRunner:
         return False
 
     def _execute(self, job_id: str, fn: Callable[[], DocumentRecord], trace_id: str) -> None:
-        # ponytail: a job whose running state cannot be saved is not run, so its upload folder stays behind.
         if not self._save(job_id, lambda: self.store.set_running(job_id)):
             return
         try:

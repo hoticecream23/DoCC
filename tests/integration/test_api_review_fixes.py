@@ -63,7 +63,7 @@ def test_the_saved_file_is_named_by_the_server_not_the_client(client, monkeypatc
 
 
 def test_a_job_store_error_on_submit_still_removes_the_upload(cfg, tmp_path, monkeypatch):
-    def broken(*args):
+    def broken(*args, **kwargs):
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(api_app.JobRunner, "submit", broken)
