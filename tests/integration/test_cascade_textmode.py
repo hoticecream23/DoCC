@@ -74,8 +74,21 @@ def test_provenance_records_the_pages_and_characters_sent(five_pages, cfg, ccfg)
 def test_omitted_pages_are_noted_in_diagnostics(five_pages, cfg, ccfg):
     from cascade.runner import process_document
 
-    errors = process_document(five_pages, cfg, ccfg, Backend({})).record.diagnostics.errors
-    assert any("text mode sent 3 of 5 pages" in e for e in errors)
+    notes = process_document(five_pages, cfg, ccfg, Backend({})).record.diagnostics.notes
+    assert any("text mode sent 3 of 5 pages" in n for n in notes)
+
+
+def test_omitted_pages_are_not_an_error(five_pages, cfg, ccfg):
+    from cascade.runner import process_document
+
+    assert not process_document(five_pages, cfg, ccfg, Backend({})).record.diagnostics.errors
+
+
+def test_cut_pages_are_noted_in_diagnostics(five_pages, cfg, ccfg):
+    from cascade.runner import process_document
+
+    notes = process_document(five_pages, cfg, ccfg, Backend({})).record.diagnostics.notes
+    assert any("cut the text of pages [1, 2, 5]" in n for n in notes)
 
 
 def test_a_value_only_on_an_unsent_page_is_not_accepted(five_pages, cfg, ccfg):
@@ -83,6 +96,31 @@ def test_a_value_only_on_an_unsent_page_is_not_accepted(five_pages, cfg, ccfg):
 
     r = process_document(five_pages, cfg, ccfg, Backend({"invoice_number": ["INV-3333"]}))
     assert "INV-3333" not in {m.value for m in r.record.metadata}
+
+
+def _outcomes(r, name):
+    return [p["outcome"] for p in r.provenance["fields"] if p["field"] == name and "vlm_value" in p]
+
+
+def test_a_value_only_on_an_unsent_page_is_not_sent(five_pages, cfg, ccfg):
+    from cascade.runner import process_document
+
+    r = process_document(five_pages, cfg, ccfg, Backend({"invoice_number": ["INV-3333"]}))
+    assert _outcomes(r, "invoice_number") == ["not_sent"]
+
+
+def test_a_value_only_on_an_unsent_page_is_noted(five_pages, cfg, ccfg):
+    from cascade.runner import process_document
+
+    r = process_document(five_pages, cfg, ccfg, Backend({"invoice_number": ["INV-3333"]}))
+    assert "cascade: invoice_number value is only in text not sent" in r.record.diagnostics.notes
+
+
+def test_an_invented_value_in_text_mode_stays_ungrounded(five_pages, cfg, ccfg):
+    from cascade.runner import process_document
+
+    r = process_document(five_pages, cfg, ccfg, Backend({"invoice_number": ["INV-9876"]}))
+    assert _outcomes(r, "invoice_number") == ["ungrounded"]
 
 
 def test_a_value_on_a_sent_page_is_accepted(five_pages, cfg, ccfg):

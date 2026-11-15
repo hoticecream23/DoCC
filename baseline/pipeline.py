@@ -223,6 +223,7 @@ def process_document(
         has_native_text=res.has_native_text,
         timings_ms=st.timings,
         errors=st.errors,
+        notes=list(res.notes),
     )
     record = DocumentRecord(
         doc_id=doc_id,

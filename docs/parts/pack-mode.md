@@ -215,3 +215,25 @@ actually sent. Grounding runs on a copy of the document in which every
 character not sent is blanked, with offsets unchanged. A value printed only on
 a page that was cut or left out is therefore rejected as ungrounded. Proven
 (checksummed) baseline values are kept as in every run.
+
+## Notes versus errors
+
+`diagnostics.errors` marks a document as failed: the store's `routing_status`
+and the client scorer read only `errors`. Errors are kept for real failures:
+extraction failed, the model call failed, the answer did not parse, an offset
+did not match.
+
+`diagnostics.notes` is informational and left out of the record when empty.
+These are notes, not errors:
+
+- skipped image frames ("read frame 1 of 3, 2 skipped (extraction.multi_frame_images)");
+- "text mode sent N of M pages" and "image mode sent N of M pages";
+- "text mode cut the text of pages [...]" when a sent page was cut short;
+- "<field> value is only in text not sent".
+
+The cascade keeps the baseline's notes on its record and on fallback records.
+
+In text mode a model value that does not ground in the sent text but does
+ground in the full document text gets the field outcome `not_sent` instead of
+`ungrounded`. The value is still rejected; `ungrounded` now means the value is
+not in the document at all.

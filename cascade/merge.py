@@ -159,6 +159,8 @@ def _in_scope(fdef: dict[str, Any], doc_class: str, cfg: Config) -> bool:
 
 
 _GROUND_RANK = {EXACT: 0, LOOSE: 1, NORMALISED: 2, UNGROUNDED: 3}
+# Text mode: ungrounded in the text sent, but printed in text that was not sent. Still rejected.
+NOT_SENT = "not_sent"
 _OTHER_IDS = ("gstin", "pan", "ifsc", "phone")
 
 
@@ -361,6 +363,35 @@ def decide_fields(
 
     out.sort(key=lambda m: (m.char_start, m.field))
     return out, prov
+
+
+def mark_not_sent(prov: list[FieldProvenance], full: str, pages: list[str], cfg: Config) -> list[str]:
+    """Relabel ungrounded values that ground in the full text as not_sent.
+
+    The value stays rejected: the model may only supply what it was shown.
+    This only tells a value on an unsent page apart from an invented one.
+
+    Args:
+        prov: Field provenance from a decision on the sent text; changed in place.
+        full: The document's full text, sent or not.
+        pages: The document's text per page.
+        cfg: The loaded config.
+
+    Returns:
+        The names of the fields relabelled, in provenance order.
+    """
+    fdefs = {f.get("name"): f for f in cfg.field_defs}
+    norm_opts = cfg.fields.get("normalizer_options", {}) or {}
+    index = TextIndex(full, pages)
+    marked = []
+    for item in prov:
+        value = item.get("vlm_value")
+        if item["outcome"] != UNGROUNDED or not isinstance(value, str):
+            continue
+        if ground(value, index, fdefs.get(item["field"], {}), [], norm_opts).grounded:
+            item["outcome"] = NOT_SENT
+            marked.append(item["field"])
+    return marked
 
 
 def decide(

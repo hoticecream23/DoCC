@@ -50,7 +50,7 @@ from baseline.schema import (
 from baseline.tagging import apply_tags
 
 from .config import CascadeConfig
-from .merge import ClassProvenance, Decision, FieldProvenance, decide
+from .merge import ClassProvenance, Decision, FieldProvenance, decide, mark_not_sent
 from .prompt import (
     TextPlan,
     VLMAnswer,
@@ -148,7 +148,10 @@ class _Timer:
             self.timings[f"cascade_{name}"] = elapsed
 
 
-def _diagnostics(base: DocumentRecord, timings: dict[str, float], errors: list[str]) -> Diagnostics:
+def _diagnostics(
+    base: DocumentRecord, timings: dict[str, float], errors: list[str], notes: list[str] | None = None
+) -> Diagnostics:
+    """The baseline's diagnostics plus the cascade's timings, errors and notes."""
     d = base.diagnostics
     return Diagnostics(
         page_count=d.page_count,
@@ -156,6 +159,7 @@ def _diagnostics(base: DocumentRecord, timings: dict[str, float], errors: list[s
         has_native_text=d.has_native_text,
         timings_ms={**d.timings_ms, **timings},
         errors=[*d.errors, *errors],
+        notes=[*d.notes, *(notes or [])],
     )
 
 
@@ -279,21 +283,34 @@ def _decide(
     ccfg: CascadeConfig,
     answer: VLMAnswer,
     plan: TextPlan | None = None,
-) -> Decision:
-    """Merge the answer; with a text plan, model values ground only in the text that was sent."""
+) -> tuple[Decision, list[str]]:
+    """Merge the answer; with a text plan, model values ground only in the text that was sent.
+
+    Returns the decision and the fields whose value was printed only in text not sent.
+    """
     full, pages = base.text.full, base.text.pages
     rules = packmode.prior_scores(full, pages, cfg) if packmode.is_active(cfg) else rule_scores(full, pages, cfg)
     if plan is not None:
         pages = sent_text(pages, plan)
         full = build_canonical_text(pages)
-    return decide(full, pages, cfg, ccfg.confidence, rules, answer, base.metadata, sidecar.words, sidecar.page_sizes)
+    d = decide(full, pages, cfg, ccfg.confidence, rules, answer, base.metadata, sidecar.words, sidecar.page_sizes)
+    unseen = mark_not_sent(d.field_provenance, base.text.full, base.text.pages, cfg) if plan and plan.truncated else []
+    return d, unseen
 
 
-def _omitted_note(base: DocumentRecord, plan: TextPlan | None) -> list[str]:
-    """A diagnostics line when text mode left whole pages out."""
-    if plan is None or len(plan.included) == len(base.text.pages):
-        return []
-    return [f"cascade: text mode sent {len(plan.included)} of {len(base.text.pages)} pages (vlm.text_total_chars)"]
+def _page_notes(base: DocumentRecord, plan: TextPlan | None, prov: Provenance) -> list[str]:
+    """Diagnostics notes for page text or images the model was not sent."""
+    total = len(base.text.pages)
+    if plan is None:
+        sent = prov["pages_sent"]
+        return [f"cascade: image mode sent {sent} of {total} pages (render.max_pages)"] if sent < total else []
+    notes = []
+    if len(plan.included) < total:
+        notes.append(f"cascade: text mode sent {len(plan.included)} of {total} pages (vlm.text_total_chars)")
+    cut = [i + 1 for i in plan.included if plan.kept[i] < len(base.text.pages[i])]
+    if cut:
+        notes.append(f"cascade: text mode cut the text of pages {cut} (vlm.text_page_chars, vlm.text_total_chars)")
+    return notes
 
 
 def _fallback(
@@ -350,9 +367,9 @@ def process_document(
         reply, plan = _ask_model(p, base, cfg, ccfg, backend, prov, timed)
         prov["model"], prov["finish_reason"], prov["raw"] = reply.model, reply.finish_reason, reply.content
         answer = parse_answer(reply.content, cfg)
-        decision = timed("decide", lambda: _decide(base, sidecar, cfg, ccfg, answer, plan))
+        decision, unseen = timed("decide", lambda: _decide(base, sidecar, cfg, ccfg, answer, plan))
         meta, problems = _drop_bad_offsets(decision.metadata, base.text.full)
-        problems += _omitted_note(base, plan)
+        notes = _page_notes(base, plan, prov) + [f"cascade: {f} value is only in text not sent" for f in unseen]
         facts = baseline_pipeline.tag_facts(base.text, base.diagnostics.page_count, base.diagnostics.is_scanned)
         tags = apply_tags(base.text.full, base.text.pages, cfg, meta, facts, models.tagger if models else None)
     except Exception as exc:  # noqa: BLE001 - any cascade failure falls back to the baseline; _fallback logs it
@@ -360,7 +377,8 @@ def process_document(
 
     prov["class"], prov["fields"] = decision.class_provenance, decision.field_provenance
     prov["errors"].extend(problems)
-    record = _record(base, decision.classification, meta, tags, _diagnostics(base, timed.timings, problems))
+    diagnostics = _diagnostics(base, timed.timings, problems, notes)
+    record = _record(base, decision.classification, meta, tags, diagnostics)
     return Result(record, sidecar, prov)
 
 

@@ -75,6 +75,21 @@ def test_normal_mode_notes_the_skipped_tiff_frames_without_an_error(cfg, tmp_pat
     assert not any("multi_frame_images" in e for e in res.errors)
 
 
+def test_the_record_carries_the_skipped_frames_note(cfg, tmp_path):
+    from baseline.pipeline import process_document
+
+    record, _ = process_document(_tiff(tmp_path, 3), cfg)
+    assert len(record.diagnostics.notes) == 1 and "multi_frame_images" in record.diagnostics.notes[0]
+
+
+def test_the_skipped_frames_note_does_not_fail_the_document(cfg, tmp_path):
+    from baseline.db_registry import routing_status
+    from baseline.pipeline import process_document
+
+    record, _ = process_document(_tiff(tmp_path, 3), cfg)
+    assert not record.diagnostics.errors and routing_status(record) != "failed"
+
+
 def test_a_null_extraction_section_loads_as_the_defaults(tmp_path, request):
     cdir = _config_dir(tmp_path, request.config.rootpath)
     data = yaml.safe_load((cdir / "pipeline.yaml").read_text(encoding="utf-8"))
