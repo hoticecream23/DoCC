@@ -358,7 +358,7 @@ def _mirror(store: baseline_pipeline._Store | None, outcome: Result) -> None:
         return
     try:
         bbox = store.bbox_dir / f"{outcome.record.doc_id}.json.gz"
-        db.upsert_document(store.conn, outcome.record, store.run_id, bbox)
+        db.upsert_document(store.conn, outcome.record, store.run_id, bbox, case_id=store.case_id(outcome.record))
         db.upsert_provenance(store.conn, dict(outcome.provenance))
     except sqlite3.Error as exc:
         log.error(

@@ -775,3 +775,16 @@ def test_every_reviewer_change_is_noted_as_a_review_event(tmp_path, corpus_root,
             (a, "tag:multi_page", None, "multi_page", "Tags"),
         ]
     )
+
+
+def test_review_events_carry_the_store_verdict_and_the_gold_mark(tmp_path, corpus_root, cfg):
+    root, a, b = corpus_root
+    xlsx = _write(
+        tmp_path / "wb.xlsx",
+        docs=[[a, "a.txt", "invoice", None, "OK", "True"], [b, "b.txt", "receipt", "invoice", "wrong", "True"]],
+        meta=[[a, "pipeline", "tax_amount", "99", "99", 0, 20, 22, None, "spurious", "True"]],
+        tags=[[a, "multi_page", "human", "missing", "True"]],
+    )
+    res = import_workbook(xlsx, root, cfg)
+    got = sorted((e.field, e.verdict, e.is_gold) for e in res.events)
+    assert got == [("class", "corrected", True), ("tag:multi_page", "added", True), ("tax_amount", "incorrect", True)]

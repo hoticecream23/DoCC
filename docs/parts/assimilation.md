@@ -131,3 +131,25 @@ process_async, jobs, documents routes; bounded uploads and queue;
 trace_id; VLM settings helpers in cascade/config.py). 656 tests, 87-89 %
 coverage. Not started: client re-baseline, per-client schemas, Arabic
 check, HITL UI, ERP lookup, PII masking.
+
+## Adopted from the Phase 2 database spec (2026-11-15)
+
+A colleague's database design was reviewed against the store. Adopted, all
+in `baseline/db_registry.py` and reached by an in-place migration:
+
+1. `tenants` and `cabinets` tables; every upsert and run adds its cabinet.
+2. `doc_types` and `field_defs`, loaded from a client pack by `register_pack`.
+3. `review_events.verdict` and `is_gold`, filled by the workbook import.
+4. `effective_fields`: the latest correction read over the stored value.
+5. `runs.trace_id`, so an API-created document ties to its request.
+6. `documents.routing_status` (auto, review, failed) and `case_id`.
+7. `audit_log`: ids, counts and names only, never values.
+
+Rejected:
+
+- PostgreSQL-only features: one offline machine; the DDL stays portable.
+- Outbox table: nothing consumes it.
+- Fact and dimension tables: about a hundred documents.
+- Generated UUID document ids: the content hash makes re-import idempotent.
+- A mutable corrected value in the field row: it loses the history.
+- Bbox integer columns: the word-box sidecar already holds them.

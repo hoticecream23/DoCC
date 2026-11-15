@@ -63,6 +63,9 @@ log = get_logger(__name__)
 # One gold document: doc_id, label, metadata, tags, and optional path and filename.
 GoldRow = dict[str, Any]
 
+# Sheet verdict -> the store's review_events.verdict. A human-added row is "added".
+STORE_VERDICT = {"ok": "correct", "wrong": "corrected", "missing": "added", "spurious": "incorrect"}
+
 
 @dataclass
 class WorkbookImport:
@@ -87,9 +90,12 @@ class WorkbookImport:
     # The workbook, resolved, so each event can say where it came from.
     source: str = ""
 
-    def record(self, sheet: str, doc_id: str, name: str, old: str | None, new: str | None) -> None:
-        """Note one reviewer change made on `sheet`."""
-        self.events.append(ReviewEvent(doc_id, name, old or None, new or None, f"{self.source}#{sheet}"))
+    def record(
+        self, sheet: str, doc_id: str, name: str, old: str | None, new: str | None, verdict: str, gold: bool
+    ) -> None:
+        """Note one reviewer change made on `sheet`, with its store verdict and IS_GOLD mark."""
+        source = f"{self.source}#{sheet}"
+        self.events.append(ReviewEvent(doc_id, name, old or None, new or None, source, verdict, gold))
 
     @property
     def problems(self) -> list[str]:
@@ -121,6 +127,11 @@ def _verdict(value: Any, res: WorkbookImport, where: str) -> str:
 def _is_gold(value: Any) -> bool:
     """IS_GOLD cell reads as true."""
     return _cell(value).casefold() in TRUTHY
+
+
+def _row_gold(row: Row, index: dict[str, int]) -> bool:
+    """The row's own IS_GOLD mark; False when the tab has no IS_GOLD column."""
+    return _is_gold(_get(row, index, "IS_GOLD"))
 
 
 def _doc_id_to_path(root: Path) -> dict[str, str]:
@@ -289,7 +300,8 @@ def _import_documents(
 
         res.counts[f"class_{verdict}"] += 1
         if verdict != "ok":
-            res.record("Documents", doc_id, "class", _get(row, doc_i, "DOC_CLASS").casefold(), label)
+            old = _get(row, doc_i, "DOC_CLASS").casefold()
+            res.record("Documents", doc_id, "class", old, label, STORE_VERDICT[verdict], _row_gold(row, doc_i))
         gold[doc_id] = {"doc_id": doc_id, "label": label, "metadata": [], "tags": []}
         if path:
             gold[doc_id]["path"] = path
@@ -344,7 +356,8 @@ def _field_verdict(row: Row, meta_i: dict[str, int], where: str, res: WorkbookIm
     if verdict == "spurious":
         res.spurious_rows += 1
         old = _get(row, meta_i, "NORMALIZED_VALUE") or _get(row, meta_i, "VALUE")
-        res.record("Metadata", _get(row, meta_i, "DOC_ID"), _get(row, meta_i, "FIELD").casefold(), old, None)
+        doc_id, name = _get(row, meta_i, "DOC_ID"), _get(row, meta_i, "FIELD").casefold()
+        res.record("Metadata", doc_id, name, old, None, STORE_VERDICT[verdict], _row_gold(row, meta_i))
         return None
     if verdict not in ("ok", "wrong", "missing"):
         return None
@@ -389,7 +402,8 @@ def _import_metadata(
         res.human_rows += human
         if human or verdict != "ok":
             old = None if human else _get(row, meta_i, "NORMALIZED_VALUE") or _get(row, meta_i, "VALUE")
-            res.record("Metadata", doc_id, name, old, value)
+            store_verdict = "added" if human else STORE_VERDICT[verdict]
+            res.record("Metadata", doc_id, name, old, value, store_verdict, _row_gold(row, meta_i))
         res.counts[f"field_{verdict}"] += 1
         gold[doc_id]["metadata"].append(entry)
 
@@ -417,7 +431,7 @@ def _import_tags(
         # thing: it does not belong on this document.
         if verdict in ("wrong", "spurious"):
             res.spurious_rows += 1
-            res.record("Tags", doc_id, f"tag:{name}", name, None)
+            res.record("Tags", doc_id, f"tag:{name}", name, None, "incorrect", _row_gold(row, tag_i))
             continue
         if verdict not in ("ok", "missing"):
             continue
@@ -427,7 +441,7 @@ def _import_tags(
         human = _get(row, tag_i, "ROW_SOURCE").casefold() == "human"
         res.human_rows += human
         if human or verdict != "ok":
-            res.record("Tags", doc_id, f"tag:{name}", None, name)
+            res.record("Tags", doc_id, f"tag:{name}", None, name, "added", _row_gold(row, tag_i))
         res.counts[f"tag_{verdict}"] += 1
         if name not in gold[doc_id]["tags"]:
             gold[doc_id]["tags"].append(name)

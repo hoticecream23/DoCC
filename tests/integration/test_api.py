@@ -231,3 +231,73 @@ def test_without_a_db_path_jobs_stay_in_memory_and_reads_are_503(cfg, tmp_path, 
         r = c.get(f"{V1}/documents")
     assert r.status_code == 503 and "db.path" in r.json()["error"]
     assert not (tmp_path / "docc.sqlite").exists()
+
+
+def test_a_processed_document_is_tied_to_its_request_trace_id(client, corpus, tmp_path):
+    r = client.post(
+        f"{V1}/documents/process",
+        files={"file": ("receipt.txt", (corpus / "receipt.txt").read_bytes())},
+        headers={"X-Request-ID": "req-42"},
+    )
+    with closing(db.connect(tmp_path / "docc.sqlite")) as conn:
+        sql = "SELECT r.trace_id FROM documents d JOIN runs r ON r.run_id = d.run_id WHERE d.doc_id = ?"
+        assert conn.execute(sql, (r.json()["doc_id"],)).fetchone()[0] == "req-42"
+
+
+def test_a_processed_document_writes_an_api_audit_row(client, corpus, tmp_path):
+    from baseline import db_registry
+
+    rec = _process(client, corpus, "receipt.txt")
+    with closing(db.connect(tmp_path / "docc.sqlite")) as conn:
+        rows = db_registry.list_audit(conn, doc_id=rec["doc_id"])
+    assert [(r["actor"], r["action"]) for r in rows] == [("api", "document.create")]
+
+
+def test_list_filters_by_routing_status_and_case_id(client, corpus):
+    rec = _process(client, corpus, "receipt.txt")
+    status = client.get(f"{V1}/documents").json()[0]["routing_status"]
+    assert [r["doc_id"] for r in client.get(f"{V1}/documents", params={"routing_status": status}).json()] == [
+        rec["doc_id"]
+    ]
+    assert client.get(f"{V1}/documents", params={"case_id": "none"}).json() == []
+    assert client.get(f"{V1}/documents", params={"routing_status": "bogus"}).status_code == 422
+
+
+def test_cabinets_lists_each_cabinet_with_its_count(client, corpus):
+    _process(client, corpus, "receipt.txt", "x")
+    assert [(c["cabinet_id"], c["documents"]) for c in client.get(f"{V1}/cabinets").json()] == [("x", 1)]
+
+
+def test_doc_types_carry_their_field_definitions(client, tmp_path):
+    from baseline import db_registry
+    from baseline.clientpack import CabinetEntry, ClientPack, FieldSpec, TaxonomyClass
+
+    pack = ClientPack(
+        cabinet=CabinetEntry(slug="acme", name="Acme Bills", documents=0, types_with_samples=1),
+        classes=[TaxonomyClass(name="Supplier Bill", has_samples=True)],
+        fields={"Supplier Bill": [FieldSpec(name="Bill No", dtype="text", role="key", origin="document")]},
+        manifest=[],
+    )
+    with closing(db.connect(tmp_path / "docc.sqlite")) as conn:
+        db_registry.register_pack(conn, pack)
+    got = client.get(f"{V1}/cabinets/acme/doc_types").json()
+    assert [(t["name"], [f["name"] for f in t["fields"]]) for t in got] == [("Supplier Bill", ["Bill No"])]
+
+
+def test_fields_of_a_document_show_the_latest_correction(client, corpus, tmp_path):
+    rec = _process(client, corpus, "invoice_native.pdf")
+    name = rec["metadata"][0]["field"]
+    event = db.ReviewEvent(rec["doc_id"], name, None, "FIXED-1", "review.xlsx#Metadata", "corrected")
+    with closing(db.connect(tmp_path / "docc.sqlite")) as conn:
+        db.record_review_events(conn, [event])
+    got = {f["name"]: f for f in client.get(f"{V1}/documents/{rec['doc_id']}/fields").json()}
+    assert got[name]["effective_value"] == "FIXED-1" and got[name]["corrected"] is True
+
+
+def test_registry_reads_are_503_without_a_store(cfg, tmp_path, monkeypatch):
+    from baseline.config import Config
+
+    monkeypatch.setattr(Config, "db_path", lambda self, results: None)
+    with _client(cfg, tmp_path, monkeypatch) as c:
+        codes = [c.get(f"{V1}{p}").status_code for p in ("/cabinets", "/cabinets/x/doc_types", "/documents/x/fields")]
+    assert codes == [503, 503, 503]

@@ -20,7 +20,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, TypedDict, TypeVar
 
@@ -389,12 +389,18 @@ class _Store:
     conn: sqlite3.Connection
     run_id: str
     bbox_dir: Path
+    case_ids: dict[str, str] = field(default_factory=dict)
+
+    def case_id(self, record: DocumentRecord) -> str | None:
+        """The pack manifest case of a record, by its file stem; None outside pack mode."""
+        return self.case_ids.get(Path(record.filename).stem)
 
     def mirror(self, line: str) -> None:
         """Upsert one committed results line. A store failure is logged, never raised."""
         record = DocumentRecord.model_validate_json(line)
         try:
-            db.upsert_document(self.conn, record, self.run_id, self.bbox_dir / f"{record.doc_id}.json.gz")
+            bbox = self.bbox_dir / f"{record.doc_id}.json.gz"
+            db.upsert_document(self.conn, record, self.run_id, bbox, case_id=self.case_id(record))
         except sqlite3.Error as exc:
             log.error(
                 "db write failed, results line kept; run db-import to repair",
@@ -403,11 +409,11 @@ class _Store:
 
 
 def _start_store(conn: sqlite3.Connection, cfg: Config, bbox_dir: Path, cabinet_id: str, root: Path) -> _Store:
-    """Record the run and the model manifest, and wrap the connection."""
+    """Record the run, the model manifest and a pack run's cabinet, and wrap the connection."""
     run_id = db.start_run(conn, cfg.dump(), cabinet_id)
     model_dir = root / str(cfg.classify_opts().get("model_dir", "models/classifier"))
     db.record_models(conn, classify_mod.read_manifest(model_dir.parent / classify_mod.MANIFEST))
-    return _Store(conn, run_id, bbox_dir)
+    return _Store(conn, run_id, bbox_dir, packmode.register(conn, cfg))
 
 
 @contextmanager

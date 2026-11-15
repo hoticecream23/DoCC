@@ -12,7 +12,9 @@ as `INSERT ... ON CONFLICT ... DO UPDATE`, which PostgreSQL also accepts. WAL
 mode and foreign keys are connection pragmas, not part of the schema.
 
 The `jobs` table holds API job state (api/jobs.py SqliteJobStore); it is not
-part of the JSONL mirror.
+part of the JSONL mirror. `SCHEMA_DDL` is the base shape; the tables and
+columns added since (cabinets, field definitions, routing, verdicts, audit log)
+live in `db_registry.py` and reach an existing store through its migrations.
 """
 
 from __future__ import annotations
@@ -21,10 +23,12 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from collections import Counter
 from pathlib import Path
 from typing import Any, NamedTuple, TypedDict
 
+from .db_registry import DEFAULT_ACTOR, ensure_cabinet, migrate, record_audit, routing_status
+from .db_registry import utc_now as _now
 from .io import atomic_open
 from .logging_setup import get_logger
 from .schema import SCHEMA_VERSION, DocumentRecord, TableRecord, read_jsonl
@@ -135,8 +139,9 @@ SCHEMA_DDL: tuple[str, ...] = (
 
 _UPSERT_DOCUMENT = """
 INSERT INTO documents (doc_id, cabinet_id, source_path, filename, doc_type, confidence, classify_method,
-    schema_version, page_count, run_id, bbox_path, bbox_sha256, record_json, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    schema_version, page_count, run_id, bbox_path, bbox_sha256, record_json, created_at, updated_at,
+    routing_status, case_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (doc_id) DO UPDATE SET
     cabinet_id = excluded.cabinet_id, source_path = excluded.source_path, filename = excluded.filename,
     doc_type = excluded.doc_type, confidence = excluded.confidence, classify_method = excluded.classify_method,
@@ -144,23 +149,31 @@ ON CONFLICT (doc_id) DO UPDATE SET
     run_id = COALESCE(excluded.run_id, documents.run_id),
     bbox_path = COALESCE(excluded.bbox_path, documents.bbox_path),
     bbox_sha256 = COALESCE(excluded.bbox_sha256, documents.bbox_sha256),
-    record_json = excluded.record_json, updated_at = excluded.updated_at
+    record_json = excluded.record_json, updated_at = excluded.updated_at,
+    routing_status = excluded.routing_status, case_id = COALESCE(excluded.case_id, documents.case_id)
 """
 
 _DOC_COLUMNS = (
     "doc_id, cabinet_id, source_path, filename, doc_type, confidence, classify_method, "
-    "schema_version, page_count, run_id, bbox_path, bbox_sha256, created_at, updated_at"
+    "schema_version, page_count, run_id, bbox_path, bbox_sha256, created_at, updated_at, routing_status, case_id"
 )
 
 
 class ReviewEvent(NamedTuple):
-    """One human correction: a field, class or tag that a review changed."""
+    """One human correction: a field, class or tag that a review changed.
+
+    verdict is correct, incorrect, corrected or added, when the source says;
+    is_gold is whether the reviewer marked the row as gold. Neither is part of
+    the event id.
+    """
 
     doc_id: str
     field: str
     old_value: str | None
     new_value: str | None
     source: str
+    verdict: str | None = None
+    is_gold: bool = False
 
 
 class ImportStats(TypedDict):
@@ -170,10 +183,6 @@ class ImportStats(TypedDict):
     tables: int
     provenance: int
     skipped: int
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _file_sha256(path: Path) -> str:
@@ -203,16 +212,18 @@ def connect(path: str | Path, threads: bool = False) -> sqlite3.Connection:
     with conn:
         for stmt in SCHEMA_DDL:
             conn.execute(stmt)
+    migrate(conn)
     return conn
 
 
-def start_run(conn: sqlite3.Connection, config: dict[str, Any], cabinet_id: str) -> str:
-    """Record a pipeline run and return its id.
+def start_run(conn: sqlite3.Connection, config: dict[str, Any], cabinet_id: str, *, trace_id: str | None = None) -> str:
+    """Record a pipeline run and return its id. The cabinet gets a row if it has none.
 
     Args:
         conn: Open store.
         config: Every loaded config file; hashed, not stored.
         cabinet_id: Cabinet the run writes into.
+        trace_id: Request trace id when an API request started the run.
 
     Returns:
         A new run_id.
@@ -220,9 +231,11 @@ def start_run(conn: sqlite3.Connection, config: dict[str, Any], cabinet_id: str)
     run_id = uuid.uuid4().hex
     digest = hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     with conn:
+        ensure_cabinet(conn, cabinet_id)
         conn.execute(
-            "INSERT INTO runs (run_id, started_at, config_hash, schema_version, cabinet_id) VALUES (?, ?, ?, ?, ?)",
-            (run_id, _now(), digest, SCHEMA_VERSION, cabinet_id),
+            "INSERT INTO runs (run_id, started_at, config_hash, schema_version, cabinet_id, trace_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, _now(), digest, SCHEMA_VERSION, cabinet_id, trace_id),
         )
     return run_id
 
@@ -246,18 +259,25 @@ def record_models(conn: sqlite3.Connection, manifest: dict[str, str]) -> None:
 
 
 def upsert_document(
-    conn: sqlite3.Connection, record: DocumentRecord, run_id: str | None = None, bbox_path: Path | None = None
+    conn: sqlite3.Connection,
+    record: DocumentRecord,
+    run_id: str | None = None,
+    bbox_path: Path | None = None,
+    *,
+    case_id: str | None = None,
 ) -> None:
     """Write one record and replace its field and tag rows, in one transaction.
 
     Re-importing the same record leaves the store unchanged except updated_at.
-    Review events, tables and provenance are not touched.
+    Review events, tables and provenance are not touched. routing_status is
+    derived from the record; the cabinet gets a row if it has none.
 
     Args:
         conn: Open store.
         record: The record, exactly as written to the JSONL.
         run_id: Run that produced it; None keeps whatever run is stored.
         bbox_path: Word-box sidecar; stored with its hash only if the file exists.
+        case_id: Case the document belongs to (a pack manifest's case_id); None keeps the stored one.
     """
     bbox = bbox_path if bbox_path is not None and bbox_path.is_file() else None
     now = _now()
@@ -278,6 +298,8 @@ def upsert_document(
         json.dumps(record.model_dump(mode="json"), ensure_ascii=False),
         now,
         now,
+        routing_status(record),
+        case_id or None,
     )
     fields = [
         (record.doc_id, i, m.field, m.value, m.normalized_value, m.page, m.char_start, m.char_end, m.method.value)
@@ -286,6 +308,7 @@ def upsert_document(
     ]
     tags = [(record.doc_id, i, t.tag, t.confidence, t.method.value) for i, t in enumerate(record.tags)]
     with conn:
+        ensure_cabinet(conn, record.cabinet_id)
         conn.execute(_UPSERT_DOCUMENT, doc)
         conn.execute("DELETE FROM fields WHERE doc_id = ?", (record.doc_id,))
         conn.executemany("INSERT INTO fields VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", fields)
@@ -333,6 +356,8 @@ def import_jsonl(
     results_path: str | Path,
     provenance_path: str | Path | None = None,
     tables_path: str | Path | None = None,
+    *,
+    actor: str = DEFAULT_ACTOR,
 ) -> ImportStats:
     """Load a results file, and optionally its sidecars, into the store. Idempotent.
 
@@ -344,6 +369,7 @@ def import_jsonl(
         results_path: Results JSONL.
         provenance_path: Cascade provenance JSONL, if any.
         tables_path: Tables sidecar JSONL, if any.
+        actor: Who ran the import, for the audit log.
 
     Returns:
         How many documents, tables and provenance rows were written, and how many sidecar lines skipped.
@@ -354,10 +380,12 @@ def import_jsonl(
     results = Path(results_path)
     bbox_dir = results.with_suffix(results.suffix + ".bboxes")
     stats: ImportStats = {"documents": 0, "tables": 0, "provenance": 0, "skipped": 0}
+    cabinets: Counter[str] = Counter()
     for row in read_jsonl(results):
         record = DocumentRecord.model_validate(row)
         upsert_document(conn, record, bbox_path=bbox_dir / f"{record.doc_id}.json.gz")
         stats["documents"] += 1
+        cabinets[record.cabinet_id] += 1
     if tables_path:
         for row in read_jsonl(tables_path):
             rec = TableRecord.model_validate(row)
@@ -372,6 +400,9 @@ def import_jsonl(
                 continue
             upsert_provenance(conn, prov)
             stats["provenance"] += 1
+    for cabinet_id, n in sorted(cabinets.items()):
+        detail = {"documents": n, "results": results.name}
+        record_audit(conn, actor=actor, action="db.import", cabinet_id=cabinet_id, detail=detail)
     log.info("db import done", extra={"results": str(results), **stats})
     return stats
 
@@ -403,7 +434,13 @@ def export_jsonl(conn: sqlite3.Connection, out_path: str | Path, cabinet_id: str
 
 
 def list_documents(
-    conn: sqlite3.Connection, cabinet_id: str | None = None, limit: int = DEFAULT_LIST_LIMIT, offset: int = 0
+    conn: sqlite3.Connection,
+    cabinet_id: str | None = None,
+    limit: int = DEFAULT_LIST_LIMIT,
+    offset: int = 0,
+    *,
+    routing_status: str | None = None,
+    case_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Document summaries without the record body, ordered by doc_id.
 
@@ -412,14 +449,17 @@ def list_documents(
         cabinet_id: Only this cabinet; None for every cabinet.
         limit: Maximum rows.
         offset: Rows to skip, for paging.
+        routing_status: Only this routing status (auto, review, failed); None for all.
+        case_id: Only this case; None for all.
 
     Returns:
         One dict per document, keyed by column name.
     """
     # Columns are a module constant and every value is bound, so this is not injectable.
     sql = "SELECT " + _DOC_COLUMNS + " FROM documents WHERE (? IS NULL OR cabinet_id = ?)"  # nosec B608
-    sql += " ORDER BY doc_id LIMIT ? OFFSET ?"
-    return [dict(r) for r in conn.execute(sql, [cabinet_id, cabinet_id, limit, offset]).fetchall()]
+    sql += " AND (? IS NULL OR routing_status = ?) AND (? IS NULL OR case_id = ?) ORDER BY doc_id LIMIT ? OFFSET ?"
+    params = [cabinet_id, cabinet_id, routing_status, routing_status, case_id, case_id, limit, offset]
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
 def get_document(conn: sqlite3.Connection, doc_id: str) -> DocumentRecord | None:
@@ -442,32 +482,48 @@ def _event_id(event: ReviewEvent) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
-def record_review_events(conn: sqlite3.Connection, events: list[ReviewEvent]) -> int:
+_INSERT_EVENT = (
+    "INSERT INTO review_events (event_id, doc_id, field, old_value, new_value, source, created_at, verdict, is_gold) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (event_id) DO NOTHING"
+)
+
+
+def _cabinet_of(conn: sqlite3.Connection, doc_id: str) -> str | None:
+    row = conn.execute("SELECT cabinet_id FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
+    return None if row is None else str(row["cabinet_id"])
+
+
+def record_review_events(conn: sqlite3.Connection, events: list[ReviewEvent], *, actor: str = DEFAULT_ACTOR) -> int:
     """Store review corrections. Idempotent on (doc_id, field, old, new, source).
 
     Events for a doc_id the store does not hold are skipped: the foreign key
-    needs the document.
+    needs the document. A row that already exists keeps its verdict. One audit
+    row per cabinet records the counts and the source file names.
 
     Args:
         conn: Open store.
         events: The corrections, in sheet order.
+        actor: Who recorded them, for the audit log.
 
     Returns:
         Number of new rows written.
     """
     now = _now()
-    written = 0
+    written: Counter[str] = Counter()
+    sources: dict[str, set[str]] = {}
     with conn:
         for e in events:
-            if not _has_document(conn, e.doc_id):
+            cabinet_id = _cabinet_of(conn, e.doc_id)
+            if cabinet_id is None:
                 continue
-            cur = conn.execute(
-                "INSERT INTO review_events VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (event_id) DO NOTHING",
-                (_event_id(e), e.doc_id, e.field, e.old_value, e.new_value, e.source, now),
-            )
-            written += cur.rowcount
-    log.info("review events recorded", extra={"events": len(events), "written": written})
-    return written
+            row = (_event_id(e), e.doc_id, e.field, e.old_value, e.new_value, e.source, now, e.verdict, int(e.is_gold))
+            written[cabinet_id] += conn.execute(_INSERT_EVENT, row).rowcount
+            sources.setdefault(cabinet_id, set()).add(Path(e.source.split("#")[0]).name)
+    for cabinet_id, names in sorted(sources.items()):
+        detail = {"written": written[cabinet_id], "sources": sorted(names)}
+        record_audit(conn, actor=actor, action="review_events.record", cabinet_id=cabinet_id, detail=detail)
+    log.info("review events recorded", extra={"events": len(events), "written": sum(written.values())})
+    return sum(written.values())
 
 
 def list_review_events(conn: sqlite3.Connection, doc_id: str | None = None) -> list[dict[str, Any]]:

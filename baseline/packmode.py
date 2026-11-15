@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import copy
 import re
+import sqlite3
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from . import db_registry
 from .classify import rule_scores
 from .clientpack import OTHER_CLASS, ClientPack, ClientPackError, FieldSpec, TaxonomyClass, load_pack
 from .clientpack_rules import norm
@@ -228,6 +230,24 @@ def inputs(cfg: Config, input_dir: str | Path) -> list[Path]:
     if len(found) != len(wanted):
         log.warning("manifest documents not materialized", extra={"missing": len(wanted) - len(found)})
     return found
+
+
+def register(conn: sqlite3.Connection, cfg: Config) -> dict[str, str]:
+    """Load a pack-mode run's cabinet into the store and map its documents to their cases.
+
+    Args:
+        conn: Open store.
+        cfg: A config; nothing happens unless it is in pack mode.
+
+    Returns:
+        Materialized file stem (the manifest doc_id) to case_id, for rows that have one.
+    """
+    if not is_active(cfg):
+        return {}
+    spec = cfg.pipeline[PACK_KEY]
+    pack = load_pack(spec["dir"], spec["slug"])
+    db_registry.register_pack(conn, pack)
+    return {row.doc_id: row.case_id for row in pack.manifest if row.case_id}
 
 
 def evidence(full: str, pages: list[str], cfg: Config) -> dict[str, list[str]]:

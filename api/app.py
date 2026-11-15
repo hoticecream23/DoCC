@@ -34,7 +34,7 @@ from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from api.jobs import DEFAULT_WORKERS, Busy, InMemoryJobStore, Job, JobRunner, SqliteJobStore
-from baseline import db
+from baseline import db, db_registry
 from baseline.config import DEFAULT_DB_NAME, Config, load_config
 from baseline.errors import BadInput, ConfigError, DoccError, Unavailable, summarize_exception
 from baseline.extract import SUPPORTED_EXT
@@ -62,8 +62,10 @@ TRACE_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 # A cabinet id is stored and filtered on, so it is held to the same plain token.
 CABINET_ID_RE = TRACE_ID_RE
 DEFAULT_PAGE_LIMIT = 50
+ROUTING_PATTERN = "^(auto|review|failed)$"
 MAX_PAGE_LIMIT = 500
-LIST_COLUMNS = ("doc_id", "cabinet_id", "doc_type", "confidence", "filename", "updated_at")
+LIST_COLUMNS = ("doc_id", "cabinet_id", "doc_type", "confidence", "filename", "updated_at", "routing_status", "case_id")
+API_ACTOR = "api"
 
 trace_id: ContextVar[str] = ContextVar("trace_id", default="")
 
@@ -135,24 +137,38 @@ class ApiState:
             raise BadInput("cabinet_id must be 1-64 letters, digits, '.', '_' or '-'")
         return value
 
-    def persist(self, record: DocumentRecord, provenance: Provenance | None = None) -> None:
+    def persist(self, record: DocumentRecord, provenance: Provenance | None = None, *, trace: str = "") -> None:
         """Upsert a record, and its cascade provenance, into the store if there is one.
 
-        A store failure is logged, never raised: the caller still gets the record.
+        Each record gets its own run carrying the request trace id, and an
+        audit row. A store failure is logged, never raised: the caller still
+        gets the record.
 
         Args:
             record: The record the API produced.
             provenance: The cascade provenance line, if any.
+            trace: The request trace id; empty for the current request's.
         """
         if self.conn is None:
             return
+        tid = trace or trace_id.get() or None
         try:
             with self.db_lock:
-                db.upsert_document(self.conn, record)
+                run_id = db.start_run(self.conn, self.cfg.dump(), record.cabinet_id, trace_id=tid)
+                db.upsert_document(self.conn, record, run_id)
                 if provenance is not None:
                     db.upsert_provenance(self.conn, dict(provenance))
+                detail = {"run_id": run_id, "trace_id": tid}
+                db_registry.record_audit(
+                    self.conn,
+                    actor=API_ACTOR,
+                    action="document.create",
+                    cabinet_id=record.cabinet_id,
+                    doc_id=record.doc_id,
+                    detail=detail,
+                )
         except sqlite3.Error as exc:
-            extra = {"trace_id": trace_id.get(), "doc_id": record.doc_id, "error": summarize_exception(exc)}
+            extra = {"trace_id": tid, "doc_id": record.doc_id, "error": summarize_exception(exc)}
             log.error("db write failed, record returned but not stored", extra=extra)
 
     def read(self, fn: Callable[[sqlite3.Connection], Any]) -> Any:
@@ -224,17 +240,18 @@ def _routes(api: ApiState) -> APIRouter:
         cabinet = api.cabinet(cabinet_id)
         backend = api.backend()  # 503 before anything is saved
         path = api.save(file)
+        tid = trace_id.get()  # the job thread does not see this request's context
 
         def work() -> DocumentRecord:
             try:
                 result = cascade_process(path, api.cfg, api.ccfg, backend, api.models, cabinet)
             finally:
                 _discard(path)
-            api.persist(result.record, result.provenance)
+            api.persist(result.record, result.provenance, trace=tid)
             return result.record
 
         try:
-            return {"job_id": api.runner.submit(work, trace_id.get(), cabinet)}
+            return {"job_id": api.runner.submit(work, tid, cabinet)}
         except Busy:
             _discard(path)
             raise
@@ -258,8 +275,14 @@ def _read_routes(api: ApiState) -> APIRouter:
         cabinet_id: str | None = None,
         limit: Annotated[int, Query(ge=1, le=MAX_PAGE_LIMIT)] = DEFAULT_PAGE_LIMIT,
         offset: Annotated[int, Query(ge=0)] = 0,
+        routing_status: Annotated[str | None, Query(pattern=ROUTING_PATTERN)] = None,
+        case_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        rows = api.read(lambda conn: db.list_documents(conn, cabinet_id, limit, offset))
+        rows = api.read(
+            lambda conn: db.list_documents(
+                conn, cabinet_id, limit, offset, routing_status=routing_status, case_id=case_id
+            )
+        )
         return [{k: row[k] for k in LIST_COLUMNS} for row in rows]
 
     @router.get("/documents/{doc_id}", response_model=DocumentRecord)
@@ -274,7 +297,30 @@ def _read_routes(api: ApiState) -> APIRouter:
         events: list[dict[str, Any]] = api.read(lambda conn: db.list_review_events(conn, doc_id))
         return events
 
+    @router.get("/documents/{doc_id}/fields")
+    def fields(doc_id: str) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = api.read(lambda conn: db_registry.effective_fields(conn, doc_id))
+        return found
+
+    @router.get("/cabinets")
+    def cabinets() -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = api.read(db_registry.list_cabinets)
+        return found
+
+    @router.get("/cabinets/{cabinet_id}/doc_types")
+    def doc_types(cabinet_id: str) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = api.read(lambda conn: _doc_types(conn, cabinet_id))
+        return found
+
     return router
+
+
+def _doc_types(conn: sqlite3.Connection, cabinet_id: str) -> list[dict[str, Any]]:
+    """A cabinet's document types, each with its field definitions."""
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for f in db_registry.list_field_defs(conn, cabinet_id):
+        by_type.setdefault(f.pop("doc_type"), []).append(f)
+    return [{**t, "fields": by_type.get(t["name"], [])} for t in db_registry.list_doc_types(conn, cabinet_id)]
 
 
 async def _on_docc_error(request: Request, exc: Exception) -> JSONResponse:
