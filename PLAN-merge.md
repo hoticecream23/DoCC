@@ -63,3 +63,17 @@ M1b cabinet_id through the cascade runner; cascade upserts to the store;
   cabinet's two types; commit and Python on the client machine.
 - next: push (needs the user's OK), git pull on the client machine, build
   the pack there, client-run per cabinet, paste back the report.
+
+## Store additions from the Phase 2 database spec (2026-11-15)
+- done, local only: de1891b (tenants, cabinets, doc_types, field_defs,
+  audit_log, schema_migrations; documents.routing_status and case_id;
+  review_events.verdict and is_gold; runs.trace_id; effective_fields read
+  helper; register_pack; four API read routes), f1ffb47 (function size).
+- rejected and not built: PostgreSQL-only, outbox, fact/dimension tables,
+  generated document ids, in-row corrected values, bbox integer columns.
+- open risk from the worker: routing_status may mark most documents
+  "review", because any unvalidated field without a checksum or format
+  rule is high priority. Check on real data before relying on it.
+- asked of the colleague, unanswered: the actual .sql files; which engine
+  statement is current; where per-client field role and origin live; how
+  a multi-file case is keyed.
