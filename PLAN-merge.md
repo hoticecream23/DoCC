@@ -77,3 +77,33 @@ M1b cabinet_id through the cascade runner; cascade upserts to the store;
 - asked of the colleague, unanswered: the actual .sql files; which engine
   statement is current; where per-client field role and origin live; how
   a multi-file case is keyed.
+
+## Code review of the client-test and store work (2026-11-15)
+Paused here: usage limit reached. A fresh session can resume from this log.
+- pass 1 (4 reviewers): 9 high, ~15 medium bugs, all reproduced. Fixed in
+  0dcc49c (scoring), 3bcc003 (pack builder, inventory), d8a2590 + 92f89ba
+  (store, API), acc1453 + b825bec (pack mode, text mode), 54d00db (loose
+  ends). Verified by the orchestrator at that point: 918 then 925 tests,
+  coverage 91 %, all static checks clean.
+- pass 2 (2 reviewers): every pass-1 bug confirmed fixed except server
+  path exposure (partly). No new high. New medium/low items dispatched:
+  - ad14069 landed: pack-mode label rule, layouts, Arabic-Indic digits,
+    integer normaliser, diagnostics notes (verified only in the worker's
+    scratch worktree, 975 tests).
+  - IN FLIGHT when paused, each commits its own paths when done:
+    (a) pack builder + scoring round 2 (per-folder cases, stable slugs,
+        merge conflicts, tie rules) in baseline/clientpack*.py,
+        baseline/evaluate/, baseline/clientrun.py;
+    (b) store + API round 2 (paths out of records, refused-import
+        sidecars, review-event idempotency, connect locking, one API
+        process per store) in baseline/db*.py, api/;
+    (c) notes wiring in baseline/pipeline.py and cascade/runner.py
+        (page-limit messages become notes, new outcome not_sent).
+- TO DO on resume: check `git status` and `git log` for what (a), (b),
+  (c) committed; finish or redo anything left uncommitted; run all six
+  checks and the full suite on the combined tree; one short confirmation
+  review of round-2 fixes; then ask the user before pushing, and build a
+  new zip. Local branch is ahead of origin (last push 3fcc86d).
+- The zip on the client machine (3fcc86d) predates the review. Its scores
+  are unreliable: partial runs can show 100 %, real documents are dropped
+  as duplicates, and a wrong key can be returned.
